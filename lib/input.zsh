@@ -1,0 +1,281 @@
+# Native multiline editor with prompt history and terminal event decoding.
+
+typeset -g INPUT_BUF=""
+typeset -gi INPUT_POS=0
+typeset -ga INPUT_HISTORY=()
+typeset -gi INPUT_HISTORY_POS=0
+typeset -g INPUT_DRAFT=""
+typeset -g INPUT_SUBMITTED=""
+typeset -ga INPUT_VISUAL_LINES=() INPUT_VISUAL_STARTS=() INPUT_VISUAL_LENGTHS=()
+typeset -gi INPUT_CURSOR_ROW=1 INPUT_CURSOR_COL=0 INPUT_VIEW_TOP=1 INPUT_VISIBLE_ROWS=1
+typeset -gi INPUT_GOAL_COL=-1
+typeset -g INPUT_TERM_STATE="normal" INPUT_ESCAPE_BUF="" INPUT_PASTE_BUF=""
+typeset -g INPUT_EVENT_ACTION="" INPUT_EVENT_TEXT=""
+
+input_reset() {
+  INPUT_BUF=""
+  INPUT_POS=0
+  INPUT_HISTORY_POS=0
+  INPUT_DRAFT=""
+  INPUT_SUBMITTED=""
+  INPUT_GOAL_COL=-1
+  INPUT_TERM_STATE="normal"
+  INPUT_ESCAPE_BUF=""
+  INPUT_PASTE_BUF=""
+  INPUT_EVENT_ACTION=""
+  INPUT_EVENT_TEXT=""
+}
+
+input_insert() {
+  local ch="$1"
+  [[ -n "$ch" ]] || return 0
+  if (( INPUT_POS == 0 )); then
+    INPUT_BUF="${ch}${INPUT_BUF}"
+  elif (( INPUT_POS >= ${#INPUT_BUF} )); then
+    INPUT_BUF+="$ch"
+  else
+    INPUT_BUF="${INPUT_BUF[1,INPUT_POS]}${ch}${INPUT_BUF[INPUT_POS+1,-1]}"
+  fi
+  (( INPUT_POS += ${#ch} ))
+  INPUT_GOAL_COL=-1
+}
+
+input_backspace() {
+  (( INPUT_POS > 0 )) || return 0
+  if (( INPUT_POS == 1 )); then
+    INPUT_BUF="${INPUT_BUF[2,-1]}"
+  elif (( INPUT_POS >= ${#INPUT_BUF} )); then
+    INPUT_BUF="${INPUT_BUF[1,-2]}"
+  else
+    INPUT_BUF="${INPUT_BUF[1,INPUT_POS-1]}${INPUT_BUF[INPUT_POS+1,-1]}"
+  fi
+  (( INPUT_POS-- ))
+  INPUT_GOAL_COL=-1
+}
+
+input_delete() {
+  (( INPUT_POS < ${#INPUT_BUF} )) || return 0
+  if (( INPUT_POS == 0 )); then
+    INPUT_BUF="${INPUT_BUF[2,-1]}"
+  else
+    INPUT_BUF="${INPUT_BUF[1,INPUT_POS]}${INPUT_BUF[INPUT_POS+2,-1]}"
+  fi
+  INPUT_GOAL_COL=-1
+}
+
+input_left() { (( INPUT_POS > 0 )) && (( INPUT_POS-- )); INPUT_GOAL_COL=-1; return 0; }
+input_right() { (( INPUT_POS < ${#INPUT_BUF} )) && (( INPUT_POS++ )); INPUT_GOAL_COL=-1; return 0; }
+input_home() { INPUT_POS=0; INPUT_GOAL_COL=-1; }
+input_end() { INPUT_POS=${#INPUT_BUF}; INPUT_GOAL_COL=-1; }
+input_clear() { INPUT_BUF=""; INPUT_POS=0; INPUT_GOAL_COL=-1; }
+
+input_kill_word() {
+  local left right
+  (( INPUT_POS > 0 )) || return 0
+  left="${INPUT_BUF[1,INPUT_POS]}"
+  right="${INPUT_BUF[INPUT_POS+1,-1]}"
+  left="${left%# }"
+  left="${left%#* }"
+  INPUT_BUF="${left}${right}"
+  INPUT_POS=${#left}
+  INPUT_GOAL_COL=-1
+}
+
+# Split the buffer into terminal-width visual rows. Starts are zero-based
+# character offsets, matching INPUT_POS, so cursor movement stays independent
+# of curses and can be tested without a terminal.
+input_layout() {
+  local -i width=${1:-1} max_rows=${2:-4}
+  (( width < 1 )) && width=1
+  (( max_rows < 1 )) && max_rows=1
+
+  INPUT_VISUAL_LINES=("")
+  INPUT_VISUAL_STARTS=(0)
+  INPUT_VISUAL_LENGTHS=(0)
+  INPUT_CURSOR_ROW=1
+  INPUT_CURSOR_COL=0
+
+  local -i row=1 col=0 processed=0 index length=${#INPUT_BUF}
+  local ch=""
+  for (( index=1; index<=length; index++ )); do
+    ch="${INPUT_BUF[index]}"
+    if [[ "$ch" == $'\n' ]]; then
+      (( processed++ ))
+      INPUT_VISUAL_LINES+=("")
+      INPUT_VISUAL_STARTS+=("$processed")
+      INPUT_VISUAL_LENGTHS+=(0)
+      (( row++ ))
+      col=0
+      if (( INPUT_POS == processed )); then
+        INPUT_CURSOR_ROW=$row
+        INPUT_CURSOR_COL=0
+      fi
+      continue
+    fi
+
+    if (( col >= width )); then
+      INPUT_VISUAL_LINES+=("")
+      INPUT_VISUAL_STARTS+=("$processed")
+      INPUT_VISUAL_LENGTHS+=(0)
+      (( row++ ))
+      col=0
+      if (( INPUT_POS == processed )); then
+        INPUT_CURSOR_ROW=$row
+        INPUT_CURSOR_COL=0
+      fi
+    fi
+
+    INPUT_VISUAL_LINES[row]+="$ch"
+    (( processed++, col++ ))
+    INPUT_VISUAL_LENGTHS[row]=$col
+    if (( INPUT_POS == processed )); then
+      INPUT_CURSOR_ROW=$row
+      INPUT_CURSOR_COL=$col
+    fi
+  done
+
+  # A cursor immediately after a full row belongs at the start of the next
+  # visual row; placing it on the border would make it disappear.
+  if (( length > 0 && INPUT_POS == length && col >= width )); then
+    INPUT_VISUAL_LINES+=("")
+    INPUT_VISUAL_STARTS+=("$processed")
+    INPUT_VISUAL_LENGTHS+=(0)
+    (( row++ ))
+    INPUT_CURSOR_ROW=$row
+    INPUT_CURSOR_COL=0
+  fi
+
+  local -i total=$row
+  INPUT_VISIBLE_ROWS=$total
+  (( INPUT_VISIBLE_ROWS > max_rows )) && INPUT_VISIBLE_ROWS=$max_rows
+  INPUT_VIEW_TOP=1
+  if (( INPUT_CURSOR_ROW > max_rows )); then
+    INPUT_VIEW_TOP=$(( INPUT_CURSOR_ROW - max_rows + 1 ))
+  fi
+  if (( INPUT_VIEW_TOP + INPUT_VISIBLE_ROWS - 1 > total )); then
+    INPUT_VIEW_TOP=$(( total - INPUT_VISIBLE_ROWS + 1 ))
+  fi
+  (( INPUT_VIEW_TOP < 1 )) && INPUT_VIEW_TOP=1
+}
+
+input_move_vertical() {
+  local -i direction=$1 width=${2:-1} max_rows=${3:-4}
+  input_layout "$width" "$max_rows"
+  local -i target=$(( INPUT_CURSOR_ROW + direction ))
+  (( target >= 1 && target <= ${#INPUT_VISUAL_LINES} )) || return 1
+  (( INPUT_GOAL_COL < 0 )) && INPUT_GOAL_COL=$INPUT_CURSOR_COL
+  local -i target_col=$INPUT_GOAL_COL target_length=${INPUT_VISUAL_LENGTHS[target]}
+  (( target_col > target_length )) && target_col=$target_length
+  INPUT_POS=$(( INPUT_VISUAL_STARTS[target] + target_col ))
+  return 0
+}
+
+# Consume terminal sequences which curses does not identify as named keys.
+# Shift-Return has no distinct encoding in traditional terminal mode, but the
+# two common extended-key protocols are recognized. Alt-Return is a portable
+# fallback. Bracketed paste keeps embedded newlines in the prompt.
+input_decode_terminal_event() {
+  local ch="${1:-}" key="${2:-}"
+  INPUT_EVENT_ACTION=""
+  INPUT_EVENT_TEXT=""
+
+  if [[ "$key" == SENTER ]]; then
+    INPUT_EVENT_ACTION="newline"
+    return 0
+  fi
+
+  if [[ "$INPUT_TERM_STATE" != normal && -z "$ch" && ( "$key" == ENTER || "$key" == PADENTER ) ]]; then
+    ch=$'\n'
+  fi
+
+  if [[ "$INPUT_TERM_STATE" == paste ]]; then
+    INPUT_PASTE_BUF+="$ch"
+    if [[ "$INPUT_PASTE_BUF" == *$'\e[201~' ]]; then
+      INPUT_EVENT_TEXT="${INPUT_PASTE_BUF%$'\e[201~'}"
+      local newline=$'\n' carriage_return=$'\r' crlf=$'\r\n'
+      INPUT_EVENT_TEXT="${INPUT_EVENT_TEXT//$crlf/$newline}"
+      INPUT_EVENT_TEXT="${INPUT_EVENT_TEXT//$carriage_return/$newline}"
+      INPUT_PASTE_BUF=""
+      INPUT_TERM_STATE="normal"
+      INPUT_EVENT_ACTION="paste"
+    fi
+    return 0
+  fi
+
+  if [[ "$INPUT_TERM_STATE" == escape ]]; then
+    INPUT_ESCAPE_BUF+="$ch"
+    case "$INPUT_ESCAPE_BUF" in
+      $'\e[200~')
+        INPUT_TERM_STATE="paste"
+        INPUT_ESCAPE_BUF=""
+        INPUT_PASTE_BUF=""
+        ;;
+      $'\e[13;2u'|$'\e[13;2~'|$'\e[27;2;13~'|$'\e\n'|$'\e\r')
+        INPUT_TERM_STATE="normal"
+        INPUT_ESCAPE_BUF=""
+        INPUT_EVENT_ACTION="newline"
+        ;;
+      *)
+        local -a known=(
+          $'\e[200~' $'\e[13;2u' $'\e[13;2~' $'\e[27;2;13~'
+          $'\e\n' $'\e\r'
+        )
+        local candidate=""
+        local -i is_prefix=0
+        for candidate in "${known[@]}"; do
+          [[ "$candidate" == "$INPUT_ESCAPE_BUF"* ]] && { is_prefix=1; break; }
+        done
+        if (( ! is_prefix )); then
+          INPUT_TERM_STATE="normal"
+          INPUT_ESCAPE_BUF=""
+        fi
+        ;;
+    esac
+    return 0
+  fi
+
+  if [[ "$ch" == $'\e' ]]; then
+    INPUT_TERM_STATE="escape"
+    INPUT_ESCAPE_BUF="$ch"
+    return 0
+  fi
+  return 1
+}
+
+input_history_previous() {
+  local -i total=${#INPUT_HISTORY}
+  (( total > 0 )) || return 0
+  if (( INPUT_HISTORY_POS == 0 )); then
+    INPUT_DRAFT="$INPUT_BUF"
+    INPUT_HISTORY_POS=$total
+  elif (( INPUT_HISTORY_POS > 1 )); then
+    (( INPUT_HISTORY_POS-- ))
+  fi
+  INPUT_BUF="${INPUT_HISTORY[INPUT_HISTORY_POS]}"
+  INPUT_POS=${#INPUT_BUF}
+  INPUT_GOAL_COL=-1
+}
+
+input_history_next() {
+  local -i total=${#INPUT_HISTORY}
+  (( total > 0 && INPUT_HISTORY_POS > 0 )) || return 0
+  if (( INPUT_HISTORY_POS < total )); then
+    (( INPUT_HISTORY_POS++ ))
+    INPUT_BUF="${INPUT_HISTORY[INPUT_HISTORY_POS]}"
+  else
+    INPUT_HISTORY_POS=0
+    INPUT_BUF="$INPUT_DRAFT"
+  fi
+  INPUT_POS=${#INPUT_BUF}
+  INPUT_GOAL_COL=-1
+}
+
+input_submit() {
+  INPUT_SUBMITTED="$INPUT_BUF"
+  [[ -n "$INPUT_SUBMITTED" ]] && INPUT_HISTORY+=("$INPUT_SUBMITTED")
+  INPUT_BUF=""
+  INPUT_POS=0
+  INPUT_HISTORY_POS=0
+  INPUT_DRAFT=""
+  INPUT_GOAL_COL=-1
+}

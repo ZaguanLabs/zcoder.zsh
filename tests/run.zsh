@@ -1,0 +1,573 @@
+#!/usr/bin/env zsh
+
+setopt EXTENDED_GLOB NO_NOMATCH
+zmodload zsh/datetime zsh/files zsh/mapfile zsh/zselect
+
+0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
+0="${${(M)0:#/*}:-$PWD/$0}"
+typeset -gr TEST_DIR="${0:A:h}"
+typeset -gr PROJECT_DIR="${TEST_DIR:h}"
+
+source "${PROJECT_DIR}/lib/util.zsh"
+source "${PROJECT_DIR}/lib/json.zsh"
+source "${PROJECT_DIR}/lib/http.zsh"
+source "${PROJECT_DIR}/lib/instructions.zsh"
+source "${PROJECT_DIR}/lib/input.zsh"
+source "${PROJECT_DIR}/lib/tools.zsh"
+source "${PROJECT_DIR}/lib/compact.zsh"
+source "${PROJECT_DIR}/lib/agent.zsh"
+
+typeset -gi TESTS=0 FAILURES=0
+typeset -g TEST_TMP=""
+
+pass() { print -r -- "ok $TESTS - $1"; }
+fail() { print -r -- "not ok $TESTS - $1"; (( FAILURES++ )); }
+
+assert_eq() {
+  local expected="$1" actual="$2" label="$3"
+  (( TESTS++ ))
+  if [[ "$actual" == "$expected" ]]; then pass "$label"; else fail "$label (expected ${(qqq)expected}, got ${(qqq)actual})"; fi
+}
+
+assert_contains() {
+  local haystack="$1" needle="$2" label="$3"
+  (( TESTS++ ))
+  if [[ "$haystack" == *"$needle"* ]]; then pass "$label"; else fail "$label (missing ${(qqq)needle})"; fi
+}
+
+assert_not_contains() {
+  local haystack="$1" needle="$2" label="$3"
+  (( TESTS++ ))
+  if [[ "$haystack" != *"$needle"* ]]; then pass "$label"; else fail "$label (unexpected ${(qqq)needle})"; fi
+}
+
+assert_success() {
+  local label="$1" exit_code="$2"
+  (( TESTS++ ))
+  if (( exit_code == 0 )); then pass "$label"; else fail "$label (status $exit_code: $TOOL_RESULT)"; fi
+}
+
+assert_failure() {
+  local label="$1" exit_code="$2"
+  (( TESTS++ ))
+  if (( exit_code != 0 )); then pass "$label"; else fail "$label (unexpected success)"; fi
+}
+
+cleanup_tests() {
+  [[ -n "$TEST_TMP" && -d "$TEST_TMP" ]] && zf_rm -rf -- "$TEST_TMP" 2>/dev/null
+}
+trap cleanup_tests EXIT INT TERM
+
+TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
+ZCODER_WORKSPACE="$TEST_TMP"
+ZCODER_MAX_TOOL_OUTPUT=32768
+
+print -r -- "1..167"
+
+input_reset
+input_layout 20 4
+assert_eq "1" "${#INPUT_VISUAL_LINES}" "empty input occupies one visual row"
+
+input_insert $'hello\nworld'
+input_layout 20 4
+assert_eq "2" "${#INPUT_VISUAL_LINES}" "hard newline creates another visual row"
+assert_eq "hello" "${INPUT_VISUAL_LINES[1]}" "multiline layout preserves the first line"
+assert_eq "world" "${INPUT_VISUAL_LINES[2]}" "multiline layout preserves the second line"
+assert_eq "2" "$INPUT_CURSOR_ROW" "cursor follows inserted text onto the second line"
+assert_eq "5" "$INPUT_CURSOR_COL" "cursor column is relative to its visual line"
+
+input_clear
+input_insert "abcdefghij"
+input_layout 4 4
+assert_eq "3" "${#INPUT_VISUAL_LINES}" "long input wraps at the editor width"
+
+input_clear
+input_insert $'one\ntwo\nthree\nfour\nfive'
+input_layout 20 4
+assert_eq "4" "$INPUT_VISIBLE_ROWS" "multiline viewport is capped at four rows"
+assert_eq "2" "$INPUT_VIEW_TOP" "multiline viewport follows the cursor"
+input_move_vertical -1 20 4
+assert_success "up moves within a multiline prompt" $?
+assert_eq "18" "$INPUT_POS" "vertical movement preserves the preferred column"
+input_move_vertical 1 20 4
+assert_eq "23" "$INPUT_POS" "down returns to the following prompt line"
+
+input_reset
+input_sequence=$'\e[13;2u'
+for input_byte in ${(s::)input_sequence}; do input_decode_terminal_event "$input_byte" ""; done
+assert_eq "newline" "$INPUT_EVENT_ACTION" "CSI-u Shift-Return inserts a newline"
+input_reset
+input_sequence=$'\e[27;2;13~'
+for input_byte in ${(s::)input_sequence}; do input_decode_terminal_event "$input_byte" ""; done
+assert_eq "newline" "$INPUT_EVENT_ACTION" "modifyOtherKeys Shift-Return inserts a newline"
+input_reset
+input_decode_terminal_event $'\e' ""
+input_decode_terminal_event $'\n' ""
+assert_eq "newline" "$INPUT_EVENT_ACTION" "Alt-Return is a multiline fallback"
+
+input_reset
+input_sequence=$'\e[200~'
+for input_byte in ${(s::)input_sequence}; do input_decode_terminal_event "$input_byte" ""; done
+assert_eq "paste" "$INPUT_TERM_STATE" "bracketed paste start enters paste mode"
+input_sequence=$'alpha\r\nbeta\e[201~'
+for input_byte in ${(s::)input_sequence}; do input_decode_terminal_event "$input_byte" ""; done
+assert_eq "paste" "$INPUT_EVENT_ACTION" "bracketed paste produces one editor event"
+assert_eq $'alpha\nbeta' "$INPUT_EVENT_TEXT" "multiline paste preserves and normalizes formatting"
+
+ZCODER_DEBUG_LOG="$TEST_TMP/zcoder-debug.log"
+zcoder_debug_init
+assert_success "debug log initializes" $?
+zcoder_debug unit_test $'first line\nsecond line'
+assert_contains "${mapfile[$ZCODER_DEBUG_LOG]}" 'unit_test first line\nsecond line' "debug log escapes multiline records"
+
+tool_write_file "src/note.txt" $'one\ntwo\nthree\n'
+assert_success "write_file creates parent directories" $?
+assert_eq $'one\ntwo\nthree\n' "${mapfile[$TEST_TMP/src/note.txt]}" "write_file preserves content"
+
+tool_read_file "src/note.txt"
+assert_success "read_file reads a workspace file" $?
+assert_eq $'one\ntwo\nthree\n' "$TOOL_RESULT" "read_file returns exact content"
+
+tool_read_file_range "src/note.txt" 2 3
+assert_success "read_file_range accepts inclusive lines" $?
+assert_eq $'2: two\n3: three' "$TOOL_RESULT" "read_file_range includes line numbers"
+
+tool_write_file "../escape.txt" "nope"
+assert_failure "write_file rejects parent traversal" $?
+assert_contains "$TOOL_RESULT" "escapes the workspace" "path rejection explains the boundary"
+
+zf_mkdir -p "$TEST_TMP/node_modules/dependency"
+mapfile[$TEST_TMP/node_modules/dependency/index.js]="generated"
+zf_mkdir -p "$TEST_TMP/ignored-cache" "$TEST_TMP/packages/scratch"
+mapfile[$TEST_TMP/.gitignore]=$'ignored-cache/\n*.generated\n!important.generated\n'
+mapfile[$TEST_TMP/ignored-cache/secret.txt]="ignored search needle"
+mapfile[$TEST_TMP/hidden.generated]="ignored"
+mapfile[$TEST_TMP/important.generated]="visible"
+mapfile[$TEST_TMP/packages/.gitignore]=$'scratch/\n'
+mapfile[$TEST_TMP/packages/scratch/cache.txt]="ignored"
+mapfile[$TEST_TMP/packages/source.zsh]="visible"
+tool_list_files . 20
+assert_success "list_files walks the workspace" $?
+assert_contains "$TOOL_RESULT" "src/note.txt" "list_files returns relative paths"
+assert_not_contains "$TOOL_RESULT" "node_modules" "list_files excludes dependency trees"
+assert_not_contains "$TOOL_RESULT" "ignored-cache" "list_files honors root gitignore directories outside Git"
+assert_not_contains "$TOOL_RESULT" "hidden.generated" "list_files honors root gitignore file patterns outside Git"
+assert_contains "$TOOL_RESULT" "important.generated" "list_files honors gitignore negation rules outside Git"
+assert_not_contains "$TOOL_RESULT" "packages/scratch" "list_files honors nested gitignore files outside Git"
+
+if (( $+commands[rg] )); then
+  tool_search "two" . 10
+  assert_success "search invokes ripgrep safely" $?
+  assert_contains "$TOOL_RESULT" "src/note.txt:2:1:two" "search returns locations"
+  tool_search "ignored search needle" . 10
+  assert_success "search applies ignore files outside Git" $?
+  assert_eq "No matches." "$TOOL_RESULT" "search excludes gitignored results outside Git"
+else
+  (( TESTS += 4 ))
+  pass "search unavailable (rg not installed)"
+  pass "search output unavailable (rg not installed)"
+  pass "ignore-aware search unavailable (rg not installed)"
+  pass "ignored search output unavailable (rg not installed)"
+fi
+
+if (( $+commands[git] )); then
+  tool_apply_patch $'diff --git a/src/note.txt b/src/note.txt\n--- a/src/note.txt\n+++ b/src/note.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n'
+  assert_success "apply_patch works in a non-Git workspace" $?
+  assert_contains "${mapfile[$TEST_TMP/src/note.txt]}" "TWO" "apply_patch changes the target"
+else
+  (( TESTS += 2 )); pass "apply_patch unavailable (git not installed)"; pass "patch output unavailable (git not installed)"
+fi
+
+if (( $+commands[patch] )); then
+  mapfile[$TEST_TMP/src/fallback.txt]=$'alpha\nbeta\ngamma\n'
+  tool_apply_patch $'*** src/fallback.txt\n--- src/fallback.txt\n***************\n*** 1,3 ****\n  alpha\n! beta\n  gamma\n--- 1,3 ----\n  alpha\n! BETA\n  gamma\n'
+  assert_success "apply_patch falls back to patch for context diffs" $?
+  assert_contains "${mapfile[$TEST_TMP/src/fallback.txt]}" "BETA" "patch fallback changes the target"
+else
+  (( TESTS += 2 )); pass "patch fallback unavailable (patch not installed)"; pass "fallback output unavailable (patch not installed)"
+fi
+
+tool_apply_patch $'*** Begin Patch\n*** Update File: src/note.txt\n@@\n-TWO\n+two\n*** End Patch\n'
+assert_failure "apply_patch rejects unsupported patch envelopes clearly" $?
+assert_contains "$TOOL_RESULT" "complete standard unified diff" "patch errors teach the model the accepted format"
+
+tool_apply_patch $'*** ../escape.txt\n--- ../escape.txt\n***************\n*** 1 ****\n! outside\n--- 1 ----\n! escaped\n'
+assert_failure "patch fallback rejects parent traversal" $?
+if [[ -e "$TEST_TMP/../escape.txt" ]]; then escape_absent=1; else escape_absent=0; fi
+assert_success "patch fallback leaves outside paths untouched" "$escape_absent"
+
+ZCODER_COMMAND_POLICY=deny
+tool_run_command "print -r -- should-not-run" . 2
+assert_failure "run_command honors deny policy" $?
+assert_contains "$TOOL_RESULT" "user denied" "denied command is reported"
+
+ZCODER_COMMAND_POLICY=allow
+tool_run_command "print -r -- approved" . 2
+assert_success "run_command honors allow policy" $?
+assert_contains "$TOOL_RESULT" "approved" "run_command captures combined output"
+
+json_parse_ollama_response '{"message":{"content":"done","thinking":"work","tool_calls":[{"type":"function","function":{"name":"read_file_range","arguments":{"path":"a b.txt","start_line":2,"end_line":4}}}]},"done":true,"prompt_eval_count":321,"eval_count":22}'
+assert_success "Ollama response JSON parses" $?
+assert_eq "read_file_range" "${JSON_TOOL_NAMES[1]}" "tool name is decoded"
+assert_eq '{"path":"a b.txt","start_line":2,"end_line":4}' "${JSON_TOOL_ARGS[1]}" "tool arguments are preserved as JSON"
+assert_eq "321" "$JSON_RESPONSE_PROMPT_TOKENS" "Ollama prompt token usage is decoded"
+assert_eq "22" "$JSON_RESPONSE_OUTPUT_TOKENS" "Ollama output token usage is decoded"
+
+json_parse_ollama_response '{"message":{"tool_calls":[{"function":{"name":"list_files","arguments":{}}},{"function":{"name":"search","arguments":{"query":"TODO"}}}]}}'
+assert_success "parallel tool-call JSON parses" $?
+assert_eq "2" "${#JSON_TOOL_NAMES}" "parallel tool calls are all retained"
+
+json_parse_running_model_context '{"models":[{"name":"other:latest","context_length":4096},{"name":"qwen:latest","model":"qwen:latest","context_length":65536}]}' "qwen:latest"
+assert_success "running Ollama model metadata parses" $?
+assert_eq "65536" "$JSON_RUNNING_MODEL_CONTEXT" "allocated model context is selected by name"
+json_parse_running_model_context '{"models":[{"name":"example-model:latest","context_length":65536}]}' "example-model"
+assert_success "running model lookup accepts Ollama's implicit latest tag" $?
+assert_eq "65536" "$JSON_RUNNING_MODEL_CONTEXT" "untagged model names match their latest allocation"
+
+_http_dechunk $'4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n'
+assert_success "chunked HTTP bodies decode" $?
+assert_eq "Wikipedia" "$REPLY" "HTTP decoder joins chunks"
+
+json_parse_models '{"models":[{"name":"model-a:12b","details":{"family":"example"},"capabilities":["tools"]},{"name":"model-b:27b","size":123}]}'
+assert_success "Ollama model-list JSON parses" $?
+assert_eq "2" "${#JSON_MODEL_NAMES}" "all model names are retained"
+assert_eq "model-b:27b" "${JSON_MODEL_NAMES[2]}" "model order is preserved"
+
+http_request() {
+  HTTP_BODY='{"models":[{"name":"mock-tools:latest"}]}'
+  return 0
+}
+ollama_get_models "mock.invalid:11434"
+assert_eq "mock-tools:latest" "${OLLAMA_MODELS[1]}" "model discovery exposes parsed names"
+
+http_request() {
+  HTTP_BODY='{"message":{"content":"async result"}}'
+  HTTP_ERROR=""
+  return 0
+}
+http_async_start POST /api/chat '{}' "mock.invalid:11434"
+assert_success "async HTTP request starts" $?
+for _ in {1..100}; do
+  http_async_ready && break
+  zselect -t 1 2>/dev/null
+done
+http_async_collect
+assert_success "async HTTP result collects" $?
+assert_contains "$HTTP_BODY" "async result" "async HTTP preserves the response body"
+assert_eq "" "$HTTP_ASYNC_PID" "async HTTP clears its worker state"
+
+http_request() {
+  while true; do zselect -t 10 2>/dev/null; done
+}
+http_async_start POST /api/chat '{}' "mock.invalid:11434"
+assert_success "cancellable HTTP request starts" $?
+cancel_pid="$HTTP_ASYNC_PID"
+cancel_base="$HTTP_ASYNC_BASE"
+zselect -t 2 2>/dev/null
+http_async_cancel
+if kill -0 "$cancel_pid" 2>/dev/null; then cancel_stopped=1; else cancel_stopped=0; fi
+assert_success "HTTP cancellation reaps the request worker" "$cancel_stopped"
+if [[ -e "${cancel_base}.done" || -e "${cancel_base}.body" ]]; then cancel_clean=1; else cancel_clean=0; fi
+assert_success "HTTP cancellation removes request files" "$cancel_clean"
+assert_contains "$HTTP_ERROR" "cancelled" "HTTP cancellation reports its reason"
+
+ui_wait_for_generation() { return 130; }
+ui_draw_footer() { return 0; }
+UI_ACTIVE=1
+agent_ollama_chat '{}' "mock.invalid:11434"
+agent_cancel_status=$?
+assert_eq "130" "$agent_cancel_status" "agent maps Escape polling to cancellation"
+assert_eq "1" "$AGENT_CANCELLED" "agent records intentional cancellation"
+UI_ACTIVE=0
+unfunction ui_wait_for_generation ui_draw_footer
+
+guide_root="$TEST_TMP/instruction-repo"
+guide_work="$guide_root/services/payments"
+guide_home="$TEST_TMP/zcoder-home"
+zf_mkdir -p "$guide_root/.git" "$guide_work" "$guide_home"
+mapfile[$guide_home/AGENTS.md]="ignored global base"
+mapfile[$guide_home/AGENTS.override.md]="global override rule"
+mapfile[$guide_root/AGENTS.md]="root project rule"
+mapfile[$guide_root/services/AGENTS.md]="ignored service base"
+mapfile[$guide_root/services/AGENTS.override.md]="service override rule"
+mapfile[$guide_work/TEAM_GUIDE.md]="payment fallback rule"
+ZCODER_HOME="$guide_home"
+ZCODER_WORKSPACE="$guide_work"
+ZCODER_PROJECT_DOC_FALLBACKS="TEAM_GUIDE.md"
+ZCODER_PROJECT_DOC_MAX_BYTES=32768
+instructions_load "$ZCODER_WORKSPACE"
+assert_success "instruction discovery succeeds" $?
+assert_eq "$guide_root" "$INSTRUCTIONS_PROJECT_ROOT" "Git root bounds project discovery"
+assert_eq "4" "${#INSTRUCTION_SOURCES}" "one instruction file is loaded per scope"
+assert_eq "$guide_home/AGENTS.override.md" "${INSTRUCTION_SOURCES[1]}" "global override wins"
+assert_eq "$guide_root/AGENTS.md" "${INSTRUCTION_SOURCES[2]}" "root AGENTS.md loads second"
+assert_eq "$guide_root/services/AGENTS.override.md" "${INSTRUCTION_SOURCES[3]}" "nested override wins"
+assert_eq "$guide_work/TEAM_GUIDE.md" "${INSTRUCTION_SOURCES[4]}" "configured fallback loads"
+assert_contains "$INSTRUCTIONS_TEXT" "global override rule" "global instructions are merged"
+assert_contains "$INSTRUCTIONS_TEXT" "root project rule" "project instructions are merged"
+assert_contains "$INSTRUCTIONS_TEXT" "service override rule" "nested instructions are merged"
+assert_contains "$INSTRUCTIONS_TEXT" "payment fallback rule" "fallback instructions are merged"
+assert_not_contains "$INSTRUCTIONS_TEXT" "ignored global base" "global base is ignored beside override"
+assert_not_contains "$INSTRUCTIONS_TEXT" "ignored service base" "scoped base is ignored beside override"
+agent_build_payload
+assert_contains "$REPLY" "root project rule" "resolved instructions enter the system prompt"
+
+empty_override_root="$TEST_TMP/empty-override"
+zf_mkdir -p "$empty_override_root" "$TEST_TMP/empty-zcoder-home"
+mapfile[$empty_override_root/AGENTS.override.md]=$'  \n\t'
+mapfile[$empty_override_root/AGENTS.md]="nonempty base rule"
+ZCODER_HOME="$TEST_TMP/empty-zcoder-home"
+ZCODER_WORKSPACE="$empty_override_root"
+ZCODER_PROJECT_DOC_FALLBACKS=""
+instructions_load "$ZCODER_WORKSPACE"
+assert_eq "$empty_override_root" "$INSTRUCTIONS_PROJECT_ROOT" "non-Git discovery is limited to the workspace"
+assert_eq "$empty_override_root/AGENTS.md" "${INSTRUCTION_SOURCES[1]}" "empty overrides fall through to AGENTS.md"
+assert_eq "nonempty base rule" "$INSTRUCTIONS_TEXT" "the non-empty fallback content is loaded"
+
+trunc_root="$TEST_TMP/truncated-instructions"
+zf_mkdir -p "$trunc_root"
+mapfile[$trunc_root/AGENTS.md]="0123456789abcdef"
+ZCODER_HOME="$TEST_TMP/empty-zcoder-home"
+ZCODER_WORKSPACE="$trunc_root"
+ZCODER_PROJECT_DOC_FALLBACKS=""
+ZCODER_PROJECT_DOC_MAX_BYTES=10
+instructions_load "$ZCODER_WORKSPACE"
+assert_eq "1" "$INSTRUCTIONS_TRUNCATED" "oversized instruction chains report truncation"
+assert_eq "10" "$INSTRUCTIONS_BYTES" "instruction byte cap is enforced"
+assert_eq "0123456789" "$INSTRUCTIONS_TEXT" "instruction content is truncated at the cap"
+
+mapfile[$trunc_root/AGENTS.md]="ééé"
+ZCODER_PROJECT_DOC_MAX_BYTES=3
+instructions_load "$ZCODER_WORKSPACE"
+assert_eq "é" "$INSTRUCTIONS_TEXT" "UTF-8 instructions are not split mid-character"
+assert_eq "2" "$INSTRUCTIONS_BYTES" "UTF-8 byte accounting is exact"
+
+agent_default_system_prompt
+assert_contains "$REPLY" "Use search first" "system prompt prefers indexed search before broad reads"
+assert_contains "$REPLY" "Use read_file_range" "system prompt directs large-file inspection to ranges"
+assert_contains "$REPLY" "rg --files, rg -n, grep, sed -n, or awk" "system prompt names shell text-processing fallbacks"
+assert_contains "$REPLY" "if more work remains, call the appropriate work tool" "system prompt requires action instead of a preamble"
+assert_contains "$REPLY" "Do not begin by reading whole source files" "system prompt forbids full-file-first exploration"
+assert_contains "$REPLY" "chunks of no more than 200 lines" "system prompt gives ranged-read budget guidance"
+assert_contains "$REPLY" "Stop inspecting once you have enough evidence" "system prompt prevents unnecessary follow-up reads"
+assert_contains "$REPLY" "do not repeat discovery with minor query variations" "system prompt prevents redundant discovery searches"
+tools_schema_json
+assert_contains "$REPLY" "defaults to 100" "list_files schema advertises its conservative default"
+assert_contains "$REPLY" "defaults to 50" "search schema advertises its conservative default"
+
+agent_format_tool_ui_result read_file '{"path":"src/note.txt"}' $'one\ntwo\nthree' 1
+assert_eq "Read(src/note.txt)" "$REPLY" "UI summarizes a complete file read"
+assert_not_contains "$REPLY" "three" "UI hides complete file read contents"
+agent_format_tool_ui_result read_file_range '{"path":"src/note.txt","start_line":2,"end_line":3}' $'2: two\n3: three' 1
+assert_eq "Read File Range(src/note.txt:2-3)" "$REPLY" "UI summarizes a ranged file read"
+agent_format_tool_ui_result write_file '{"path":"src/new.txt","content":"visible write body"}' "Wrote file" 1
+assert_contains "$REPLY" "visible write body" "UI displays write_file content"
+agent_format_tool_ui_result apply_patch '{"patch":"--- a/old.txt\n+++ b/old.txt\n@@ -1 +1 @@\n-old\n+new"}' "Patch applied" 1
+assert_contains "$REPLY" "+new" "UI displays apply_patch content"
+
+tools_schema_json
+assert_contains "$REPLY" '"name":"finish"' "tool schema exposes structural turn completion"
+agent_parse_finish '{"status":"complete","response":"Wɔawie dwumadi no."}'
+assert_success "finish accepts a language-independent completion payload" $?
+assert_eq "complete" "$AGENT_FINISH_STATUS" "finish retains completion status"
+assert_eq "Wɔawie dwumadi no." "$AGENT_FINISH_RESPONSE" "finish retains the user-facing response"
+agent_parse_finish '{"status":"maybe","response":"uncertain"}'
+assert_failure "finish rejects unknown status values" $?
+agent_parse_finish '{"status":"blocked","response":""}'
+assert_failure "finish rejects an empty final response" $?
+
+AGENT_LAST_PROMPT_TOKENS=1000
+AGENT_LAST_PAYLOAD_BYTES=3000
+agent_estimate_payload_tokens "${(l:6000::x:)}"
+assert_eq "2200" "$REPLY" "token estimates calibrate against Ollama prompt usage with headroom"
+
+assert_eq "65536" "$ZCODER_CONTEXT_FALLBACK" "unknown unloaded models default to a 64K context"
+assert_eq "85" "$ZCODER_COMPACT_PERCENT" "automatic compaction defaults to 85 percent"
+saved_context_lookup="${functions[ollama_get_running_context]}"
+saved_model="$ZCODER_MODEL"
+ollama_get_running_context() {
+  if [[ "$1" == "loaded-model:latest" ]]; then
+    OLLAMA_RUNNING_CONTEXT=98304
+    return 0
+  fi
+  return 1
+}
+ZCODER_CONTEXT_WINDOW=auto
+ZCODER_MODEL="loaded-model:latest"
+AGENT_CONTEXT_MODEL=""
+agent_context_configure
+assert_eq "98304" "$AGENT_CONTEXT_WINDOW" "automatic context sizing uses Ollama's loaded allocation"
+ZCODER_MODEL="unloaded-model:latest"
+agent_context_configure
+assert_eq "65536" "$AGENT_CONTEXT_WINDOW" "automatic context sizing uses the fallback before first load"
+assert_eq "1" "$AGENT_CONTEXT_DISCOVERY_PENDING" "automatic context sizing refreshes after an unloaded model responds"
+functions[ollama_get_running_context]="$saved_context_lookup"
+ZCODER_MODEL="$saved_model"
+AGENT_CONTEXT_MODEL=""
+ZCODER_CONTEXT_WINDOW=auto
+AGENT_CONTEXT_WINDOW=131072
+agent_context_options_json
+assert_contains "$REPLY" '"num_ctx":131072' "automatic context sizing pins num_ctx in Ollama requests"
+
+ZCODER_CONTEXT_WINDOW=8192
+ZCODER_COMPACT_PERCENT=70
+ZCODER_COMPACT_MAX_TOKENS=2048
+ZCODER_COMPACT_KEEP_USER_TOKENS=4096
+agent_reset
+agent_add_message user "original request"
+agent_add_message assistant "old assistant detail"
+agent_add_message tool "old tool output" read_file
+agent_add_message user "current request"
+typeset -g MOCK_COMPACT_PAYLOAD=""
+agent_ollama_chat() {
+  MOCK_COMPACT_PAYLOAD="$1"
+  HTTP_BODY='{"message":{"content":"checkpoint summary with exact state"},"prompt_eval_count":1800,"eval_count":120}'
+  HTTP_ERROR=""
+  return 0
+}
+agent_compact_history manual >/dev/null
+compact_status=$?
+assert_success "manual compaction completes" "$compact_status"
+assert_contains "$MOCK_COMPACT_PAYLOAD" "old tool output" "compaction request includes detailed tool history"
+assert_eq "checkpoint summary with exact state" "$AGENT_COMPACTION_SUMMARY" "compaction stores the model checkpoint"
+assert_eq "1" "$AGENT_COMPACTION_COUNT" "compaction advances its checkpoint counter"
+assert_eq "4" "${#AGENT_MESSAGES}" "replacement history retains the recent raw exchange"
+assert_eq "2" "${#AGENT_USER_MESSAGES}" "replacement history preserves recent real user messages"
+agent_build_payload
+assert_contains "$REPLY" "checkpoint summary with exact state" "regular prompts include the compacted checkpoint"
+assert_contains "$REPLY" "old tool output" "compacted prompts retain recent tool results to prevent repeated work"
+assert_contains "$REPLY" '"num_ctx":8192' "explicit context windows are sent to Ollama"
+assert_success "compaction rearms above its post-checkpoint estimate" $(( AGENT_COMPACTION_REARM_TOKENS > AGENT_ESTIMATED_TOKENS ? 0 : 1 ))
+agent_context_summary
+assert_contains "$REPLY" "estimated next prompt:" "context status reports the current transport estimate"
+assert_contains "$REPLY" "last Ollama prompt: unknown" "context status distinguishes reset usage from a measured prompt"
+
+ZCODER_CONTEXT_WINDOW=4096
+ZCODER_COMPACT_PERCENT=70
+agent_reset
+agent_add_message user "${(l:12000::x:)}"
+agent_prepare_payload >/dev/null
+auto_compact_status=$?
+prepared_payload="$REPLY"
+assert_success "oversized prompts trigger automatic compaction" "$auto_compact_status"
+assert_eq "1" "$AGENT_COMPACTION_COUNT" "automatic compaction creates one checkpoint"
+assert_contains "$prepared_payload" "checkpoint summary with exact state" "automatic compaction rebuilds the pending prompt from its checkpoint"
+
+typeset -gi MOCK_INCOMPLETE_TURNS=0
+agent_ollama_chat() {
+  (( MOCK_INCOMPLETE_TURNS++ ))
+  if (( MOCK_INCOMPLETE_TURNS == 1 )); then
+    HTTP_BODY='{"message":{"content":"Merekɔyɛ nsakrae no afei."},"prompt_eval_count":100,"eval_count":8}'
+  elif (( MOCK_INCOMPLETE_TURNS == 2 )); then
+    HTTP_BODY='{"message":{"content":"修正を適用します。"},"prompt_eval_count":110,"eval_count":10}'
+  else
+    HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"complete","response":"Wɔawie dwumadi no."}}}]},"prompt_eval_count":120,"eval_count":18}'
+  fi
+  HTTP_ERROR=""
+  return 0
+}
+ZCODER_CONTEXT_WINDOW=16384
+AGENT_CONTEXT_MODEL=""
+AGENT_REQUIRE_FINISH_TOOL=1
+agent_reset
+agent_user_turn "make the focused change" >/dev/null 2>&1
+incomplete_status=$?
+assert_success "agent recovers when responses omit structural completion" "$incomplete_status"
+assert_eq "3" "$MOCK_INCOMPLETE_TURNS" "tool-free responses in different languages each receive a continuation"
+assert_eq "Wɔawie dwumadi no." "$AGENT_LAST_RESPONSE" "finish returns its user-facing response"
+assert_contains "${(j:\n:)AGENT_MESSAGES}" "call finish as the only tool" "finish protocol nudge is recorded in model history"
+assert_contains "${mapfile[$ZCODER_DEBUG_LOG]}" "continuation_decision" "debug log records continuation decisions"
+assert_contains "${mapfile[$ZCODER_DEBUG_LOG]}" "omitted both a work tool and the required finish tool" "debug log records the structural continuation reason"
+
+AGENT_INCOMPLETE_RETRY_LIMIT=0
+MOCK_INCOMPLETE_TURNS=0
+agent_reset
+agent_user_turn "leave continuation disabled" >/dev/null 2>&1
+assert_success "zero disables automatic incomplete-response continuation" $?
+assert_eq "1" "$MOCK_INCOMPLETE_TURNS" "disabled continuation accepts the first no-tool response"
+AGENT_INCOMPLETE_RETRY_LIMIT=3
+
+agent_loop_reset
+agent_loop_record "read:a" "read:a=result"
+agent_loop_record "read:a" "read:a=result"
+agent_loop_detect
+assert_failure "loop guard does not trigger before its repetition threshold" $?
+agent_loop_record "read:a" "read:a=result"
+agent_loop_detect
+assert_success "loop guard detects unchanged repeated outcomes" $?
+assert_contains "$AGENT_LOOP_REASON" "unchanged results" "outcome-loop reason explains the lack of progress"
+
+agent_loop_reset
+for signature in A B A B A B; do
+  agent_loop_record "$signature" "${signature}=same"
+done
+agent_loop_detect
+assert_success "loop guard detects alternating tool cycles" $?
+assert_contains "$AGENT_LOOP_REASON" "2-round" "cycle-loop reason reports its period"
+
+agent_loop_reset
+agent_loop_record "command:test" "result:one"
+agent_loop_record "command:test" "result:two"
+agent_loop_record "command:test" "result:three"
+agent_loop_detect
+assert_failure "changing outcomes receive a more tolerant threshold" $?
+agent_loop_record "command:test" "result:four"
+agent_loop_detect
+assert_success "repeated requests are eventually detected despite changing output" $?
+
+typeset -gi MOCK_LOOP_TURNS=0
+agent_ollama_chat() {
+  (( MOCK_LOOP_TURNS++ ))
+  HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"read_file","arguments":{"path":"same.txt"}}}]}}'
+  HTTP_ERROR=""
+  return 0
+}
+tool_dispatch() {
+  TOOL_RESULT="unchanged mock file"
+  TOOL_RESULT_OK=1
+  return 0
+}
+AGENT_MAX_STEPS=10
+ZCODER_CONTEXT_WINDOW=16384
+AGENT_CONTEXT_MODEL=""
+agent_user_turn "keep reading forever" >/dev/null 2>&1
+mock_loop_status=$?
+assert_failure "agent stops when a model ignores the loop warning" "$mock_loop_status"
+assert_eq "4" "$MOCK_LOOP_TURNS" "agent gives one recovery turn before stopping"
+assert_contains "$AGENT_LOOP_NUDGE" "materially different action" "loop warning tells the model how to recover"
+
+AGENT_LOOP_REPEAT_LIMIT=2
+AGENT_LOOP_MAX_CYCLE=2
+agent_loop_reset
+for round in {1..20}; do agent_loop_record "$round" "result:$round"; done
+assert_eq "6" "${#AGENT_TOOL_REQUEST_HISTORY}" "loop history remains bounded"
+assert_eq "15" "${AGENT_TOOL_REQUEST_HISTORY[1]}" "bounded history preserves individual array entries"
+
+# Keep curses dispatch testable without initializing a terminal. In particular,
+# delwin accepts one window per call and refresh accepts the complete frame.
+source "${PROJECT_DIR}/lib/ui.zsh"
+typeset -ga MOCK_ZCURSES_CALLS=()
+zcurses() {
+  MOCK_ZCURSES_CALLS+=("${(j: :)@}")
+  return 0
+}
+ui_destroy_windows
+assert_eq "5" "${#MOCK_ZCURSES_CALLS}" "UI destroys each curses window separately"
+assert_eq "delwin top_win" "${MOCK_ZCURSES_CALLS[1]}" "UI passes one name to each delwin call"
+
+ui_draw_header() { return 0; }
+ui_draw_sidebar() { return 0; }
+ui_draw_chat() { return 0; }
+ui_draw_input() { return 0; }
+ui_draw_footer() { return 0; }
+MOCK_ZCURSES_CALLS=()
+UI_ACTIVE=1
+SIDE_W=25
+ui_refresh_all
+assert_eq "1" "${#MOCK_ZCURSES_CALLS}" "full UI redraw performs one curses refresh"
+assert_eq "refresh top_win side_win chat_win input_win foot_win" "${MOCK_ZCURSES_CALLS[1]}" "full UI redraw batches every visible window"
+
+if (( FAILURES > 0 )); then
+  print -u2 -r -- "${FAILURES} test(s) failed"
+  exit 1
+fi

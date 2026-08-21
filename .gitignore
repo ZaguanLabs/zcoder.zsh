@@ -1,0 +1,8 @@
+# Atlas Scout local data
+.atlas/
+node_modules/
+.pnpm_store/
+*.log
+.env
+.env.*
+!.env.example
