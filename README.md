@@ -186,7 +186,7 @@ Agent turns currently use `stream: false`. The HTTP request runs in a background
 
 The agent separately watches recent tool rounds for real repetition. Three identical request-and-result cycles trigger a recovery warning; request cycles whose output changes get four repetitions. Cycles up to four rounds long are recognized, so alternating A/B behavior is covered. The warning is injected into the next system prompt and gives the model one chance to choose a materially different approach before the run is stopped. Tune the guard with `ZCODER_LOOP_REPEAT_LIMIT` and `ZCODER_LOOP_MAX_CYCLE`.
 
-Turn completion uses a structural protocol rather than English phrase matching. While work remains, the model calls a work tool. When complete or genuinely blocked, it calls `finish` as the only tool with a `complete` or `blocked` status and the final user-facing response in any language. A plain tool-free response is provisional and receives up to three automatic requests to either continue work or call `finish`. This avoids guessing intent from wording, punctuation, or language. Tune the retry count with `ZCODER_INCOMPLETE_RETRY_LIMIT`; setting it to `0` restores legacy tool-free completion. Set `ZCODER_REQUIRE_FINISH_TOOL=0` to disable the structural protocol entirely.
+Turn completion is adaptive across local models. While work remains, the model should call a work tool. When complete or genuinely blocked, it can call `finish` as the only tool with a `complete` or `blocked` status and the final user-facing response. A non-empty tool-free response is also accepted as final because some otherwise tool-capable models do not reliably call `finish` for conversational answers. Empty or malformed responses receive up to three recovery attempts. Tune that budget with `ZCODER_INCOMPLETE_RETRY_LIMIT`; setting it to `0` disables recovery. Set `ZCODER_REQUIRE_FINISH_TOOL=1` to opt into strict structural completion, where every tool-free response is provisional until the model calls `finish`.
 
 ## Debugging interrupted turns
 
@@ -197,7 +197,7 @@ Add `--debug` to append structured diagnostics without writing through curses:
 tail -f /tmp/zcoder-debug-${UID}.log
 ```
 
-The log records session and exit state, Ollama request status, bounded raw responses, parsed content and tool-call counts, continuation decisions and reasons, and bounded tool-result summaries. Use `--debug-log PATH` or `ZCODER_DEBUG_LOG=PATH` for another location, and `ZCODER_DEBUG_MAX_CHARS` to change the per-record limit. Debug logs can contain prompts, assistant text, and tool arguments, so treat them as sensitive.
+The log records session and exit state, Ollama request status, bounded raw responses, parsed content and tool-call counts, recovery or strict-continuation decisions and reasons, and bounded tool-result summaries. Use `--debug-log PATH` or `ZCODER_DEBUG_LOG=PATH` for another location, and `ZCODER_DEBUG_MAX_CHARS` to change the per-record limit. Debug logs can contain prompts, assistant text, and tool arguments, so treat them as sensitive.
 
 ## Context compaction
 

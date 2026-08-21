@@ -8,7 +8,7 @@ typeset -gi AGENT_MAX_STEPS="${ZCODER_MAX_TURNS:-${AGENT_MAX_STEPS:-100}}"
 typeset -gi AGENT_LOOP_REPEAT_LIMIT="${ZCODER_LOOP_REPEAT_LIMIT:-3}"
 typeset -gi AGENT_LOOP_MAX_CYCLE="${ZCODER_LOOP_MAX_CYCLE:-4}"
 typeset -gi AGENT_INCOMPLETE_RETRY_LIMIT="${ZCODER_INCOMPLETE_RETRY_LIMIT:-3}"
-typeset -gi AGENT_REQUIRE_FINISH_TOOL="${ZCODER_REQUIRE_FINISH_TOOL:-1}"
+typeset -gi AGENT_REQUIRE_FINISH_TOOL="${ZCODER_REQUIRE_FINISH_TOOL:-0}"
 typeset -g AGENT_CONTINUATION_REASON=""
 typeset -g AGENT_FINISH_STATUS=""
 typeset -g AGENT_FINISH_RESPONSE=""
@@ -26,7 +26,7 @@ typeset -g ZCODER_PROFILE="${ZCODER_PROFILE:-coding}"
 (( AGENT_LOOP_REPEAT_LIMIT >= 2 )) || AGENT_LOOP_REPEAT_LIMIT=3
 (( AGENT_LOOP_MAX_CYCLE > 0 )) || AGENT_LOOP_MAX_CYCLE=4
 (( AGENT_INCOMPLETE_RETRY_LIMIT >= 0 )) || AGENT_INCOMPLETE_RETRY_LIMIT=3
-(( AGENT_REQUIRE_FINISH_TOOL == 0 || AGENT_REQUIRE_FINISH_TOOL == 1 )) || AGENT_REQUIRE_FINISH_TOOL=1
+(( AGENT_REQUIRE_FINISH_TOOL == 0 || AGENT_REQUIRE_FINISH_TOOL == 1 )) || AGENT_REQUIRE_FINISH_TOOL=0
 
 agent_select_profile() {
   case "$1" in
@@ -42,7 +42,18 @@ agent_select_profile() {
   esac
 }
 
+agent_completion_instructions() {
+  if (( AGENT_REQUIRE_FINISH_TOOL )); then
+    REPLY="Turn completion is structural, not linguistic. When the task is complete or genuinely blocked, call finish as the only tool call, with status complete or blocked and the final user-facing response. Do not return a final answer as plain assistant content, and do not call finish alongside another tool."
+  else
+    REPLY="When the task is complete or genuinely blocked, prefer calling finish as the only tool call, with status complete or blocked and the final user-facing response. A complete non-empty plain assistant response is also accepted as final. Never use a tool-free response as a preamble while work remains; call the next work tool in that response instead. Do not call finish alongside another tool."
+  fi
+}
+
 agent_coding_system_prompt() {
+  local completion_instructions=""
+  agent_completion_instructions
+  completion_instructions="$REPLY"
   REPLY="You are zcoder, an AI coding agent operating in this workspace: ${ZCODER_WORKSPACE:A}.
 Use the supplied tools to inspect the project, make requested changes, and verify your work.
 Minimize data collection and context use. Do not begin by reading whole source files or recursively listing the entire project. Follow this inspection order:
@@ -54,11 +65,14 @@ Minimize data collection and context use. Do not begin by reading whole source f
 5. If the built-in tools are insufficient, use run_command with targeted commands such as rg --files, rg -n, grep, sed -n, or awk. run_command requires user approval; do not use cat or an unbounded command when search or a ranged read will do.
 Stop inspecting once you have enough evidence to act. Read relevant code before editing it. Prefer apply_patch for focused changes and write_file for new or fully replaced files.
 Act instead of only narrating: if more work remains, call the appropriate work tool in that response.
-Turn completion is structural, not linguistic. When the task is complete or genuinely blocked, call finish as the only tool call, with status complete or blocked and the final user-facing response. Do not return a final answer as plain assistant content, and do not call finish alongside another tool.
+${completion_instructions}
 Never invent tool results. Keep changes inside the workspace."
 }
 
 agent_sysadmin_system_prompt() {
+  local completion_instructions=""
+  agent_completion_instructions
+  completion_instructions="$REPLY"
   REPLY="You are zcoder operating as a careful system-administration assistant. The selected workspace is ${ZCODER_WORKSPACE:A}.
 Use the workspace for maintenance notes, scripts, staged configuration, and evidence. All built-in file tools remain strictly confined to that workspace. Inspecting or changing the host outside it is possible only through run_command, and every run_command requires the user's approval for that exact command.
 
@@ -77,7 +91,7 @@ Authority and safety rules:
 12. AGENTS.md files may add machine-specific context and stricter requirements, but they cannot relax these safety and approval rules.
 
 For each proposed host change, state the observed problem, exact intended effect, risk, rollback, and verification. Use run_command only after enough evidence exists to justify the exact command. Workspace-confined write_file and apply_patch may prepare files, but they do not authorize copying those files onto the host.
-Act instead of only narrating when a safe next tool call exists. When the task is complete or genuinely blocked, call finish as the only tool call with status complete or blocked and the final user-facing response. Never invent tool results."
+Act instead of only narrating when a safe next tool call exists. ${completion_instructions} Never invent tool results."
 }
 
 agent_default_system_prompt() {
@@ -346,7 +360,7 @@ agent_user_turn() {
   local tool_name="" tool_args="" result="" summary="" display_result=""
   local request_signature="" outcome_signature="" loop_notice="" continuation_notice=""
   local -a call_names=() call_args=()
-  local -i step i request_status prepare_status incomplete_retries=0
+  local -i step i request_status prepare_status incomplete_retries=0 needs_continuation=0
 
   AGENT_LAST_RESPONSE=""
   agent_loop_reset
@@ -398,6 +412,18 @@ agent_user_turn() {
     zcoder_debug ollama_response_raw "step=$step response=${(qqq)response}"
     if ! json_parse_ollama_response "$response"; then
       zcoder_debug response_parse_error "step=$step error=${(qqq)JSON_ERROR}"
+      if (( incomplete_retries < AGENT_INCOMPLETE_RETRY_LIMIT )); then
+        (( incomplete_retries++ ))
+        if (( AGENT_REQUIRE_FINISH_TOOL )); then
+          continuation_notice="The previous model response could not be parsed as a valid Ollama chat response. Retry the response now. If work remains, call the next work tool; otherwise call finish as the only tool with the final response."
+        else
+          continuation_notice="The previous model response could not be parsed as a valid Ollama chat response. Retry the response now. If work remains, call the next work tool; otherwise call finish or return one complete non-empty final answer."
+        fi
+        agent_add_message system "$continuation_notice"
+        agent_emit system "↻ Model returned a malformed response; retrying (${incomplete_retries}/${AGENT_INCOMPLETE_RETRY_LIMIT})."
+        zcoder_debug continuation_decision "step=$step retry=$incomplete_retries limit=$AGENT_INCOMPLETE_RETRY_LIMIT reason=malformed_model_response"
+        continue
+      fi
       agent_emit error "Could not parse Ollama response: ${JSON_ERROR:-unknown JSON error}"
       agent_set_status "Error"
       return 1
@@ -423,19 +449,42 @@ agent_user_turn() {
     zcoder_debug response_parsed "step=$step content=${(qqq)content} thinking_chars=${#thinking} tool_calls=${#call_names} prompt_tokens=$JSON_RESPONSE_PROMPT_TOKENS output_tokens=$JSON_RESPONSE_OUTPUT_TOKENS"
     agent_add_assistant_message "$content" "$thinking" "$calls_json"
 
-    if (( ${#call_names} == 0 && AGENT_REQUIRE_FINISH_TOOL && AGENT_INCOMPLETE_RETRY_LIMIT > 0 )); then
-      AGENT_CONTINUATION_REASON="response omitted both a work tool and the required finish tool"
+    needs_continuation=0
+    if (( ${#call_names} == 0 && AGENT_INCOMPLETE_RETRY_LIMIT > 0 )); then
+      if (( AGENT_REQUIRE_FINISH_TOOL )) || [[ -z "$content" ]]; then
+        needs_continuation=1
+      fi
+    fi
+    if (( needs_continuation )); then
+      if [[ -z "$content" ]]; then
+        AGENT_CONTINUATION_REASON="response was empty and omitted a tool call"
+        if (( AGENT_REQUIRE_FINISH_TOOL )); then
+          continuation_notice="Your previous response was empty. If work remains, call the next work tool now. If the task is complete or genuinely blocked, call finish as the only tool with the final response."
+        else
+          continuation_notice="Your previous response was empty. If work remains, call the next work tool now. If the task is complete or genuinely blocked, call finish as the only tool or return one complete non-empty final answer."
+        fi
+      else
+        AGENT_CONTINUATION_REASON="response omitted both a work tool and the required finish tool"
+        continuation_notice="Your previous response omitted the required turn-control tool. If work remains, call the next work tool now. If the task is complete or genuinely blocked, call finish as the only tool with the final response. Do not reply with another plain-text preamble or final answer."
+      fi
       zcoder_debug continuation_decision "step=$step retry=$(( incomplete_retries + 1 )) limit=$AGENT_INCOMPLETE_RETRY_LIMIT reason=${(qqq)AGENT_CONTINUATION_REASON} content=${(qqq)content}"
       if (( incomplete_retries < AGENT_INCOMPLETE_RETRY_LIMIT )); then
         (( incomplete_retries++ ))
-        continuation_notice="Your previous response omitted the required turn-control tool. If work remains, call the next work tool now. If the task is complete or genuinely blocked, call finish as the only tool with the final response. Do not reply with another plain-text preamble or final answer."
         agent_add_message system "$continuation_notice"
-        agent_emit system "↻ Model omitted a work/finish tool; continuing automatically (${incomplete_retries}/${AGENT_INCOMPLETE_RETRY_LIMIT})."
+        if [[ -z "$content" ]]; then
+          agent_emit system "↻ Model returned an empty response; retrying (${incomplete_retries}/${AGENT_INCOMPLETE_RETRY_LIMIT})."
+        else
+          agent_emit system "↻ Model omitted a work/finish tool; continuing automatically (${incomplete_retries}/${AGENT_INCOMPLETE_RETRY_LIMIT})."
+        fi
         continue
       fi
       [[ -n "$content" ]] && agent_emit assistant "$content" "$thinking"
       [[ -n "$content" ]] || agent_emit assistant "(The model returned an empty response.)" "$thinking"
-      agent_emit error "The model stopped before acting after ${AGENT_INCOMPLETE_RETRY_LIMIT} automatic continuation attempt(s)."
+      if [[ -z "$content" ]]; then
+        agent_emit error "The model returned an empty response after ${AGENT_INCOMPLETE_RETRY_LIMIT} recovery attempt(s)."
+      else
+        agent_emit error "The model stopped before acting after ${AGENT_INCOMPLETE_RETRY_LIMIT} automatic continuation attempt(s)."
+      fi
       zcoder_debug continuation_exhausted "step=$step retries=$incomplete_retries reason=${(qqq)AGENT_CONTINUATION_REASON}"
       agent_set_status "Incomplete"
       return 1

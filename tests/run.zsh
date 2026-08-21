@@ -63,7 +63,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..232"
+print -r -- "1..246"
 
 input_reset
 input_layout 20 4
@@ -388,6 +388,8 @@ assert_contains "$REPLY" "Do not begin by reading whole source files" "system pr
 assert_contains "$REPLY" "chunks of no more than 200 lines" "system prompt gives ranged-read budget guidance"
 assert_contains "$REPLY" "Stop inspecting once you have enough evidence" "system prompt prevents unnecessary follow-up reads"
 assert_contains "$REPLY" "do not repeat discovery with minor query variations" "system prompt prevents redundant discovery searches"
+assert_contains "$REPLY" "non-empty plain assistant response is also accepted as final" "default prompt permits compatible tool-free completion"
+assert_contains "$REPLY" "Never use a tool-free response as a preamble" "default prompt still requires tools while work remains"
 tools_schema_json
 assert_contains "$REPLY" "defaults to 100" "list_files schema advertises its conservative default"
 assert_contains "$REPLY" "defaults to 50" "search schema advertises its conservative default"
@@ -493,6 +495,57 @@ assert_contains "$prepared_payload" "checkpoint summary with exact state" "autom
 typeset -gi MOCK_INCOMPLETE_TURNS=0
 agent_ollama_chat() {
   (( MOCK_INCOMPLETE_TURNS++ ))
+  HTTP_BODY='{"message":{"content":"The requested explanation is complete."},"prompt_eval_count":100,"eval_count":8}'
+  HTTP_ERROR=""
+  return 0
+}
+ZCODER_CONTEXT_WINDOW=16384
+AGENT_CONTEXT_MODEL=""
+agent_reset
+agent_user_turn "explain the result" >/dev/null 2>&1
+incomplete_status=$?
+assert_success "adaptive completion accepts a non-empty tool-free response" "$incomplete_status"
+assert_eq "1" "$MOCK_INCOMPLETE_TURNS" "adaptive completion does not spend another model turn"
+assert_eq "The requested explanation is complete." "$AGENT_LAST_RESPONSE" "adaptive completion retains the plain response"
+
+agent_ollama_chat() {
+  (( MOCK_INCOMPLETE_TURNS++ ))
+  if (( MOCK_INCOMPLETE_TURNS == 1 )); then
+    HTTP_BODY='{"message":{"content":""},"prompt_eval_count":100,"eval_count":0}'
+  else
+    HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"complete","response":"Recovered from an empty response."}}}]},"prompt_eval_count":110,"eval_count":12}'
+  fi
+  HTTP_ERROR=""
+  return 0
+}
+MOCK_INCOMPLETE_TURNS=0
+agent_reset
+agent_user_turn "recover an empty response" >/dev/null 2>&1
+assert_success "adaptive completion retries an empty response" $?
+assert_eq "2" "$MOCK_INCOMPLETE_TURNS" "empty response recovery uses one additional model turn"
+assert_eq "Recovered from an empty response." "$AGENT_LAST_RESPONSE" "empty response recovery accepts finish"
+assert_contains "${(j:\n:)AGENT_MESSAGES}" "previous response was empty" "empty response recovery is recorded in model history"
+
+agent_ollama_chat() {
+  (( MOCK_INCOMPLETE_TURNS++ ))
+  if (( MOCK_INCOMPLETE_TURNS == 1 )); then
+    HTTP_BODY='not valid json'
+  else
+    HTTP_BODY='{"message":{"content":"Recovered from malformed output."},"prompt_eval_count":110,"eval_count":12}'
+  fi
+  HTTP_ERROR=""
+  return 0
+}
+MOCK_INCOMPLETE_TURNS=0
+agent_reset
+agent_user_turn "recover malformed output" >/dev/null 2>&1
+assert_success "adaptive completion retries a malformed model response" $?
+assert_eq "2" "$MOCK_INCOMPLETE_TURNS" "malformed response recovery uses one additional model turn"
+assert_eq "Recovered from malformed output." "$AGENT_LAST_RESPONSE" "malformed response recovery accepts the valid retry"
+assert_contains "${(j:\n:)AGENT_MESSAGES}" "could not be parsed" "malformed response recovery is recorded in model history"
+
+agent_ollama_chat() {
+  (( MOCK_INCOMPLETE_TURNS++ ))
   if (( MOCK_INCOMPLETE_TURNS == 1 )); then
     HTTP_BODY='{"message":{"content":"Merekɔyɛ nsakrae no afei."},"prompt_eval_count":100,"eval_count":8}'
   elif (( MOCK_INCOMPLETE_TURNS == 2 )); then
@@ -503,15 +556,16 @@ agent_ollama_chat() {
   HTTP_ERROR=""
   return 0
 }
-ZCODER_CONTEXT_WINDOW=16384
-AGENT_CONTEXT_MODEL=""
 AGENT_REQUIRE_FINISH_TOOL=1
+MOCK_INCOMPLETE_TURNS=0
+agent_completion_instructions
+assert_contains "$REPLY" "Turn completion is structural" "strict completion remains available as an opt-in"
 agent_reset
 agent_user_turn "make the focused change" >/dev/null 2>&1
 incomplete_status=$?
-assert_success "agent recovers when responses omit structural completion" "$incomplete_status"
-assert_eq "3" "$MOCK_INCOMPLETE_TURNS" "tool-free responses in different languages each receive a continuation"
-assert_eq "Wɔawie dwumadi no." "$AGENT_LAST_RESPONSE" "finish returns its user-facing response"
+assert_success "strict completion recovers when responses omit finish" "$incomplete_status"
+assert_eq "3" "$MOCK_INCOMPLETE_TURNS" "strict completion continues tool-free responses in any language"
+assert_eq "Wɔawie dwumadi no." "$AGENT_LAST_RESPONSE" "strict completion returns the finish response"
 assert_contains "${(j:\n:)AGENT_MESSAGES}" "call finish as the only tool" "finish protocol nudge is recorded in model history"
 assert_contains "${mapfile[$ZCODER_DEBUG_LOG]}" "continuation_decision" "debug log records continuation decisions"
 assert_contains "${mapfile[$ZCODER_DEBUG_LOG]}" "omitted both a work tool and the required finish tool" "debug log records the structural continuation reason"
@@ -523,6 +577,7 @@ agent_user_turn "leave continuation disabled" >/dev/null 2>&1
 assert_success "zero disables automatic incomplete-response continuation" $?
 assert_eq "1" "$MOCK_INCOMPLETE_TURNS" "disabled continuation accepts the first no-tool response"
 AGENT_INCOMPLETE_RETRY_LIMIT=3
+AGENT_REQUIRE_FINISH_TOOL=0
 
 agent_loop_reset
 agent_loop_record "read:a" "read:a=result"
