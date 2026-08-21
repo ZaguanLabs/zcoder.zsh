@@ -9,7 +9,7 @@ zmodload zsh/curses zsh/datetime zsh/files zsh/mapfile zsh/net/tcp \
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.3.1"
+typeset -gr ZCODER_VERSION="0.3.2"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -24,6 +24,7 @@ source "${ZCODER_DIR}/lib/ui.zsh"
 source "${ZCODER_DIR}/lib/tools.zsh"
 source "${ZCODER_DIR}/lib/compact.zsh"
 source "${ZCODER_DIR}/lib/agent.zsh"
+source "${ZCODER_DIR}/lib/delegate.zsh"
 
 typeset -g ONE_SHOT_PROMPT=""
 typeset -gi RUNNING=1
@@ -36,11 +37,12 @@ usage() {
   print -r -- "  -m, --model NAME       Ollama model (default: ${ZCODER_MODEL})"
   print -r -- "  -h, --host HOST        Ollama host (default: ${OLLAMA_HOST})"
   print -r -- "  -w, --workspace PATH   Directory the agent may access (default: current)"
+  print -r -- "      --profile NAME     System prompt profile: coding or sysadmin (default: ${ZCODER_PROFILE})"
   print -r -- "  -p, --prompt TEXT      Run one prompt without the full-screen UI"
   print -r -- "      --max-turns COUNT  Emergency model-turn limit (default: ${AGENT_MAX_STEPS})"
   print -r -- "      --context-window N Context tokens to request, or auto (default: ${ZCODER_CONTEXT_WINDOW})"
   print -r -- "      --compact-at PCT   Compact at this context percentage (default: ${ZCODER_COMPACT_PERCENT})"
-  print -r -- "      --yes              Allow shell commands for this process"
+  print -r -- "      --yes              Allow shell commands (coding profile only)"
   print -r -- "      --deny-commands    Deny shell commands without prompting"
   print -r -- "      --no-think         Ask Ollama not to return model reasoning"
   print -r -- "      --debug            Append diagnostics to /tmp/zcoder-debug-${UID}.log"
@@ -66,6 +68,11 @@ while (( $# > 0 )); do
       require_option_value "$1" "${2:-}"
       [[ -d "$2" ]] || { print -u2 -- "Error: workspace is not a directory: $2"; exit 2; }
       ZCODER_WORKSPACE="${2:A}"; shift
+      ;;
+    --profile)
+      require_option_value "$1" "${2:-}"
+      if ! agent_select_profile "$2"; then print -u2 -- "Error: $REPLY"; exit 2; fi
+      shift
       ;;
     -p|--prompt) require_option_value "$1" "${2:-}"; ONE_SHOT_PROMPT="$2"; shift ;;
     --max-turns)
@@ -100,12 +107,21 @@ while (( $# > 0 )); do
   shift
 done
 
+if ! agent_select_profile "$ZCODER_PROFILE"; then
+  print -u2 -- "Error: $REPLY"
+  exit 2
+fi
+if [[ "$ZCODER_PROFILE" == sysadmin && "$ZCODER_COMMAND_POLICY" == allow ]]; then
+  print -u2 -- "Error: --yes and ZCODER_COMMAND_POLICY=allow are disabled by the sysadmin profile"
+  exit 2
+fi
+
 ZCODER_WORKSPACE="${ZCODER_WORKSPACE:A}"
 if [[ -n "$ZCODER_DEBUG_LOG" ]]; then
   if ! zcoder_debug_init; then
     print -u2 -- "Warning: could not open debug log: $ZCODER_DEBUG_LOG"
   else
-    zcoder_debug session "version=$ZCODER_VERSION model=${(qqq)ZCODER_MODEL} host=${(qqq)OLLAMA_HOST} workspace=${(qqq)ZCODER_WORKSPACE}"
+    zcoder_debug session "version=$ZCODER_VERSION profile=$ZCODER_PROFILE model=${(qqq)ZCODER_MODEL} host=${(qqq)OLLAMA_HOST} workspace=${(qqq)ZCODER_WORKSPACE}"
   fi
 fi
 instructions_load "$ZCODER_WORKSPACE"
@@ -129,15 +145,17 @@ OLLAMA_HOST="$REPLY"
 
 cleanup() {
   local exit_status=$?
-  zcoder_debug session_end "status=$exit_status running=$RUNNING async_pid=${HTTP_ASYNC_PID:-none}"
+  zcoder_debug session_end "status=$exit_status running=$RUNNING async_pid=${HTTP_ASYNC_PID:-none} delegate_pid=${DELEGATE_PID:-none}"
   RUNNING=0
+  delegate_async_cancel
   http_async_cancel
   ui_end
 }
 trap cleanup EXIT INT TERM HUP
 
 handle_slash_command() {
-  local text="$1" value=""
+  local text="$1" value="" provider=""
+  local -i delegate_status=0
   case "$text" in
     /new|/clear)
       agent_reset
@@ -184,8 +202,45 @@ handle_slash_command() {
       agent_context_summary
       ui_append_message system "$REPLY"
       ;;
+    /claude|/codex|/agy)
+      provider="${text#/}"
+      ui_append_message error "/${provider} requires a request"
+      ;;
+    /claude\ *|/codex\ *|/agy\ *)
+      provider="${text%% *}"; provider="${provider#/}"
+      value="${text#/${provider} }"
+      delegate_run "$provider" "$value" || delegate_status=$?
+      if (( delegate_status != 0 && delegate_status != 130 && ! DELEGATE_ERROR_REPORTED )); then
+        ui_append_message error "${DELEGATE_ERROR:-${provider} consultation failed}"
+      fi
+      ;;
+    /opencode)
+      ui_select_opencode_model
+      ;;
+    /opencode\ *)
+      value="${text#/opencode }"
+      if [[ -z "$ZCODER_OPENCODE_MODEL" ]]; then
+        ui_select_opencode_model || { ui_refresh_all; return 0; }
+      fi
+      delegate_run opencode "$value" || delegate_status=$?
+      if (( delegate_status != 0 && delegate_status != 130 && ! DELEGATE_ERROR_REPORTED )); then
+        ui_append_message error "${DELEGATE_ERROR:-OpenCode consultation failed}"
+      fi
+      ;;
+    /opencode-model)
+      ui_select_opencode_model
+      ;;
+    /opencode-model\ *)
+      value="${text#/opencode-model }"; value="${value##[[:space:]]#}"
+      if [[ "$value" == */* ]]; then
+        ZCODER_OPENCODE_MODEL="$value"
+        ui_append_message system "OpenCode model changed to $ZCODER_OPENCODE_MODEL"
+      else
+        ui_append_message error "OpenCode models use provider/model form"
+      fi
+      ;;
     /help|/\?)
-      ui_append_message system $'Enter sends a prompt. Shift+Enter inserts a newline; Alt+Enter is the fallback for terminals that do not report Shift+Enter separately. Pasted multiline text keeps its formatting. Escape stops the running Ollama response.\nCtrl+O selects an Ollama model. Ctrl+R toggles reasoning. Ctrl+N clears the conversation. PgUp/PgDn scroll. Ctrl+U clears input. Ctrl+W deletes a word. Ctrl+Q exits.\n/model opens the picker; /model NAME changes directly; /host HOST changes Ollama; /instructions lists active AGENTS.md files; /compact creates a context checkpoint; /context shows the token budget; /new starts over.'
+      ui_append_message system $'Enter sends a prompt. Shift+Enter inserts a newline; Alt+Enter is the fallback for terminals that do not report Shift+Enter separately. Pasted multiline text keeps its formatting. Escape stops a running Ollama response or external consultation.\nCtrl+O selects an Ollama model. Ctrl+R toggles reasoning. Ctrl+N clears the conversation. PgUp/PgDn scroll. Ctrl+U clears input. Ctrl+W deletes a word. Ctrl+Q exits.\n/claude REQUEST, /codex REQUEST, /agy REQUEST, and /opencode REQUEST run read-only external consultations. /opencode with no request selects its provider/model. /model opens the Ollama picker; /host HOST changes Ollama; /instructions lists active AGENTS.md files; /compact creates a context checkpoint; /context shows the token budget; /new starts over.'
       ;;
     /quit|/exit|/q) RUNNING=0 ;;
     *) return 1 ;;

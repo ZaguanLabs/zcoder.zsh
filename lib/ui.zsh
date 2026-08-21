@@ -146,6 +146,7 @@ ui_draw_sidebar() {
   (( UI_ACTIVE && SIDE_W > 0 )) || return 0
   local -i defer_refresh="${1:-0}"
   local root="${ZCODER_WORKSPACE:t}" policy="$ZCODER_COMMAND_POLICY"
+  [[ "$ZCODER_PROFILE" == sysadmin ]] && policy="per-command"
   zcurses clear side_win
   zcurses attr side_win dim white/black
   zcurses border side_win
@@ -154,7 +155,7 @@ ui_draw_sidebar() {
   zcurses string side_win " Agent Workspace "
   zcurses move side_win 2 2; zcurses attr side_win bold white/black; zcurses string side_win "Project"
   zcurses move side_win 3 2; zcurses attr side_win green/black; zcurses string side_win "${root[1,20]}"
-  zcurses move side_win 4 2; zcurses attr side_win dim cyan/black; zcurses string side_win "Instructions: ${#INSTRUCTION_SOURCES}"
+  zcurses move side_win 4 2; zcurses attr side_win dim cyan/black; zcurses string side_win "${ZCODER_PROFILE} · Guides: ${#INSTRUCTION_SOURCES}"
   zcurses move side_win 5 2; zcurses attr side_win bold white/black; zcurses string side_win "Available tools"
   local -a names=(list_files read_file read_file_range write_file apply_patch search run_command finish)
   local -i row=6 i
@@ -460,6 +461,10 @@ ui_render_messages() {
       user) title="🧑 You  ${time}"; attr="green/black" ;;
       assistant) title="🤖 Assistant (${ZCODER_MODEL})  ${time}"; attr="white/black" ;;
       tool) title="⚙ Tool activity  ${time}"; attr="white/black" ;;
+      claude) title="◇ Claude consultant  ${time}"; attr="cyan/black" ;;
+      codex) title="◇ Codex consultant  ${time}"; attr="cyan/black" ;;
+      agy) title="◇ Antigravity consultant  ${time}"; attr="cyan/black" ;;
+      opencode) title="◇ OpenCode consultant  ${time}"; attr="cyan/black" ;;
       error) title="⚠ Error  ${time}"; attr="red/black" ;;
       *) title="ℹ ${role}  ${time}"; attr="magenta/black" ;;
     esac
@@ -636,6 +641,31 @@ ui_wait_for_generation() {
   return 0
 }
 
+ui_wait_for_delegate() {
+  local ch="" key="" mouse=""
+  while ! delegate_async_ready; do
+    delegate_async_timed_out && return 124
+    ui_poll_resize
+    ch=""; key=""; mouse=""
+    zcurses timeout input_win 50
+    zcurses input input_win ch key mouse
+    if [[ "$key" == RESIZE ]]; then
+      UI_RESIZE_PENDING=1
+      ui_poll_resize
+    elif [[ "$ch" == $'\x1b' ]]; then
+      return 130
+    elif [[ "$key" == PPAGE ]]; then
+      UI_AUTO_SCROLL=0
+      (( UI_SCROLL -= 6 )); (( UI_SCROLL < 0 )) && UI_SCROLL=0
+      ui_draw_chat
+    elif [[ "$key" == NPAGE ]]; then
+      (( UI_SCROLL += 6 ))
+      ui_draw_chat
+    fi
+  done
+  return 0
+}
+
 ui_toggle_reasoning() {
   local -i i
   for (( i=${#UI_ROLES}; i>=1; i-- )); do
@@ -752,14 +782,116 @@ ui_select_model() {
   return 0
 }
 
+ui_select_opencode_model() {
+  local previous_status="$UI_STATUS" fetch_error=""
+  local -a models=()
+  local -i accepted=0
+  ui_set_status "Loading OpenCode models"
+  ui_draw_header
+  if delegate_discover_opencode_models; then
+    models=("${DELEGATE_MODELS[@]}")
+  else
+    fetch_error="${DELEGATE_ERROR:-could not load models}"
+  fi
+
+  if (( ${#models} == 0 )); then
+    ui_set_status "Error"
+    ui_append_message error "Could not load OpenCode models: ${fetch_error}"
+    ui_refresh_all
+    return 1
+  fi
+
+  local -i total=${#models} selected=1 i
+  for (( i=1; i<=total; i++ )); do
+    [[ "${models[i]}" == "$ZCODER_OPENCODE_MODEL" ]] && { selected=$i; break; }
+  done
+
+  local -i modal_h=18 modal_w=72
+  (( modal_h > SCREEN_H - 4 )) && modal_h=$(( SCREEN_H - 4 ))
+  (( modal_w > SCREEN_W - 4 )) && modal_w=$(( SCREEN_W - 4 ))
+  local -i modal_y=$(( (SCREEN_H - modal_h) / 2 )) modal_x=$(( (SCREEN_W - modal_w) / 2 ))
+  local -i max_visible=$(( modal_h - 4 )) scroll_top=1 row
+  (( max_visible < 1 )) && max_visible=1
+  zcurses addwin opencode_model_win $modal_h $modal_w $modal_y $modal_x 2>/dev/null || {
+    ui_set_status "$previous_status"
+    return 1
+  }
+
+  local ch="" key="" mouse="" model="" display="" padded=""
+  while true; do
+    _ui_modal_frame opencode_model_win "Select OpenCode Model (↑/↓, Enter, Esc)" "cyan/black"
+    if (( selected < scroll_top )); then
+      scroll_top=$selected
+    elif (( selected >= scroll_top + max_visible )); then
+      scroll_top=$(( selected - max_visible + 1 ))
+    fi
+
+    row=2
+    for (( i=scroll_top; i<=total && i<scroll_top+max_visible; i++ )); do
+      model="${models[i]}"
+      display="  $model"
+      [[ "$model" == "$ZCODER_OPENCODE_MODEL" ]] && display="★ $model"
+      display="${display[1,$(( modal_w - 4 ))]}"
+      zcoder_pad "$display" $(( modal_w - 4 )); padded="$REPLY"
+      zcurses move opencode_model_win $row 2
+      if (( i == selected )); then
+        zcurses attr opencode_model_win reverse bold cyan/black
+        zcurses string opencode_model_win "$padded"
+        zcurses attr opencode_model_win -reverse default/default
+      else
+        zcurses attr opencode_model_win white/black
+        zcurses string opencode_model_win "$padded"
+      fi
+      (( row++ ))
+    done
+
+    zcurses move opencode_model_win $(( modal_h - 2 )) 2
+    zcurses attr opencode_model_win dim white/black
+    display="Model ${selected}/${total}"
+    zcurses string opencode_model_win "${display[1,$(( modal_w - 4 ))]}"
+    zcurses refresh opencode_model_win
+
+    ch=""; key=""; mouse=""
+    zcurses timeout opencode_model_win -1
+    zcurses input opencode_model_win ch key mouse
+    if [[ "$key" == UP || "$ch" == k ]]; then
+      (( selected > 1 )) && (( selected-- ))
+    elif [[ "$key" == DOWN || "$ch" == j ]]; then
+      (( selected < total )) && (( selected++ ))
+    elif [[ "$key" == PPAGE ]]; then
+      (( selected -= max_visible )); (( selected < 1 )) && selected=1
+    elif [[ "$key" == NPAGE ]]; then
+      (( selected += max_visible )); (( selected > total )) && selected=$total
+    elif [[ "$ch" == $'\n' || "$ch" == $'\r' || "$key" == ENTER || "$key" == PADENTER ]]; then
+      ZCODER_OPENCODE_MODEL="${models[selected]}"
+      accepted=1
+      ui_set_status "Ready"
+      break
+    elif [[ "$ch" == $'\x1b' || "$ch" == q || "$ch" == $'\x03' ]]; then
+      ui_set_status "$previous_status"
+      break
+    fi
+  done
+
+  zcurses delwin opencode_model_win 2>/dev/null
+  ui_refresh_all
+  (( accepted ))
+}
+
 ui_confirm_command() {
   local command_text="$1" ch="" key="" mouse="" answer="n" line=""
   local -a wrapped=()
+  local -i per_command=0
+  [[ "$ZCODER_PROFILE" == sysadmin ]] && per_command=1
   if (( ! UI_ACTIVE )); then
     if [[ -r /dev/tty && -w /dev/tty ]]; then
       print -r -- $'\n'"Command approval requested:" > /dev/tty
       print -r -- "  $command_text" > /dev/tty
-      print -rn -- "Allow? [y] once / [a] session / [N] deny: " > /dev/tty
+      if (( per_command )); then
+        print -rn -- "Allow this exact command once? [y/N]: " > /dev/tty
+      else
+        print -rn -- "Allow? [y] once / [a] session / [N] deny: " > /dev/tty
+      fi
       read -r answer < /dev/tty
     fi
     REPLY="$answer"
@@ -772,7 +904,8 @@ ui_confirm_command() {
   y=$(( (SCREEN_H - h) / 2 )); x=$(( (SCREEN_W - w) / 2 ))
   zcurses addwin approval_win $h $w $y $x 2>/dev/null || { REPLY="n"; return 1; }
   zcurses clear approval_win; zcurses attr approval_win bold yellow/black; zcurses border approval_win
-  zcurses move approval_win 0 2; zcurses attr approval_win bold white/black; zcurses string approval_win " Shell command approval "
+  zcurses move approval_win 0 2; zcurses attr approval_win bold white/black
+  (( per_command )) && zcurses string approval_win " Sysadmin command approval " || zcurses string approval_win " Shell command approval "
   zcurses move approval_win 2 2; zcurses attr approval_win dim white/black; zcurses string approval_win "The model wants to run:"
   zcoder_wrap "$command_text" $(( w - 6 )); wrapped=("${ZCODER_WRAPPED[@]}")
   for line in "${wrapped[@]}"; do
@@ -781,7 +914,11 @@ ui_confirm_command() {
     (( row++ ))
   done
   zcurses move approval_win $(( h - 2 )) 2; zcurses attr approval_win bold white/black
-  zcurses string approval_win "[y] Allow once   [a] Allow session   [n/Esc] Deny"
+  if (( per_command )); then
+    zcurses string approval_win "[y] Allow this exact command once   [n/Esc] Deny"
+  else
+    zcurses string approval_win "[y] Allow once   [a] Allow session   [n/Esc] Deny"
+  fi
   zcurses refresh approval_win
   while true; do
     ch=""; key=""; mouse=""
@@ -789,7 +926,7 @@ ui_confirm_command() {
     zcurses input approval_win ch key mouse
     case "${(L)ch}" in
       y) answer="y"; break ;;
-      a) answer="a"; break ;;
+      a) (( per_command )) || { answer="a"; break; } ;;
       n|q|$'\x1b'|$'\x03') answer="n"; break ;;
     esac
   done

@@ -18,6 +18,8 @@ Requirements:
 
 GNU `timeout` is optional. Without it, `run_command` still works, but command time limits are not enforced. `make` and `mktemp` are needed only for development and running the test suite. Commands such as `grep`, `sed`, and `awk` may be requested by the model through the approval-gated `run_command` tool, but zcoder itself does not depend on them.
 
+Claude Code, Codex, Google Antigravity, and OpenCode are optional. When their CLIs are installed, zcoder can invoke them as read-only consultants through slash commands; they are not required for the Ollama agent.
+
 Start Ollama, pull a coding model, then run:
 
 ```sh
@@ -35,6 +37,23 @@ One-shot mode is useful for scripts and smoke tests:
 ```
 
 One-shot mode still asks on `/dev/tty` before running commands. `--yes` explicitly allows commands for that process; `--deny-commands` refuses them.
+
+## Prompt profiles
+
+The default `coding` profile is the project-oriented coding agent described below. Select the separate system-maintenance profile with:
+
+```sh
+./zcoder.zsh --profile sysadmin --model qwen3-coder \
+  --workspace /path/to/maintenance-workspace
+```
+
+The sysadmin prompt starts with read-only diagnosis, least privilege, one reviewable change at a time, rollback planning, configuration validation, secret redaction, and explicit rules for disruptive subsystems such as storage, networking, SSH, boot, authentication, and critical services. The normal hierarchical `AGENTS.md` chain is still appended, so the maintenance workspace can supply machine-specific procedures. Those instructions may make policy stricter but cannot relax the profile's safety and approval rules.
+
+Workspace file tools remain confined to the selected maintenance workspace. Host inspection and changes must use `run_command`. In the sysadmin profile every exact command requires separate approval: session-wide approval is unavailable, `--yes` and `ZCODER_COMMAND_POLICY=allow` are rejected, and the confirmation dialog has no “allow session” choice.
+
+An additional pre-execution guard rejects unmistakably catastrophic literal commands such as broad root/home/workspace deletion, filesystem formatting, raw block-device writes, device shredding, and storage-pool or logical-volume destruction. It also inspects commands nested in common `sh -c` forms. This guard is intentionally conservative rather than a complete shell security parser; always inspect the exact approval request, especially when variables, scripts, interpreters, or privileged utilities are involved.
+
+Set `ZCODER_PROFILE=sysadmin` to make the profile the environment default. `--profile coding` selects the original coding prompt explicitly. The existing `-p, --prompt TEXT` option remains the one-shot user request and is independent of the profile.
 
 Agent runs have a configurable emergency ceiling of 100 model turns. Override it with `--max-turns COUNT` or `ZCODER_MAX_TURNS`; this is a final safety fuse, not the primary loop detector.
 
@@ -116,7 +135,7 @@ Keyboard shortcuts:
 | --- | --- |
 | Enter | Send prompt |
 | Shift+Enter | Insert a newline; Alt+Enter is the fallback when the terminal cannot distinguish Shift+Enter |
-| Escape | Stop the running Ollama response |
+| Escape | Stop the running Ollama response or external consultation |
 | Ctrl+O | Open the Ollama model picker |
 | Ctrl+R | Toggle the latest reasoning block |
 | Ctrl+N | Start a new conversation |
@@ -128,6 +147,23 @@ Keyboard shortcuts:
 
 Slash commands: `/model` opens the picker; `/model NAME`, `/host HOST`, `/instructions`, `/compact`, `/context`, `/new`, `/help`, and `/quit` are also available.
 
+## External consultants
+
+The optional delegate commands ask another installed coding harness for a second opinion without handing its edits back to zcoder:
+
+```text
+/claude Review the authentication change for edge cases
+/codex Find the likely cause of this failing test
+/agy Suggest the smallest safe refactor
+/opencode Compare these two implementation approaches
+```
+
+Claude uses `claude-opus-5` at medium effort with only its read, glob, and grep tools. Codex uses `gpt-5.6-sol` at medium reasoning in its read-only sandbox. Antigravity uses `gemini-3.7-flash-medium` at medium effort in plan+sandbox mode. OpenCode uses its plan agent and a selected `provider/model`; run `/opencode` without a request to open the picker, or set one directly with `/opencode-model PROVIDER/MODEL`.
+
+The defaults can be changed with `ZCODER_CLAUDE_MODEL`, `ZCODER_CODEX_MODEL`, `ZCODER_AGY_MODEL`, and `ZCODER_OPENCODE_MODEL`. `ZCODER_OPENCODE_VARIANT` passes an optional OpenCode model variant. Consultations time out after 1,800 seconds by default (`ZCODER_DELEGATE_TIMEOUT_SECONDS`). Escape cancels the running CLI and its result is not retained.
+
+Successful CLI output is decoded from JSON or JSONL, displayed as a consultant response, and retained with its request as explicitly untrusted reference material for later Ollama turns. The visible result defaults to at most 32,768 characters; the copy retained in model context defaults to 12,000, with the original request capped separately at 2,000. Configure these with `ZCODER_DELEGATE_MAX_OUTPUT`, `ZCODER_DELEGATE_HISTORY_CHARS`, and `ZCODER_DELEGATE_REQUEST_CHARS`. A delegated harness is never invoked through `run_command`, never inherits zcoder's command-approval override, and this first implementation has no worker/edit mode.
+
 ## Architecture
 
 ```text
@@ -135,6 +171,7 @@ zcoder.zsh              CLI and curses event loop
 lib/
   agent.zsh             Ollama messages and iterative tool loop
   compact.zsh           token accounting and conversation checkpoints
+  delegate.zsh          read-only external harness consultations
   instructions.zsh      AGENTS.md discovery, precedence, and prompt assembly
   http.zsh              native TCP/HTTP Ollama client
   json.zsh              native tokenizer, decoder, and encoder

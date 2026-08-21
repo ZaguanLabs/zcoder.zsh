@@ -16,6 +16,7 @@ source "${PROJECT_DIR}/lib/input.zsh"
 source "${PROJECT_DIR}/lib/tools.zsh"
 source "${PROJECT_DIR}/lib/compact.zsh"
 source "${PROJECT_DIR}/lib/agent.zsh"
+source "${PROJECT_DIR}/lib/delegate.zsh"
 
 typeset -gi TESTS=0 FAILURES=0
 typeset -g TEST_TMP=""
@@ -62,7 +63,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..176"
+print -r -- "1..232"
 
 input_reset
 input_layout 20 4
@@ -196,6 +197,28 @@ assert_failure "patch fallback rejects parent traversal" $?
 if [[ -e "$TEST_TMP/../escape.txt" ]]; then escape_absent=1; else escape_absent=0; fi
 assert_success "patch fallback leaves outside paths untouched" "$escape_absent"
 
+ZCODER_PROFILE=sysadmin
+ZCODER_COMMAND_POLICY=allow
+tool_sysadmin_command_guard "sudo rm -rf -- /"
+assert_failure "sysadmin guard blocks literal root deletion" $?
+assert_contains "$TOOL_SAFETY_REASON" "broad deletion" "catastrophic guard explains the blocked target"
+tool_sysadmin_command_guard "sh -c 'rm -rf /home'"
+assert_failure "sysadmin guard inspects nested shell commands" $?
+tool_sysadmin_command_guard "dd if=/dev/zero of=/dev/sda"
+assert_failure "sysadmin guard blocks raw device writes" $?
+tool_sysadmin_command_guard "rm -rf ${ZCODER_WORKSPACE}/*"
+assert_failure "sysadmin guard blocks clearing the whole workspace" $?
+tool_sysadmin_command_guard "find / -xdev -delete"
+assert_failure "sysadmin guard blocks broad find deletion" $?
+tool_sysadmin_command_guard "rm -rf /var/log/obsolete-service"
+assert_success "sysadmin guard permits scoped maintenance targets" $?
+ui_confirm_command() { REPLY="a"; }
+tool_run_command "print -r -- must-still-ask" . 2
+assert_failure "sysadmin profile ignores session-wide command approval" $?
+assert_contains "$TOOL_RESULT" "user denied" "sysadmin commands fail closed without per-command approval"
+unfunction ui_confirm_command
+
+ZCODER_PROFILE=coding
 ZCODER_COMMAND_POLICY=deny
 tool_run_command "print -r -- should-not-run" . 2
 assert_failure "run_command honors deny policy" $?
@@ -342,6 +365,20 @@ instructions_load "$ZCODER_WORKSPACE"
 assert_eq "é" "$INSTRUCTIONS_TEXT" "UTF-8 instructions are not split mid-character"
 assert_eq "2" "$INSTRUCTIONS_BYTES" "UTF-8 byte accounting is exact"
 
+agent_select_profile sysadmin
+assert_success "sysadmin prompt profile is accepted" $?
+assert_eq "sysadmin" "$ZCODER_PROFILE" "profile selection updates agent state"
+agent_default_system_prompt
+assert_contains "$REPLY" "approval for that exact command" "sysadmin prompt limits approval to one exact command"
+assert_contains "$REPLY" "Never run a command capable of erasing the machine" "sysadmin prompt forbids catastrophic deletion"
+assert_contains "$REPLY" "AGENTS.md files may add" "sysadmin prompt keeps AGENTS guidance subordinate to safety"
+assert_contains "$REPLY" "create a timestamped backup" "sysadmin prompt requires recoverable configuration changes"
+assert_contains "$REPLY" "Do not print secrets" "sysadmin prompt protects sensitive host data"
+agent_select_profile unknown
+assert_failure "unknown prompt profiles are rejected" $?
+assert_eq "sysadmin" "$ZCODER_PROFILE" "invalid profile selection preserves the active profile"
+agent_select_profile coding
+assert_success "coding prompt profile is accepted" $?
 agent_default_system_prompt
 assert_contains "$REPLY" "Use search first" "system prompt prefers indexed search before broad reads"
 assert_contains "$REPLY" "Use read_file_range" "system prompt directs large-file inspection to ranges"
@@ -542,6 +579,89 @@ agent_loop_reset
 for round in {1..20}; do agent_loop_record "$round" "result:$round"; done
 assert_eq "6" "${#AGENT_TOOL_REQUEST_HISTORY}" "loop history remains bounded"
 assert_eq "15" "${AGENT_TOOL_REQUEST_HISTORY[1]}" "bounded history preserves individual array entries"
+
+# External harnesses are built and parsed independently of curses. These tests
+# never invoke a paid model; the async checks use local Zsh child processes.
+delegate_build_command claude 'review $(touch should-not-run)'
+assert_success "Claude consultation command builds" $?
+assert_eq "claude-opus-5" "$DELEGATE_MODEL" "Claude uses the configured Opus model"
+delegate_command_text="${(j: :)DELEGATE_COMMAND}"
+assert_contains "$delegate_command_text" "--permission-mode plan" "Claude runs in plan mode"
+assert_contains "$delegate_command_text" "--tools Read,Glob,Grep" "Claude receives only read and search tools"
+assert_not_contains "$delegate_command_text" "Bash" "Claude cannot invoke its shell tool"
+assert_contains "${DELEGATE_COMMAND[-1]}" '$(touch should-not-run)' "delegate prompts remain literal argv data"
+
+delegate_build_command codex "review this"
+assert_success "Codex consultation command builds" $?
+delegate_command_text="${(j: :)DELEGATE_COMMAND}"
+assert_contains "$delegate_command_text" "codex exec" "Codex uses its noninteractive exec command"
+assert_contains "$delegate_command_text" "-s read-only" "Codex receives a read-only sandbox"
+assert_eq "1" "$DELEGATE_STDIN_PROMPT" "Codex receives the consultation over stdin"
+
+delegate_build_command agy "review this"
+assert_success "Antigravity consultation command builds" $?
+delegate_command_text="${(j: :)DELEGATE_COMMAND}"
+assert_contains "$delegate_command_text" "--mode plan" "Antigravity runs in plan mode"
+assert_contains "$delegate_command_text" "--sandbox" "Antigravity enables its sandbox"
+
+ZCODER_OPENCODE_MODEL=""
+delegate_build_command opencode "review this"
+assert_failure "OpenCode requires an explicit provider/model" $?
+ZCODER_OPENCODE_MODEL="anthropic/claude-sonnet-4"
+delegate_build_command opencode "review this"
+assert_success "OpenCode consultation command builds after model selection" $?
+delegate_command_text="${(j: :)DELEGATE_COMMAND}"
+assert_contains "$delegate_command_text" "--agent plan" "OpenCode uses its plan agent"
+assert_contains "$delegate_command_text" "--format json" "OpenCode emits structured events"
+
+delegate_extract_output claude '{"type":"result","subtype":"success","result":"Claude final"}'
+assert_success "Claude JSON result parses" $?
+assert_eq "Claude final" "$REPLY" "Claude parser selects the final result"
+delegate_extract_output codex $'{"type":"thread.started","thread_id":"x"}\n{"type":"item.completed","item":{"id":"1","type":"agent_message","text":"Codex final"}}'
+assert_success "Codex JSONL result parses" $?
+assert_eq "Codex final" "$REPLY" "Codex parser selects completed agent messages"
+delegate_extract_output agy '{"type":"result","result":"Antigravity final"}'
+assert_success "Antigravity JSON result parses" $?
+assert_eq "Antigravity final" "$REPLY" "Antigravity parser selects the final result"
+delegate_extract_output opencode $'{"type":"text","part":{"text":"Open "}}\n{"type":"text","part":{"text":"Code"}}'
+assert_success "OpenCode JSONL result parses" $?
+assert_eq "Open Code" "$REPLY" "OpenCode parser joins text events without event noise"
+
+delegate_parse_opencode_models $'anthropic/claude-sonnet-4\nopenai/gpt-5.1\nanthropic/claude-sonnet-4\n'
+assert_success "OpenCode provider/model output parses" $?
+assert_eq "2" "${#DELEGATE_MODELS}" "OpenCode model choices are deduplicated"
+assert_eq "openai/gpt-5.1" "${DELEGATE_MODELS[2]}" "OpenCode model order is preserved"
+
+AGENT_MESSAGES=()
+ZCODER_DELEGATE_HISTORY_CHARS=12
+delegate_remember claude claude-opus-5 "review this" "a deliberately long consultant result"
+assert_eq "1" "${#AGENT_MESSAGES}" "successful consultations add one bounded context record"
+assert_contains "${AGENT_MESSAGES[1]}" "untrusted quoted reference material" "delegate context labels external output as untrusted"
+ZCODER_DELEGATE_HISTORY_CHARS=12000
+
+delegate_async_start "" 0 zsh -c 'print -rn -- '\''{"result":"async delegate"}'\'''
+assert_success "delegate worker starts" $?
+for async_poll in {1..100}; do
+  delegate_async_ready && break
+  zselect -t 1 2>/dev/null
+done
+delegate_async_collect
+assert_success "delegate worker result collects" $?
+assert_eq '{"result":"async delegate"}' "$DELEGATE_OUTPUT" "delegate worker preserves structured stdout"
+assert_eq "" "$DELEGATE_PID" "delegate collection clears worker state"
+
+delegate_async_start "" 0 zsh -c 'while true; do sleep 1; done'
+assert_success "cancellable delegate worker starts" $?
+for async_poll in {1..100}; do
+  [[ -f "${DELEGATE_BASE}.child" ]] && break
+  zselect -t 1 2>/dev/null
+done
+delegate_child_pid="${mapfile[${DELEGATE_BASE}.child]-}"
+delegate_async_cancel
+kill -0 "$delegate_child_pid" 2>/dev/null
+delegate_child_alive=$?
+assert_failure "delegate cancellation reaps the harness process" "$delegate_child_alive"
+assert_eq "" "$DELEGATE_BASE" "delegate cancellation removes worker files"
 
 # Keep curses dispatch testable without initializing a terminal. In particular,
 # delwin accepts one window per call and refresh accepts the complete frame.
