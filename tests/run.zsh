@@ -62,7 +62,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..167"
+print -r -- "1..176"
 
 input_reset
 input_layout 20 4
@@ -546,11 +546,58 @@ assert_eq "15" "${AGENT_TOOL_REQUEST_HISTORY[1]}" "bounded history preserves ind
 # Keep curses dispatch testable without initializing a terminal. In particular,
 # delwin accepts one window per call and refresh accepts the complete frame.
 source "${PROJECT_DIR}/lib/ui.zsh"
+
+UI_ROLES=(tool)
+UI_CONTENTS=($'Apply Patch\n--- a/example.ts\n+++ b/example.ts\n@@ -1 +1 @@\n-old\n+new\n✓ Patch applied')
+UI_THINKINGS=(""); UI_TIMES=("12:00"); UI_REASONING_OPEN=(0)
+ui_render_messages 80
+diff_add_attr=""; diff_remove_attr=""; diff_hunk_attr=""
+for (( render_index=1; render_index<=${#UI_LINES}; render_index++ )); do
+  [[ "${UI_LINES[render_index]}" == *'+new'* ]] && diff_add_attr="${UI_ATTRS[render_index]}"
+  [[ "${UI_LINES[render_index]}" == *'-old'* ]] && diff_remove_attr="${UI_ATTRS[render_index]}"
+  [[ "${UI_LINES[render_index]}" == *'@@ -1 +1 @@'* ]] && diff_hunk_attr="${UI_ATTRS[render_index]}"
+done
+assert_eq "green/black" "$diff_add_attr" "diff preview colors added lines green"
+assert_eq "red/black" "$diff_remove_attr" "diff preview colors removed lines red"
+assert_eq "bold magenta/black" "$diff_hunk_attr" "diff preview emphasizes hunk headers"
+
+UI_CONTENTS=($'Write File(src/example.ts)\nconst message = "hello";\n// rendered comment\n✓ Wrote src/example.ts')
+ui_render_messages 80
+syntax_pairs=""
+for (( render_index=1; render_index<=${#UI_SEGMENT_TEXTS}; render_index++ )); do
+  syntax_pairs+="${UI_SEGMENT_TEXTS[render_index]}:${UI_SEGMENT_ATTRS[render_index]}"$'\n'
+done
+assert_contains "$syntax_pairs" "const:bold magenta/black" "code preview highlights language keywords"
+assert_contains "$syntax_pairs" '"hello":yellow/black' "code preview highlights strings"
+assert_contains "$syntax_pairs" "// rendered comment:dim green/black" "code preview highlights comments"
+
+UI_CONTENTS=("Read(src/example.ts)")
+ui_render_messages 80
+read_summary_attr=""
+for (( render_index=1; render_index<=${#UI_LINES}; render_index++ )); do
+  [[ "${UI_LINES[render_index]}" == *'Read(src/example.ts)'* ]] && read_summary_attr="${UI_ATTRS[render_index]}"
+done
+assert_eq "white/black" "$read_summary_attr" "ordinary tool output no longer uses yellow body text"
+
 typeset -ga MOCK_ZCURSES_CALLS=()
 zcurses() {
   MOCK_ZCURSES_CALLS+=("${(j: :)@}")
   return 0
 }
+
+UI_ACTIVE=1
+SCREEN_H=30; SCREEN_W=100; SIDE_W=0; TOP_H=3; INPUT_H=3; FOOT_H=1
+UI_SCROLL=0; UI_AUTO_SCROLL=1
+UI_ROLES=(tool)
+UI_CONTENTS=($'Write File(src/example.ts)\nconst message = "hello";\n✓ Wrote src/example.ts')
+UI_THINKINGS=(""); UI_TIMES=("12:00"); UI_REASONING_OPEN=(0)
+MOCK_ZCURSES_CALLS=()
+ui_draw_chat
+render_calls="${(j:\n:)MOCK_ZCURSES_CALLS}"
+assert_contains "$render_calls" "attr chat_win bold magenta/black" "curses renderer applies keyword attributes"
+assert_contains "$render_calls" 'string chat_win "hello"' "curses renderer writes highlighted string segments"
+
+MOCK_ZCURSES_CALLS=()
 ui_destroy_windows
 assert_eq "5" "${#MOCK_ZCURSES_CALLS}" "UI destroys each curses window separately"
 assert_eq "delwin top_win" "${MOCK_ZCURSES_CALLS[1]}" "UI passes one name to each delwin call"

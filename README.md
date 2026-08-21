@@ -106,6 +106,7 @@ The adaptive curses layout includes:
 - header with model, Ollama host, workspace, and agent status
 - workspace sidebar with available tools and command policy
 - scrollable transcript with tool activity and collapsible reasoning
+- native syntax highlighting for `write_file` previews and semantic diff colors for `apply_patch`
 - native multiline editor with a four-line cursor-following viewport and prompt history
 - command-approval modal
 

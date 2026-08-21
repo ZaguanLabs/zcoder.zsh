@@ -10,6 +10,8 @@ typeset -g UI_STATUS="Ready"
 typeset -gi UI_SCROLL=0 UI_AUTO_SCROLL=1
 typeset -ga UI_ROLES=() UI_CONTENTS=() UI_THINKINGS=() UI_TIMES=() UI_REASONING_OPEN=()
 typeset -ga UI_LINES=() UI_ATTRS=()
+typeset -ga UI_LINE_SEGMENT_STARTS=() UI_LINE_SEGMENT_COUNTS=()
+typeset -ga UI_SEGMENT_TEXTS=() UI_SEGMENT_ATTRS=()
 
 # Keep the signal handler minimal. Geometry is queried and curses is rebuilt
 # from the normal event loop, never asynchronously in the middle of a redraw.
@@ -167,7 +169,257 @@ ui_draw_sidebar() {
   (( defer_refresh )) || zcurses refresh side_win
 }
 
-_ui_add_line() { UI_LINES+=("$1"); UI_ATTRS+=("${2:-white/black}"); }
+_ui_add_line() {
+  UI_LINES+=("$1")
+  UI_ATTRS+=("${2:-white/black}")
+  UI_LINE_SEGMENT_STARTS+=(0)
+  UI_LINE_SEGMENT_COUNTS+=(0)
+}
+
+_ui_add_segment() {
+  local text="$1" attr="${2:-white/black}"
+  [[ -n "$text" ]] || return 0
+  local -i line_index=${#UI_LINES}
+  if (( UI_LINE_SEGMENT_COUNTS[line_index] == 0 )); then
+    UI_LINE_SEGMENT_STARTS[line_index]=$(( ${#UI_SEGMENT_TEXTS} + 1 ))
+  fi
+  UI_SEGMENT_TEXTS+=("$text")
+  UI_SEGMENT_ATTRS+=("$attr")
+  (( UI_LINE_SEGMENT_COUNTS[line_index]++ ))
+}
+
+_ui_language_for_path() {
+  local path="${1:l}" name="${1:t:l}" extension="${1:e:l}"
+  case "$name" in
+    makefile|gnumakefile) REPLY="make"; return ;;
+    dockerfile|containerfile) REPLY="shell"; return ;;
+  esac
+  case "$extension" in
+    zsh|sh|bash) REPLY="shell" ;;
+    py|pyw) REPLY="python" ;;
+    js|jsx|mjs|cjs) REPLY="javascript" ;;
+    ts|tsx|mts|cts) REPLY="typescript" ;;
+    rs) REPLY="rust" ;;
+    go) REPLY="go" ;;
+    c|h|cc|cpp|cxx|hpp|hxx) REPLY="c" ;;
+    java|kt|kts|swift|cs) REPLY="c-like" ;;
+    rb) REPLY="ruby" ;;
+    lua) REPLY="lua" ;;
+    sql) REPLY="sql" ;;
+    json|jsonc) REPLY="json" ;;
+    yaml|yml) REPLY="yaml" ;;
+    toml) REPLY="toml" ;;
+    html|htm|xml|svg) REPLY="markup" ;;
+    css|scss|sass|less) REPLY="css" ;;
+    md|markdown) REPLY="markdown" ;;
+    *) REPLY="plain" ;;
+  esac
+}
+
+_ui_keywords_for_language() {
+  case "$1" in
+    shell|make)
+      REPLY="if then elif else fi for while until do done case esac in function select time coproc local typeset export readonly return break continue source exec command builtin"
+      ;;
+    python)
+      REPLY="and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield match case"
+      ;;
+    javascript|typescript)
+      REPLY="async await break case catch class const continue debugger default delete do else export extends finally for from function get if import in instanceof interface let new of package private protected public return set static super switch throw try typeof var void while with yield implements enum type namespace declare readonly abstract"
+      ;;
+    rust)
+      REPLY="as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while"
+      ;;
+    go)
+      REPLY="break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var"
+      ;;
+    c|c-like)
+      REPLY="alignas alignof asm auto bool break case catch char class const constexpr continue default delete do double else enum explicit export extern false float for friend goto if inline int interface long namespace new nullptr operator private protected public register return short signed sizeof static struct switch template this throw true try typedef typename union unsigned using virtual void volatile while"
+      ;;
+    ruby)
+      REPLY="alias and begin break case class def defined do else elsif end ensure false for if in module next nil not or redo rescue retry return self super then true undef unless until when while yield"
+      ;;
+    lua)
+      REPLY="and break do else elseif end false for function goto if in local nil not or repeat return then true until while"
+      ;;
+    sql)
+      REPLY="select from where join inner left right full on as and or not null insert into values update set delete create alter drop table index view group by order having limit offset union all distinct case when then else end"
+      ;;
+    *) REPLY="" ;;
+  esac
+}
+
+# Lightweight, dependency-free lexer for edit previews. It intentionally
+# highlights broad token classes rather than trying to parse a full language
+# grammar inside the curses renderer.
+_ui_add_syntax_line() {
+  local line="$1" language="${2:-plain}" prefix="${3:-  }"
+  _ui_add_line "${prefix}${line}" "white/black"
+  _ui_add_segment "$prefix" "dim white/black"
+  [[ "$language" == plain ]] && { _ui_add_segment "$line" "white/black"; return 0; }
+
+  if [[ "$language" == markdown && "$line" == [[:space:]]#\#* ]]; then
+    _ui_add_segment "$line" "bold magenta/black"
+    return 0
+  fi
+
+  _ui_keywords_for_language "$language"
+  local keywords=" $REPLY " token="" ch="" pair="" quote="" next=""
+  local -i index=1 start length=${#line} escaped=0
+  while (( index <= length )); do
+    ch="${line[index]}"
+    pair="${line[index,$(( index + 1 ))]}"
+
+    if [[ "$ch" == [[:space:]] ]]; then
+      start=$index
+      while (( index <= length )) && [[ "${line[index]}" == [[:space:]] ]]; do (( index++ )); done
+      _ui_add_segment "${line[start,$(( index - 1 ))]}" "white/black"
+      continue
+    fi
+
+    case "$language" in
+      shell|make|python|ruby|yaml|toml)
+        if [[ "$ch" == \# ]]; then _ui_add_segment "${line[index,-1]}" "dim green/black"; break; fi
+        ;;
+      javascript|typescript|rust|go|c|c-like|css)
+        if [[ "$pair" == "//" || "$pair" == "/*" ]]; then _ui_add_segment "${line[index,-1]}" "dim green/black"; break; fi
+        ;;
+      lua|sql)
+        if [[ "$pair" == "--" ]]; then _ui_add_segment "${line[index,-1]}" "dim green/black"; break; fi
+        ;;
+      markup)
+        if [[ "${line[index,$(( index + 3 ))]}" == "<!--" ]]; then _ui_add_segment "${line[index,-1]}" "dim green/black"; break; fi
+        ;;
+    esac
+
+    if [[ "$ch" == \" || "$ch" == "'" || "$ch" == \` ]]; then
+      quote="$ch"; start=$index; (( index++ )); escaped=0
+      while (( index <= length )); do
+        ch="${line[index]}"
+        if (( escaped )); then
+          escaped=0
+        elif [[ "$ch" == \\ ]]; then
+          escaped=1
+        elif [[ "$ch" == "$quote" ]]; then
+          (( index++ ))
+          break
+        fi
+        (( index++ ))
+      done
+      _ui_add_segment "${line[start,$(( index - 1 ))]}" "yellow/black"
+      continue
+    fi
+
+    if [[ "$ch" == \$ ]]; then
+      start=$index; (( index++ ))
+      if (( index <= length )) && [[ "${line[index]}" == \{ ]]; then
+        while (( index <= length )) && [[ "${line[index]}" != \} ]]; do (( index++ )); done
+        (( index <= length )) && (( index++ ))
+      else
+        while (( index <= length )) && [[ "${line[index]}" == [[:alnum:]_] ]]; do (( index++ )); done
+      fi
+      _ui_add_segment "${line[start,$(( index - 1 ))]}" "bold cyan/black"
+      continue
+    fi
+
+    if [[ "$ch" == [[:digit:]] ]]; then
+      start=$index
+      while (( index <= length )) && [[ "${line[index]}" == [[:alnum:]_.] ]]; do (( index++ )); done
+      _ui_add_segment "${line[start,$(( index - 1 ))]}" "cyan/black"
+      continue
+    fi
+
+    if [[ "$ch" == [[:alpha:]_] ]]; then
+      start=$index
+      while (( index <= length )) && [[ "${line[index]}" == [[:alnum:]_] ]]; do (( index++ )); done
+      token="${line[start,$(( index - 1 ))]}"
+      next="${line[index]:-}"
+      if [[ "$keywords" == *" $token "* ]]; then
+        _ui_add_segment "$token" "bold magenta/black"
+      elif [[ "$token" == true || "$token" == false || "$token" == null || "$token" == nil || "$token" == None ]]; then
+        _ui_add_segment "$token" "bold cyan/black"
+      elif [[ "$next" == "(" ]]; then
+        _ui_add_segment "$token" "bold cyan/black"
+      else
+        _ui_add_segment "$token" "white/black"
+      fi
+      continue
+    fi
+
+    if [[ "$ch" == [\{\}\[\]\(\):\;,\.\=\+\-\*\/\%\<\>\!\&\|] ]]; then
+      _ui_add_segment "$ch" "cyan/black"
+    else
+      _ui_add_segment "$ch" "white/black"
+    fi
+    (( index++ ))
+  done
+}
+
+_ui_add_hard_wrapped() {
+  local content="$1" width="$2" prefix="${3:-  }" attr="${4:-white/black}"
+  local -i available=$(( width - ${#prefix} ))
+  (( available < 1 )) && available=1
+  if [[ -z "$content" ]]; then _ui_add_line "$prefix" "$attr"; return 0; fi
+  while (( ${#content} > available )); do
+    _ui_add_line "${prefix}${content[1,$available]}" "$attr"
+    content="${content[$(( available + 1 )),-1]}"
+  done
+  _ui_add_line "${prefix}${content}" "$attr"
+}
+
+_ui_add_syntax_wrapped() {
+  local content="$1" width="$2" prefix="${3:-  }" language="${4:-plain}"
+  local -i available=$(( width - ${#prefix} ))
+  (( available < 1 )) && available=1
+  if [[ -z "$content" ]]; then _ui_add_line "$prefix" "white/black"; return 0; fi
+  while (( ${#content} > available )); do
+    _ui_add_syntax_line "${content[1,$available]}" "$language" "$prefix"
+    content="${content[$(( available + 1 )),-1]}"
+  done
+  _ui_add_syntax_line "$content" "$language" "$prefix"
+}
+
+_ui_diff_attr() {
+  case "$1" in
+    'diff --git '*|'index '*) REPLY="bold cyan/black" ;;
+    '--- '*|'+++ '*) REPLY="bold cyan/black" ;;
+    '@@'*) REPLY="bold magenta/black" ;;
+    '+'*) REPLY="green/black" ;;
+    '-'*) REPLY="red/black" ;;
+    '!'*) REPLY="yellow/black" ;;
+    *) REPLY="dim white/black" ;;
+  esac
+}
+
+_ui_add_tool_content() {
+  local content="$1" width="$2" path="" language="plain" attr=""
+  local -a lines=("${(@f)content}")
+  local -i count=${#lines} index
+  (( count > 0 )) || return 0
+
+  if [[ "${lines[1]}" == "Write File("* && "${lines[1]}" == *")" ]]; then
+    path="${lines[1][12,-2]}"
+    _ui_language_for_path "$path"; language="$REPLY"
+    _ui_add_hard_wrapped "${lines[1]}" "$width" "  " "bold cyan/black"
+    for (( index=2; index<count; index++ )); do
+      _ui_add_syntax_wrapped "${lines[index]}" "$width" "  " "$language"
+    done
+  elif [[ "${lines[1]}" == "Apply Patch" ]]; then
+    _ui_add_hard_wrapped "${lines[1]}" "$width" "  " "bold cyan/black"
+    for (( index=2; index<count; index++ )); do
+      _ui_diff_attr "${lines[index]}"; attr="$REPLY"
+      _ui_add_hard_wrapped "${lines[index]}" "$width" "  " "$attr"
+    done
+  else
+    _ui_add_wrapped "$content" "$width" "  " "white/black"
+    return 0
+  fi
+
+  if (( count > 1 )); then
+    [[ "${lines[count]}" == '✓'* ]] && attr="bold green/black" || attr="bold red/black"
+    _ui_add_hard_wrapped "${lines[count]}" "$width" "  " "$attr"
+  fi
+}
 
 _ui_add_wrapped() {
   local content="$1" width="$2" prefix="${3:-  }" attr="${4:-white/black}" line wrapped
@@ -189,6 +441,8 @@ ui_render_messages() {
   local -i width=$1 count=${#UI_ROLES} i think_lines
   local role content thinking time attr title
   UI_LINES=(); UI_ATTRS=()
+  UI_LINE_SEGMENT_STARTS=(); UI_LINE_SEGMENT_COUNTS=()
+  UI_SEGMENT_TEXTS=(); UI_SEGMENT_ATTRS=()
   if (( count == 0 )); then
     _ui_add_line "" default/default
     _ui_add_line "  👋 Welcome to zcoder.zsh" "bold cyan/black"
@@ -205,11 +459,11 @@ ui_render_messages() {
     case "$role" in
       user) title="🧑 You  ${time}"; attr="green/black" ;;
       assistant) title="🤖 Assistant (${ZCODER_MODEL})  ${time}"; attr="white/black" ;;
-      tool) title="⚙ Tool activity  ${time}"; attr="dim yellow/black" ;;
+      tool) title="⚙ Tool activity  ${time}"; attr="white/black" ;;
       error) title="⚠ Error  ${time}"; attr="red/black" ;;
       *) title="ℹ ${role}  ${time}"; attr="magenta/black" ;;
     esac
-    _ui_add_line "$title" "bold $attr"
+    [[ "$role" == tool ]] && _ui_add_line "$title" "bold yellow/black" || _ui_add_line "$title" "bold $attr"
     if [[ -n "$thinking" ]]; then
       think_lines=${#${(f)thinking}}
       if (( ${UI_REASONING_OPEN[i]:-0} )); then
@@ -219,7 +473,11 @@ ui_render_messages() {
         _ui_add_line "  ▶ Reasoning (${think_lines} lines) [^R to expand]" "dim magenta/black"
       fi
     fi
-    _ui_add_wrapped "$content" "$width" "  " "$attr"
+    if [[ "$role" == tool ]]; then
+      _ui_add_tool_content "$content" "$width"
+    else
+      _ui_add_wrapped "$content" "$width" "  " "$attr"
+    fi
     _ui_add_line "" default/default
   done
 }
@@ -228,8 +486,8 @@ ui_draw_chat() {
   (( UI_ACTIVE )) || return 0
   local -i defer_refresh="${1:-0}"
   local -i inner_w=$(( SCREEN_W - SIDE_W - 2 )) inner_h=$(( SCREEN_H - TOP_H - INPUT_H - FOOT_H - 2 ))
-  local -i total row idx max_scroll
-  local attr=""
+  local -i total row idx max_scroll segment_start segment_count segment_index remaining
+  local attr="" segment=""
   ui_render_messages "$inner_w"
   total=${#UI_LINES}; max_scroll=$(( total - inner_h )); (( max_scroll < 0 )) && max_scroll=0
   (( UI_AUTO_SCROLL )) && UI_SCROLL=$max_scroll
@@ -244,10 +502,29 @@ ui_draw_chat() {
     (( idx <= total )) || continue
     zcurses move chat_win $row 1
     zcurses attr chat_win -bold -dim -reverse -underline default/default
-    attr="${UI_ATTRS[idx]}"
-    zcurses attr chat_win $=attr
-    zcoder_pad "${UI_LINES[idx][1,$inner_w]}" "$inner_w"
-    zcurses string chat_win "$REPLY"
+    segment_count=${UI_LINE_SEGMENT_COUNTS[idx]:-0}
+    if (( segment_count > 0 )); then
+      segment_start=${UI_LINE_SEGMENT_STARTS[idx]}
+      remaining=$inner_w
+      for (( segment_index=segment_start; segment_index<segment_start+segment_count && remaining>0; segment_index++ )); do
+        segment="${UI_SEGMENT_TEXTS[segment_index][1,$remaining]}"
+        attr="${UI_SEGMENT_ATTRS[segment_index]}"
+        zcurses attr chat_win -bold -dim -reverse -underline default/default
+        zcurses attr chat_win $=attr
+        zcurses string chat_win "$segment"
+        (( remaining -= ${#segment} ))
+      done
+      if (( remaining > 0 )); then
+        zcurses attr chat_win -bold -dim -reverse -underline default/default
+        zcoder_pad "" "$remaining"
+        zcurses string chat_win "$REPLY"
+      fi
+    else
+      attr="${UI_ATTRS[idx]}"
+      zcurses attr chat_win $=attr
+      zcoder_pad "${UI_LINES[idx][1,$inner_w]}" "$inner_w"
+      zcurses string chat_win "$REPLY"
+    fi
   done
   (( UI_SCROLL > 0 )) && { zcurses move chat_win 0 $(( inner_w - 12 )); zcurses attr chat_win dim yellow/black; zcurses string chat_win " [PgUp/PgDn] "; }
   (( defer_refresh )) || zcurses refresh chat_win

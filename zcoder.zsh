@@ -9,7 +9,7 @@ zmodload zsh/curses zsh/datetime zsh/files zsh/mapfile zsh/net/tcp \
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.3.0"
+typeset -gr ZCODER_VERSION="0.3.1"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
