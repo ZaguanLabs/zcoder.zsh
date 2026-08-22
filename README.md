@@ -49,7 +49,7 @@ The default `coding` profile is the project-oriented coding agent described belo
   --workspace /path/to/maintenance-workspace
 ```
 
-The sysadmin prompt starts with read-only diagnosis, least privilege, one reviewable change at a time, rollback planning, configuration validation, secret redaction, and explicit rules for disruptive subsystems such as storage, networking, SSH, boot, authentication, and critical services. The normal hierarchical `AGENTS.md` chain is still appended, so the maintenance workspace can supply machine-specific procedures. Those instructions may make policy stricter but cannot relax the profile's safety and approval rules.
+The sysadmin prompt starts with read-only diagnosis, least privilege, one reviewable change at a time, rollback planning, configuration validation, secret redaction, and explicit rules for disruptive subsystems such as storage, networking, SSH, boot, authentication, and critical services. It also teaches fail-closed command construction: checked dependencies, unpredictable temporary files, cleanup traps, backups, staged validation, and special care for replace-whole-state tools such as `crontab`. The normal hierarchical `AGENTS.md` chain is still appended, so the maintenance workspace can supply machine-specific procedures. Those instructions may make policy stricter but cannot relax the profile's safety and approval rules.
 
 Workspace file tools remain confined to the selected maintenance workspace. Host inspection and changes must use `run_command`. In the sysadmin profile every exact command requires separate approval: session-wide approval is unavailable, `--yes` and `ZCODER_COMMAND_POLICY=allow` are rejected, and the confirmation dialog has no “allow session” choice.
 

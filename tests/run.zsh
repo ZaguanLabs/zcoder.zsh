@@ -64,7 +64,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..287"
+print -r -- "1..293"
 
 input_reset
 input_layout 20 4
@@ -475,6 +475,12 @@ assert_contains "$REPLY" "Never run a command capable of erasing the machine" "s
 assert_contains "$REPLY" "AGENTS.md files may add" "sysadmin prompt keeps AGENTS guidance subordinate to safety"
 assert_contains "$REPLY" "create a timestamped backup" "sysadmin prompt requires recoverable configuration changes"
 assert_contains "$REPLY" "Do not print secrets" "sysadmin prompt protects sensitive host data"
+assert_contains "$REPLY" "Treat each host mutation as a small transaction" "sysadmin prompt teaches a concrete safe change sequence"
+assert_contains "$REPLY" "Never place ; between a prerequisite and the mutation" "sysadmin prompt makes dependent steps fail closed"
+assert_contains "$REPLY" "use set -o pipefail" "sysadmin prompt prevents hidden pipeline failures"
+assert_contains "$REPLY" "Use mktemp for temporary files" "sysadmin prompt rejects predictable temporary paths"
+assert_contains "$REPLY" "replace the entire stored state" "sysadmin prompt identifies replacement-style command risk"
+assert_contains "$REPLY" "crontab -l > /tmp/file; append content; crontab /tmp/file" "sysadmin prompt names the unsafe crontab pattern"
 agent_select_profile unknown
 assert_failure "unknown prompt profiles are rejected" $?
 assert_eq "sysadmin" "$ZCODER_PROFILE" "invalid profile selection preserves the active profile"
