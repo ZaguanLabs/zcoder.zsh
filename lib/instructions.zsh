@@ -17,16 +17,23 @@ _instructions_byte_length() {
 }
 
 _instructions_prefix_bytes() {
-  local input="$1" limit="$2" output="" char=""
-  local -i i char_bytes used=0
-  for (( i=1; i<=${#input}; i++ )); do
-    char="${input[i]}"
-    _instructions_byte_length "$char"; char_bytes=$REPLY
-    (( used + char_bytes > limit )) && break
-    output+="$char"
-    (( used += char_bytes ))
+  local input="$1"
+  local -i limit="$2" low=0 high=${#1} midpoint bytes
+  while (( low < high )); do
+    midpoint=$(( (low + high + 1) / 2 ))
+    _instructions_byte_length "${input[1,midpoint]}"
+    bytes=$REPLY
+    if (( bytes <= limit )); then
+      low=$midpoint
+    else
+      high=$(( midpoint - 1 ))
+    fi
   done
-  REPLY="$output"
+  if (( low > 0 )); then
+    REPLY="${input[1,low]}"
+  else
+    REPLY=""
+  fi
 }
 
 _instructions_nonempty_file() {

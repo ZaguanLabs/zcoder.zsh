@@ -157,7 +157,18 @@ ui_draw_sidebar() {
   zcurses move side_win 3 2; zcurses attr side_win green/black; zcurses string side_win "${root[1,20]}"
   zcurses move side_win 4 2; zcurses attr side_win dim cyan/black; zcurses string side_win "${ZCODER_PROFILE} · Guides: ${#INSTRUCTION_SOURCES}"
   zcurses move side_win 5 2; zcurses attr side_win bold white/black; zcurses string side_win "Available tools"
-  local -a names=(list_files read_file read_file_range write_file apply_patch search run_command finish)
+  local -a names=(list_files read_file read_file_range write_file apply_patch search run_command)
+  local skill_name=""
+  local -i inactive_skills=0
+  for skill_name in "${SKILL_CATALOG_NAMES[@]}"; do
+    if ! _skills_is_active "$skill_name"; then
+      inactive_skills=1
+      break
+    fi
+  done
+  (( inactive_skills )) && names+=(activate_skill)
+  (( ${#SKILL_ACTIVE_NAMES} > 0 )) && names+=(read_skill_resource)
+  names+=(finish)
   local -i row=6 i
   for (( i=1; i<=${#names}; i++ )); do
     zcurses move side_win $row 2

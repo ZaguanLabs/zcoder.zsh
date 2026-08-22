@@ -4,7 +4,7 @@
 
 The model can discover a workspace, read and edit files, search source, apply unified diffs, and request shell commands. File tools are confined to the selected workspace. Every shell command is gated by an explicit approval prompt.
 
-Project guidance is loaded from `AGENTS.md` before the first model turn, with hierarchical overrides and bounded prompt size.
+Project guidance is loaded from `AGENTS.md` before the first model turn, with hierarchical overrides and bounded prompt size. Standard [Agent Skills](https://agentskills.io) are discovered from shared project and user locations and loaded progressively when relevant.
 
 ## Quick start
 
@@ -19,6 +19,8 @@ Requirements:
 GNU `timeout` is optional. Without it, `run_command` still works, but command time limits are not enforced. `make` and `mktemp` are needed only for development and running the test suite. Commands such as `grep`, `sed`, and `awk` may be requested by the model through the approval-gated `run_command` tool, but zcoder itself does not depend on them.
 
 Claude Code, Codex, Google Antigravity, and OpenCode are optional. When their CLIs are installed, zcoder can invoke them as read-only consultants through slash commands; they are not required for the Ollama agent.
+
+The Skills CLI from [skills.sh](https://skills.sh) is optional. zcoder consumes standard installed Skill directories directly and does not require Node.js or `npx` at runtime.
 
 Start Ollama, pull a coding model, then run:
 
@@ -72,6 +74,8 @@ Larger contexts consume more memory. `/context` shows the allocation and current
 | `apply_patch` | Apply a standard unified or context diff | `git apply` with `patch` dry-run fallback |
 | `search` | Regex source search with locations | `rg` |
 | `run_command` | Run builds, tests, formatters, and diagnostics | `zsh -c`, after approval |
+| `activate_skill` | Load matching Agent Skill instructions on demand | Native Zsh discovery and frontmatter parsing |
+| `read_skill_resource` | Read a referenced file from an active Skill | Read-only, canonicalized Skill-root access |
 | `finish` | Complete or block the current turn with a final response | Agent-loop control protocol |
 
 `list_files` gives the agent a bounded discovery primitive before it knows filenames or search terms.
@@ -92,7 +96,7 @@ Read, search, and workspace edit tools execute directly. `run_command` always st
 - `a`: allow commands for the remainder of this process
 - `n` or Escape: deny
 
-Commands run only inside the chosen workspace (or a workspace-contained `cwd`). Tool paths are canonicalized and rejected if they resolve outside the workspace. Output returned to the model is bounded to avoid runaway context growth.
+Commands run only inside the chosen workspace (or a workspace-contained `cwd`). General file-tool paths are canonicalized and rejected if they resolve outside the workspace. `read_skill_resource` has a separate read-only boundary: it accepts only relative paths inside a discovered and activated Skill directory, rejects escaping symlinks, and cannot write. Output returned to the model is bounded to avoid runaway context growth.
 
 ## AGENTS.md project instructions
 
@@ -117,6 +121,28 @@ Instructions are loaded once when zcoder starts. Audit the resolved chain withou
 ```
 
 Inside the TUI, `/instructions` lists the active sources. The base agent prompt also directs the model to check for closer instruction files before changing files in nested directories.
+
+## Agent Skills
+
+zcoder implements the open Agent Skills format with progressive disclosure. At startup it parses only each valid `SKILL.md` name and description. The compact catalog tells the model which capabilities exist; the full Markdown body enters context only after the model calls `activate_skill` or the user activates it explicitly. Referenced scripts, documentation, and assets are read individually with `read_skill_resource` instead of being loaded eagerly.
+
+Only the shared standard locations are scanned:
+
+- project: `<project-root>/.agents/skills/<name>/SKILL.md`
+- user: `~/.agents/skills/<name>/SKILL.md`
+- user config: `${XDG_CONFIG_HOME:-$HOME/.config}/agents/skills/<name>/SKILL.md`
+
+Project Skills override same-named user Skills. Model disclosure is bounded by `ZCODER_MAX_SKILLS` (default 128) and `ZCODER_SKILL_CATALOG_MAX_BYTES` (default 32 KiB), each activated body by `ZCODER_SKILL_MAX_BYTES` (default 32 KiB), all active bodies together by `ZCODER_ACTIVE_SKILLS_MAX_BYTES` (default 64 KiB), and simultaneous active Skills by `ZCODER_MAX_ACTIVE_SKILLS` (default 8). The activation-tool enum contains exactly the disclosed names. Active instructions are kept in the system prompt, deduplicated, and therefore survive conversation compaction; `/new` clears them.
+
+Audit discovery without contacting Ollama:
+
+```sh
+./zcoder.zsh --workspace /path/to/project --print-skills
+```
+
+Inside the TUI, `/skills` lists discovered and active Skills, `/skills reload` rescans the standard locations, and `/skill NAME` activates one. Prefix a normal request with `$skill-name` to activate it before the first model turn. Otherwise, the model selects a Skill from its description and activates it itself.
+
+Skill files and bundled scripts are potentially untrusted. Their instructions cannot override the base profile, AGENTS.md, workspace/write boundaries, sysadmin restrictions, or command approval. The experimental `allowed-tools` frontmatter field is intentionally not treated as permission. Executing a bundled script still requires an ordinary approved `run_command`.
 
 ## Interface
 
@@ -145,7 +171,7 @@ Keyboard shortcuts:
 | Up / Down | Move within multiline input, then navigate prompt history at its boundaries |
 | Ctrl+Q / Ctrl+D | Exit |
 
-Slash commands: `/model` opens the picker; `/model NAME`, `/host HOST`, `/instructions`, `/compact`, `/context`, `/new`, `/help`, and `/quit` are also available.
+Slash commands: `/model` opens the picker; `/model NAME`, `/host HOST`, `/instructions`, `/skills`, `/skills reload`, `/skill NAME`, `/compact`, `/context`, `/new`, `/help`, and `/quit` are also available.
 
 ## External consultants
 
@@ -173,6 +199,7 @@ lib/
   compact.zsh           token accounting and conversation checkpoints
   delegate.zsh          read-only external harness consultations
   instructions.zsh      AGENTS.md discovery, precedence, and prompt assembly
+  skills.zsh            standard Agent Skills discovery and progressive loading
   http.zsh              native TCP/HTTP Ollama client
   json.zsh              native tokenizer, decoder, and encoder
   tools.zsh             schemas, confinement, dispatch, and execution

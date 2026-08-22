@@ -9,7 +9,7 @@ zmodload zsh/curses zsh/datetime zsh/files zsh/mapfile zsh/net/tcp \
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.3.3"
+typeset -gr ZCODER_VERSION="0.4.0"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -19,6 +19,7 @@ source "${ZCODER_DIR}/lib/util.zsh"
 source "${ZCODER_DIR}/lib/json.zsh"
 source "${ZCODER_DIR}/lib/http.zsh"
 source "${ZCODER_DIR}/lib/instructions.zsh"
+source "${ZCODER_DIR}/lib/skills.zsh"
 source "${ZCODER_DIR}/lib/input.zsh"
 source "${ZCODER_DIR}/lib/ui.zsh"
 source "${ZCODER_DIR}/lib/tools.zsh"
@@ -29,6 +30,7 @@ source "${ZCODER_DIR}/lib/delegate.zsh"
 typeset -g ONE_SHOT_PROMPT=""
 typeset -gi RUNNING=1
 typeset -gi PRINT_INSTRUCTIONS=0
+typeset -gi PRINT_SKILLS=0
 
 usage() {
   print -r -- "Usage: ${ZCODER_NAME} [options]"
@@ -48,6 +50,7 @@ usage() {
   print -r -- "      --debug            Append diagnostics to /tmp/zcoder-debug-${UID}.log"
   print -r -- "      --debug-log PATH   Append diagnostics to a specific file"
   print -r -- "      --print-instructions  Show the resolved AGENTS.md chain and exit"
+  print -r -- "      --print-skills     Show discovered Agent Skills and exit"
   print -r -- "  -V, --version          Show version"
   print -r -- "      --help             Show this help"
 }
@@ -99,6 +102,7 @@ while (( $# > 0 )); do
       ZCODER_DEBUG_LOG="$2"; shift
       ;;
     --print-instructions) PRINT_INSTRUCTIONS=1 ;;
+    --print-skills) PRINT_SKILLS=1 ;;
     -V|--version) print -r -- "${ZCODER_NAME} v${ZCODER_VERSION}"; exit 0 ;;
     --help) usage; exit 0 ;;
     --) shift; break ;;
@@ -125,6 +129,7 @@ if [[ -n "$ZCODER_DEBUG_LOG" ]]; then
   fi
 fi
 instructions_load "$ZCODER_WORKSPACE"
+skills_load "$ZCODER_WORKSPACE"
 
 if (( PRINT_INSTRUCTIONS )); then
   instructions_summary
@@ -134,6 +139,12 @@ if (( PRINT_INSTRUCTIONS )); then
     instructions_prompt_block
     print -r -- "$REPLY"
   fi
+  exit 0
+fi
+
+if (( PRINT_SKILLS )); then
+  skills_summary
+  print -r -- "$REPLY"
   exit 0
 fi
 
@@ -182,6 +193,26 @@ handle_slash_command() {
     /instructions)
       instructions_summary
       ui_append_message system "$REPLY"
+      ;;
+    /skills)
+      skills_summary
+      ui_append_message system "$REPLY"
+      ;;
+    /skills\ reload)
+      skills_load "$ZCODER_WORKSPACE"
+      skills_summary
+      ui_append_message system "Skills reloaded."$'\n'"$REPLY"
+      ;;
+    /skill)
+      ui_append_message error "/skill requires an installed Skill name"
+      ;;
+    /skill\ *)
+      value="${text#/skill }"; value="${value%%[[:space:]]*}"
+      if skills_activate "$value"; then
+        ui_append_message system "$TOOL_RESULT"
+      else
+        ui_append_message error "$TOOL_RESULT"
+      fi
       ;;
     /compact)
       if ! agent_compact_history manual; then
@@ -240,7 +271,7 @@ handle_slash_command() {
       fi
       ;;
     /help|/\?)
-      ui_append_message system $'Enter sends a prompt. Shift+Enter inserts a newline; Alt+Enter is the fallback for terminals that do not report Shift+Enter separately. Pasted multiline text keeps its formatting. Escape stops a running Ollama response or external consultation.\nCtrl+O selects an Ollama model. Ctrl+R toggles reasoning. Ctrl+N clears the conversation. PgUp/PgDn scroll. Ctrl+U clears input. Ctrl+W deletes a word. Ctrl+Q exits.\n/claude REQUEST, /codex REQUEST, /agy REQUEST, and /opencode REQUEST run read-only external consultations. /opencode with no request selects its provider/model. /model opens the Ollama picker; /host HOST changes Ollama; /instructions lists active AGENTS.md files; /compact creates a context checkpoint; /context shows the token budget; /new starts over.'
+      ui_append_message system $'Enter sends a prompt. Shift+Enter inserts a newline; Alt+Enter is the fallback for terminals that do not report Shift+Enter separately. Pasted multiline text keeps its formatting. Escape stops a running Ollama response or external consultation.\nCtrl+O selects an Ollama model. Ctrl+R toggles reasoning. Ctrl+N clears the conversation. PgUp/PgDn scroll. Ctrl+U clears input. Ctrl+W deletes a word. Ctrl+Q exits.\n/claude REQUEST, /codex REQUEST, /agy REQUEST, and /opencode REQUEST run read-only external consultations. /opencode with no request selects its provider/model. /skills lists installed Agent Skills; /skill NAME activates one. Prefix a request with $skill-name for explicit activation. /model opens the Ollama picker; /host HOST changes Ollama; /instructions lists active AGENTS.md files; /compact creates a context checkpoint; /context shows the token budget; /new starts over.'
       ;;
     /quit|/exit|/q) RUNNING=0 ;;
     *) return 1 ;;

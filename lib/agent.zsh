@@ -135,6 +135,14 @@ agent_format_tool_ui_result() {
       content="${JSON_OBJECT[patch]:-}"
       label="Apply Patch"$'\n'"$content"
       ;;
+    activate_skill)
+      label="Skill(${JSON_OBJECT[name]:-?})"
+      (( succeeded )) && { REPLY="$label"; return 0; }
+      ;;
+    read_skill_resource)
+      label="Skill Resource(${JSON_OBJECT[name]:-?}:${JSON_OBJECT[path]:-?})"
+      (( succeeded )) && { REPLY="$label"; return 0; }
+      ;;
     *)
       label="$tool_name $args_json"
       ;;
@@ -175,6 +183,7 @@ agent_parse_finish() {
 agent_reset() {
   AGENT_MESSAGES=()
   AGENT_LAST_RESPONSE=""
+  (( $+functions[skills_reset_activations] )) && skills_reset_activations
   agent_loop_reset
   agent_compaction_reset
 }
@@ -283,6 +292,10 @@ agent_build_payload() {
     instructions_prompt_block
     prompt+="$REPLY"
   fi
+  if (( $+functions[skills_prompt_block] )); then
+    skills_prompt_block
+    prompt+="$REPLY"
+  fi
   if [[ -n "$AGENT_COMPACTION_SUMMARY" ]]; then
     prompt+=$'\n\n<compacted_context>\n'"$AGENT_COMPACTION_SUMMARY"$'\n</compacted_context>'
   fi
@@ -364,6 +377,10 @@ agent_user_turn() {
 
   AGENT_LAST_RESPONSE=""
   agent_loop_reset
+  if (( $+functions[skills_activate_explicit_from_text] )); then
+    skills_activate_explicit_from_text "$user_content"
+    zcoder_debug explicit_skills "active=${(j:,:)SKILL_ACTIVE_NAMES}"
+  fi
   agent_add_message user "$user_content"
   zcoder_debug user_turn_start "content=${(qqq)user_content}"
   if (( $+functions[ui_append_message] && ${UI_ACTIVE:-0} )); then

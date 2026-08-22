@@ -8,16 +8,22 @@ typeset -gi TOOL_RESULT_OK=0
 typeset -g TOOL_SAFETY_REASON=""
 
 tools_schema_json() {
-  REPLY='[
+  local output='[
 {"type":"function","function":{"name":"list_files","description":"List files and directories below a workspace path while honoring .gitignore even outside a Git repository and excluding common dependency/build trees. Use a narrow path and modest max_entries only when project structure is unknown.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Narrow workspace-relative directory; defaults to ."},"max_entries":{"type":"integer","description":"Maximum entries; prefer a small limit; defaults to 100"}}}}},
 {"type":"function","function":{"name":"read_file","description":"Read a complete UTF-8 text file. Expensive for context: use only for clearly small files or when every line is required; prefer search followed by read_file_range for source code.","parameters":{"type":"object","required":["path"],"properties":{"path":{"type":"string","description":"Workspace-relative path to a small file whose complete contents are needed"}}}}},
 {"type":"function","function":{"name":"read_file_range","description":"Read an inclusive line range. This is the preferred file-reading tool after search locates the relevant section; normally request at most 200 lines.","parameters":{"type":"object","required":["path","start_line","end_line"],"properties":{"path":{"type":"string","description":"Workspace-relative file path"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1,"description":"Inclusive end line; normally no more than 200 lines after start_line"}}}}},
 {"type":"function","function":{"name":"write_file","description":"Create or completely replace a workspace text file. Prefer apply_patch for focused edits.","parameters":{"type":"object","required":["path","content"],"properties":{"path":{"type":"string"},"content":{"type":"string"}}}}},
 {"type":"function","function":{"name":"apply_patch","description":"Apply a complete standard unified diff rooted at the workspace using git apply or patch. Include --- a/path, +++ b/path, and @@ line-range headers. Do not use *** Begin Patch markers.","parameters":{"type":"object","required":["patch"],"properties":{"patch":{"type":"string","description":"Complete unified diff text, for example: --- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new"}}}}},
 {"type":"function","function":{"name":"search","description":"First-choice project inspection: search workspace text with ripgrep and return file, line, column, and matching text. After finding a usable location, read its range instead of rephrasing the same search.","parameters":{"type":"object","required":["query"],"properties":{"query":{"type":"string","description":"Focused regular expression"},"path":{"type":"string","description":"Narrow workspace-relative search root; defaults to ."},"max_results":{"type":"integer","description":"Maximum matching lines; defaults to 50"}}}}},
-{"type":"function","function":{"name":"run_command","description":"Run a shell command in the workspace after explicit user approval. Use for tests, builds, formatting, git status, and diagnostics.","parameters":{"type":"object","required":["command"],"properties":{"command":{"type":"string"},"cwd":{"type":"string","description":"Workspace-relative working directory; defaults to ."},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600}}}}},
+{"type":"function","function":{"name":"run_command","description":"Run a shell command in the workspace after explicit user approval. Use for tests, builds, formatting, git status, and diagnostics.","parameters":{"type":"object","required":["command"],"properties":{"command":{"type":"string"},"cwd":{"type":"string","description":"Workspace-relative working directory; defaults to ."},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600}}}}}'
+  if (( $+functions[skills_tools_schema_json] && ${#SKILL_CATALOG_NAMES} > 0 )); then
+    skills_tools_schema_json
+    output+=",${REPLY}"
+  fi
+  output+=',
 {"type":"function","function":{"name":"finish","description":"End the current user turn. Call this as the only tool call when the task is complete or genuinely blocked; otherwise call a work tool instead. Put the complete user-facing final answer in response.","parameters":{"type":"object","required":["status","response"],"properties":{"status":{"type":"string","enum":["complete","blocked"]},"response":{"type":"string","description":"Complete user-facing result or exact blocker, in the same language as the user"}}}}}
 ]'
+  REPLY="$output"
 }
 
 _tool_fail() {
@@ -526,6 +532,8 @@ tool_dispatch() {
     apply_patch) tool_apply_patch "${JSON_OBJECT[patch]:-}" ;;
     search) tool_search "${JSON_OBJECT[query]:-}" "${JSON_OBJECT[path]:-.}" "${JSON_OBJECT[max_results]:-50}" ;;
     run_command) tool_run_command "${JSON_OBJECT[command]:-}" "${JSON_OBJECT[cwd]:-.}" "${JSON_OBJECT[timeout_seconds]:-120}" ;;
+    activate_skill) skills_activate "${JSON_OBJECT[name]:-}" ;;
+    read_skill_resource) skills_read_resource "${JSON_OBJECT[name]:-}" "${JSON_OBJECT[path]:-}" ;;
     *) _tool_fail "unknown tool: $name" ;;
   esac
 }

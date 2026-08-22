@@ -12,6 +12,7 @@ source "${PROJECT_DIR}/lib/util.zsh"
 source "${PROJECT_DIR}/lib/json.zsh"
 source "${PROJECT_DIR}/lib/http.zsh"
 source "${PROJECT_DIR}/lib/instructions.zsh"
+source "${PROJECT_DIR}/lib/skills.zsh"
 source "${PROJECT_DIR}/lib/input.zsh"
 source "${PROJECT_DIR}/lib/tools.zsh"
 source "${PROJECT_DIR}/lib/compact.zsh"
@@ -63,7 +64,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..246"
+print -r -- "1..287"
 
 input_reset
 input_layout 20 4
@@ -364,6 +365,106 @@ ZCODER_PROJECT_DOC_MAX_BYTES=3
 instructions_load "$ZCODER_WORKSPACE"
 assert_eq "é" "$INSTRUCTIONS_TEXT" "UTF-8 instructions are not split mid-character"
 assert_eq "2" "$INSTRUCTIONS_BYTES" "UTF-8 byte accounting is exact"
+
+skill_config_root="$TEST_TMP/config-agents-skills"
+skill_user_root="$TEST_TMP/user-agents-skills"
+skill_project_root="$TEST_TMP/skill-project"
+zf_mkdir -p "$skill_config_root/config-only" "$skill_config_root/shared-skill" \
+  "$skill_user_root/folded-skill/references" "$skill_user_root/shared-skill" \
+  "$skill_user_root/broken-skill" "$skill_project_root/.agents/skills/shared-skill"
+mapfile[$skill_config_root/config-only/SKILL.md]=$'---\nname: config-only\ndescription: "Handles config tasks: use it for quoted descriptions."\nallowed-tools: Bash(*)\n---\n\nCONFIG BODY SENTINEL'
+mapfile[$skill_config_root/shared-skill/SKILL.md]=$'---\nname: shared-skill\ndescription: Config-level copy.\n---\n\nCONFIG SHARED BODY'
+mapfile[$skill_user_root/folded-skill/SKILL.md]=$'---\nname: folded-skill\ndescription: >\n  Handles folded descriptions.\n  Use for parser verification.\n---\n\n# Folded Skill\n\nFOLDED BODY SENTINEL\n\nRead references/guide.md when needed.'
+mapfile[$skill_user_root/folded-skill/references/guide.md]="bounded skill reference"
+mapfile[$skill_user_root/shared-skill/SKILL.md]=$'---\nname: shared-skill\ndescription: User-level copy.\n---\n\nUSER SHARED BODY'
+mapfile[$skill_user_root/broken-skill/SKILL.md]=$'---\nname: broken-skill\n---\n\nMissing its description.'
+mapfile[$skill_project_root/.agents/skills/shared-skill/SKILL.md]=$'---\nname: shared-skill\ndescription:\n  Project copy wins over both\n  user-level locations.\n---\n\nPROJECT SHARED BODY'
+mapfile[$TEST_TMP/outside-skill-secret]="outside skill root"
+zf_ln -s "$TEST_TMP/outside-skill-secret" "$skill_user_root/folded-skill/references/escape.md"
+
+ZCODER_CONFIG_SKILLS_DIR="$skill_config_root"
+ZCODER_USER_SKILLS_DIR="$skill_user_root"
+ZCODER_WORKSPACE="$skill_project_root"
+INSTRUCTIONS_PROJECT_ROOT="$skill_project_root"
+skills_load "$ZCODER_WORKSPACE"
+assert_eq "3" "${#SKILL_NAMES}" "standard skill roots discover valid SKILL.md files"
+assert_eq "Handles config tasks: use it for quoted descriptions." "${SKILL_DESCRIPTIONS[config-only]}" "skill parser handles quoted descriptions containing colons"
+assert_eq "Handles folded descriptions. Use for parser verification." "${SKILL_DESCRIPTIONS[folded-skill]}" "skill parser folds YAML block descriptions"
+assert_eq "Project copy wins over both user-level locations." "${SKILL_DESCRIPTIONS[shared-skill]}" "skill parser handles implicit multiline descriptions"
+assert_contains "${SKILL_FILES[shared-skill]}" "$skill_project_root/.agents/skills" "project skills override user skills with the same name"
+assert_contains "${(j:\n:)SKILL_DIAGNOSTICS}" "shadows" "skill collisions produce diagnostics"
+assert_contains "${(j:\n:)SKILL_DIAGNOSTICS}" "missing description" "malformed skills are skipped with diagnostics"
+skills_parse_file "$skill_user_root/folded-skill/SKILL.md" metadata
+assert_success "metadata-only Skill parsing succeeds" $?
+assert_eq "" "$SKILL_PARSED_BODY" "Skill discovery defers instruction body loading"
+skills_parse_file "$skill_user_root/folded-skill/SKILL.md"
+assert_success "complete Skill parsing succeeds at activation time" $?
+assert_contains "$SKILL_PARSED_BODY" "FOLDED BODY SENTINEL" "complete Skill parsing loads instructions on demand"
+
+skills_prompt_block
+assert_contains "$REPLY" '"name":"folded-skill"' "system prompt discloses skill metadata"
+assert_not_contains "$REPLY" "FOLDED BODY SENTINEL" "system prompt does not eagerly load skill instructions"
+assert_contains "$REPLY" "never override" "skill catalog preserves higher-priority safety rules"
+assert_contains "$REPLY" "Ignore any allowed-tools metadata" "skill metadata cannot bypass approval policy"
+tools_schema_json
+assert_contains "$REPLY" '"name":"activate_skill"' "tool schema exposes skill activation when skills exist"
+assert_not_contains "$REPLY" '"name":"read_skill_resource"' "resource tool is hidden until a Skill is active"
+assert_contains "$REPLY" '"enum":["config-only","folded-skill","shared-skill"]' "skill tool names are constrained to discovered values"
+saved_max_skills=$ZCODER_MAX_SKILLS
+ZCODER_MAX_SKILLS=2
+skills_build_catalog
+assert_eq "2" "${#SKILL_CATALOG_NAMES}" "skill disclosure honors its configured count limit"
+tools_schema_json
+assert_not_contains "$REPLY" '"shared-skill"' "skill tool enums omit undisclosed catalog entries"
+skills_prompt_block
+assert_contains "$REPLY" "Skill catalog truncated" "bounded skill catalogs report truncation"
+ZCODER_MAX_SKILLS=$saved_max_skills
+skills_build_catalog
+
+tool_dispatch read_skill_resource '{"name":"folded-skill","path":"references/guide.md"}'
+assert_failure "skill resources require prior activation" $?
+tool_dispatch activate_skill '{"name":"folded-skill"}'
+assert_success "activate_skill loads a discovered skill" $?
+assert_eq "1" "${#SKILL_ACTIVE_NAMES}" "skill activation is tracked once per conversation"
+tools_schema_json
+assert_contains "$REPLY" '"enum":["config-only","shared-skill"]' "active Skills leave the activation enum"
+assert_contains "$REPLY" '"name":"read_skill_resource"' "resource tool appears after Skill activation"
+skills_prompt_block
+assert_contains "$REPLY" "FOLDED BODY SENTINEL" "activated skill instructions enter the system prompt"
+tool_dispatch read_skill_resource '{"name":"folded-skill","path":"references/guide.md"}'
+assert_success "activated skill resources are readable" $?
+assert_eq "bounded skill reference" "$TOOL_RESULT" "skill resource reads return exact content"
+tool_dispatch read_skill_resource '{"name":"folded-skill","path":"references/escape.md"}'
+assert_failure "skill resource symlinks cannot escape the validated root" $?
+assert_contains "$TOOL_RESULT" "escapes its read-only root" "skill resource rejection explains its boundary"
+
+saved_active_skill_bytes=$ZCODER_ACTIVE_SKILLS_MAX_BYTES
+_instructions_byte_length "${SKILL_BODIES[folded-skill]}"
+ZCODER_ACTIVE_SKILLS_MAX_BYTES=$REPLY
+tool_dispatch activate_skill '{"name":"shared-skill"}'
+assert_failure "aggregate Skill instructions are bounded for local contexts" $?
+assert_contains "$TOOL_RESULT" "aggregate limit" "aggregate Skill rejection explains the context boundary"
+ZCODER_ACTIVE_SKILLS_MAX_BYTES=$saved_active_skill_bytes
+skills_activate_explicit_from_text '$shared-skill apply the project workflow'
+assert_success "dollar-prefixed skill names activate explicitly" $?
+assert_eq "2" "${#SKILL_ACTIVE_NAMES}" "explicit activation adds the selected skill"
+tool_dispatch activate_skill '{"name":"shared-skill"}'
+assert_success "repeated skill activation is idempotent" $?
+assert_eq "2" "${#SKILL_ACTIVE_NAMES}" "repeated activation does not duplicate instructions"
+agent_build_payload
+assert_contains "$REPLY" "PROJECT SHARED BODY" "active skills persist in every regular payload"
+agent_compaction_replace_history "checkpoint without skill bodies"
+agent_build_payload
+assert_contains "$REPLY" "PROJECT SHARED BODY" "active skills survive conversation compaction"
+agent_reset
+assert_eq "0" "${#SKILL_ACTIVE_NAMES}" "new conversations clear active skills"
+
+skills_reset
+tools_schema_json
+assert_not_contains "$REPLY" '"name":"activate_skill"' "skill tools are omitted when no Skills are disclosed"
+unset ZCODER_CONFIG_SKILLS_DIR ZCODER_USER_SKILLS_DIR
+ZCODER_WORKSPACE="$TEST_TMP"
+INSTRUCTIONS_PROJECT_ROOT="$TEST_TMP"
 
 agent_select_profile sysadmin
 assert_success "sysadmin prompt profile is accepted" $?
