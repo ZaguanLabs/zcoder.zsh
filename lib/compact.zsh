@@ -109,8 +109,13 @@ agent_estimate_payload_tokens() {
 }
 
 agent_context_options_json() {
-  # Always pin the chosen allocation. Otherwise Ollama may keep or reload a
-  # model with its configured allocation even when it is not loaded yet.
+  # In auto mode the fallback is only an internal accounting budget. Omitting
+  # num_ctx on the first request lets Ollama honor the model's Modelfile or the
+  # server default instead of silently replacing it with our fallback.
+  if [[ "$ZCODER_CONTEXT_WINDOW" == auto ]] && (( AGENT_CONTEXT_DISCOVERY_PENDING )); then
+    REPLY=""
+    return 0
+  fi
   REPLY="\"num_ctx\":${AGENT_CONTEXT_WINDOW},"
 }
 

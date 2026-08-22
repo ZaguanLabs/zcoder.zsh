@@ -6,14 +6,19 @@ typeset -gi ZCODER_MAX_TOOL_OUTPUT="${ZCODER_MAX_TOOL_OUTPUT:-32768}"
 typeset -g TOOL_RESULT=""
 typeset -gi TOOL_RESULT_OK=0
 typeset -g TOOL_SAFETY_REASON=""
+typeset -gi TOOL_PATCH_RETRY_REQUIRED=0
 
 tools_schema_json() {
   local output='[
 {"type":"function","function":{"name":"list_files","description":"List files and directories below a workspace path while honoring .gitignore even outside a Git repository and excluding common dependency/build trees. Use a narrow path and modest max_entries only when project structure is unknown.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Narrow workspace-relative directory; defaults to ."},"max_entries":{"type":"integer","description":"Maximum entries; prefer a small limit; defaults to 100"}}}}},
 {"type":"function","function":{"name":"read_file","description":"Read a complete UTF-8 text file. Expensive for context: use only for clearly small files or when every line is required; prefer search followed by read_file_range for source code.","parameters":{"type":"object","required":["path"],"properties":{"path":{"type":"string","description":"Workspace-relative path to a small file whose complete contents are needed"}}}}},
-{"type":"function","function":{"name":"read_file_range","description":"Read an inclusive line range. This is the preferred file-reading tool after search locates the relevant section; normally request at most 200 lines.","parameters":{"type":"object","required":["path","start_line","end_line"],"properties":{"path":{"type":"string","description":"Workspace-relative file path"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1,"description":"Inclusive end line; normally no more than 200 lines after start_line"}}}}},
-{"type":"function","function":{"name":"write_file","description":"Create or completely replace a workspace text file. Prefer apply_patch for focused edits.","parameters":{"type":"object","required":["path","content"],"properties":{"path":{"type":"string"},"content":{"type":"string"}}}}},
-{"type":"function","function":{"name":"apply_patch","description":"Apply a complete standard unified diff rooted at the workspace using git apply or patch. Include --- a/path, +++ b/path, and @@ line-range headers. Do not use *** Begin Patch markers.","parameters":{"type":"object","required":["patch"],"properties":{"patch":{"type":"string","description":"Complete unified diff text, for example: --- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new"}}}}},
+{"type":"function","function":{"name":"read_file_range","description":"Read an inclusive line range. This is the preferred file-reading tool after search locates the relevant section; normally request at most 200 lines.","parameters":{"type":"object","required":["path","start_line","end_line"],"properties":{"path":{"type":"string","description":"Workspace-relative file path"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1,"description":"Inclusive end line; normally no more than 200 lines after start_line"}}}}}'
+  if (( ! TOOL_PATCH_RETRY_REQUIRED )); then
+    output+=',
+{"type":"function","function":{"name":"write_file","description":"Create a new workspace text file or deliberately replace a complete file. Never use this as a fallback after a focused apply_patch failure.","parameters":{"type":"object","required":["path","content"],"properties":{"path":{"type":"string"},"content":{"type":"string"}}}}}'
+  fi
+  output+=',
+{"type":"function","function":{"name":"apply_patch","description":"Apply a complete standard unified diff rooted at the workspace using git apply or patch. Include --- a/path, +++ b/path, and @@ line-range headers. Do not use *** Begin Patch markers. If rejected, re-read the target lines and retry apply_patch; write_file is unavailable until the corrected patch succeeds or a new user request begins.","parameters":{"type":"object","required":["patch"],"properties":{"patch":{"type":"string","description":"Raw unified diff only. Example: --- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new"}}}}},
 {"type":"function","function":{"name":"search","description":"First-choice project inspection: search workspace text with ripgrep and return file, line, column, and matching text. After finding a usable location, read its range instead of rephrasing the same search.","parameters":{"type":"object","required":["query"],"properties":{"query":{"type":"string","description":"Focused regular expression"},"path":{"type":"string","description":"Narrow workspace-relative search root; defaults to ."},"max_results":{"type":"integer","description":"Maximum matching lines; defaults to 50"}}}}},
 {"type":"function","function":{"name":"run_command","description":"Run a shell command in the workspace after explicit user approval. Use for tests, builds, formatting, git status, and diagnostics.","parameters":{"type":"object","required":["command"],"properties":{"command":{"type":"string"},"cwd":{"type":"string","description":"Workspace-relative working directory; defaults to ."},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600}}}}}'
   if (( $+functions[skills_tools_schema_json] && ${#SKILL_CATALOG_NAMES} > 0 )); then
@@ -169,6 +174,10 @@ tool_read_file_range() {
 
 tool_write_file() {
   local requested="$1" content="$2" resolved_path="" parent=""
+  (( ! TOOL_PATCH_RETRY_REQUIRED )) || {
+    _tool_fail "write_file is temporarily unavailable because apply_patch failed. Re-read the exact target lines and submit a corrected apply_patch instead."
+    return 1
+  }
   _tool_resolve_write_target "$requested" || return 1
   resolved_path="$REPLY"
   parent="${resolved_path:h}"
@@ -219,13 +228,15 @@ _tool_patch_strip_level() {
 tool_apply_patch() {
   local patch_text="$1" patch_file="${TMPDIR:-/tmp}/zcoder_patch_${$}_${RANDOM}.diff"
   local out_file="${TMPDIR:-/tmp}/zcoder_patch_${$}_${RANDOM}.out"
-  local git_error="" patch_error="" output="" engine="" guidance=""
+  local git_error="" patch_error="" output="" engine="" guidance="" success_message=""
   local -i exit_code=1 strip=0
+  TOOL_PATCH_RETRY_REQUIRED=1
   [[ -n "$patch_text" ]] || { _tool_fail "patch is empty"; return 1; }
   if [[ "$patch_text" == *'*** Begin Patch'* ]]; then
     _tool_fail $'unsupported patch envelope: send a complete standard unified diff without *** Begin Patch markers\nRequired form:\n--- a/path\n+++ b/path\n@@ -OLD_START,OLD_COUNT +NEW_START,NEW_COUNT @@\n-old line\n+new line'
     return 1
   fi
+  [[ "$patch_text" == *$'\n' ]] || patch_text+=$'\n'
   (( $+commands[git] || $+commands[patch] )) || { _tool_fail "apply_patch requires git or patch"; return 1; }
   mapfile[$patch_file]="$patch_text"
 
@@ -262,11 +273,14 @@ tool_apply_patch() {
 
   zf_rm -f "$patch_file" "$out_file" 2>/dev/null
   if [[ -z "$engine" ]]; then
-    guidance=$'Send a complete unified diff with ---/+++/@@ headers. Re-read the current file before retrying; do not switch to write_file for a focused edit.'
+    guidance=$'PATCH RETRY REQUIRED: re-read the exact current lines, then send a corrected complete unified diff with ---/+++/@@ headers. write_file is unavailable for this focused edit until apply_patch succeeds.'
     _tool_fail "patch rejected"$'\n'"${git_error:+git apply: ${git_error}}"$'\n'"${patch_error:+patch: ${patch_error}}"$'\n'"$guidance"
     return 1
   fi
-  _tool_succeed "Patch applied successfully with ${engine}.${output:+$'\n'$output}"
+  TOOL_PATCH_RETRY_REQUIRED=0
+  success_message="Patch applied successfully with ${engine}."
+  [[ -n "$output" ]] && success_message+=$'\n'"$output"
+  _tool_succeed "$success_message"
 }
 
 tool_search() {

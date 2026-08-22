@@ -155,6 +155,7 @@ http_async_start() {
   fi
   http_async_cleanup
   HTTP_ASYNC_BASE="$base"
+  zcoder_debug http_async_start "method=$method path=${(qqq)endpoint_path} endpoint=${(qqq)endpoint}"
 
   (
     trap - EXIT
@@ -170,6 +171,7 @@ http_async_start() {
     exit "$request_status"
   ) </dev/null >/dev/null 2>&1 &
   HTTP_ASYNC_PID=$!
+  zcoder_debug http_async_started "pid=$HTTP_ASYNC_PID base=${(qqq)base}"
 }
 
 http_async_ready() {
@@ -192,13 +194,15 @@ http_async_collect() {
     HTTP_ERROR="Ollama request worker exited before returning a result"
   fi
   [[ -n "$pid" ]] && wait "$pid" 2>/dev/null
+  zcoder_debug http_async_collect "pid=${pid:-none} status=$request_status body_chars=${#HTTP_BODY} error=${(qqq)HTTP_ERROR}"
   http_async_cleanup "$base"
   [[ "$request_status" == <0-255> ]] || request_status=1
   return "$request_status"
 }
 
 http_async_cancel() {
-  local pid="$HTTP_ASYNC_PID" base="$HTTP_ASYNC_BASE"
+  local reason="${1:-cancelled}" pid="$HTTP_ASYNC_PID" base="$HTTP_ASYNC_BASE"
+  [[ -n "$pid" || -n "$base" ]] && zcoder_debug http_async_cancel "pid=${pid:-none} reason=${(qqq)reason} base=${(qqq)base}"
   if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
     kill -TERM "$pid" 2>/dev/null
     zselect -t 2 2>/dev/null
@@ -207,7 +211,7 @@ http_async_cancel() {
   fi
   http_async_cleanup "$base"
   HTTP_BODY=""
-  HTTP_ERROR="Ollama request cancelled"
+  HTTP_ERROR="Ollama request cancelled: ${reason}"
 }
 
 ollama_chat() {

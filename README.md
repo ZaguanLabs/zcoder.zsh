@@ -59,7 +59,7 @@ Set `ZCODER_PROFILE=sysadmin` to make the profile the environment default. `--pr
 
 Agent runs have a configurable emergency ceiling of 100 model turns. Override it with `--max-turns COUNT` or `ZCODER_MAX_TURNS`; this is a final safety fuse, not the primary loop detector.
 
-Context sizing defaults to `auto`. If the selected model is already loaded, zcoder uses the allocation reported by Ollama's `/api/ps`; otherwise it begins with a conservative 65,536-token fallback and refreshes its accounting after the first response. Use `--context-window TOKENS` or `ZCODER_CONTEXT_WINDOW` when a model should be loaded with a specific allocation from its first request.
+Context sizing defaults to `auto`. If the selected model is already loaded, zcoder uses the allocation reported by Ollama's `/api/ps`. For an unloaded model, the conservative 65,536-token fallback is used only for initial internal accounting: the first request omits `num_ctx`, allowing Ollama to honor the model's Modelfile or server default, and zcoder refreshes its accounting from `/api/ps` after the response. Use `--context-window TOKENS` or `ZCODER_CONTEXT_WINDOW` when a model should be loaded with a specific allocation from its first request.
 
 Larger contexts consume more memory. `/context` shows the allocation and current compaction threshold.
 
@@ -86,7 +86,7 @@ The system prompt asks the model to search first—using the `search` tool backe
 
 Successful reads are compact in the TUI: `Read(path)` and `Read File Range(path:start-end)`. The actual contents remain in model history. `write_file` and `apply_patch` continue to display their proposed content so edits stay reviewable.
 
-`apply_patch` does not require the workspace to be a Git repository. It first validates with `git apply --check`; if Git rejects an otherwise usable diff, it tries a workspace-confined `patch --dry-run` before applying. Invalid model output returns a corrective unified-diff example so the model can retry the focused edit instead of falling back to `write_file`.
+`apply_patch` does not require the workspace to be a Git repository. It first validates with `git apply --check`; if Git rejects an otherwise usable diff, it tries a workspace-confined `patch --dry-run` before applying. Both system-prompt profiles include valid and invalid patch examples. After a rejected patch, `write_file` is removed from the tool schema and rejected for the rest of that user turn until a corrected patch succeeds, preventing it from becoming an accidental focused-edit fallback.
 
 ## Permission model
 

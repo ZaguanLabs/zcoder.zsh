@@ -50,10 +50,16 @@ agent_completion_instructions() {
   fi
 }
 
+agent_patch_instructions() {
+  REPLY=$'Patch protocol for focused edits:\n- apply_patch accepts raw standard unified diff text only. Copy unchanged context and removed lines exactly from the latest file read. Every hunk needs a real line-range header; never use a bare @@.\n- Good example:\n--- a/lib/example.zsh\n+++ b/lib/example.zsh\n@@ -10,3 +10,3 @@\n context before\n-old value\n+new value\n context after\n- Bad example (unsupported envelope and missing line ranges):\n*** Begin Patch\n*** Update File: lib/example.zsh\n@@\n-old value\n+new value\n*** End Patch\n- Put only the diff in the patch argument, with no Markdown fence or explanation. If rejected, read the reported error, re-read the exact target range, correct the diff, and call apply_patch again. Never bypass a focused patch failure with write_file.'
+}
+
 agent_coding_system_prompt() {
-  local completion_instructions=""
+  local completion_instructions="" patch_instructions=""
   agent_completion_instructions
   completion_instructions="$REPLY"
+  agent_patch_instructions
+  patch_instructions="$REPLY"
   REPLY="You are zcoder, an AI coding agent operating in this workspace: ${ZCODER_WORKSPACE:A}.
 Use the supplied tools to inspect the project, make requested changes, and verify your work.
 Minimize data collection and context use. Do not begin by reading whole source files or recursively listing the entire project. Follow this inspection order:
@@ -64,15 +70,18 @@ Minimize data collection and context use. Do not begin by reading whole source f
 4. Use read_file only for clearly small files, or when the entire file is genuinely required. Never read a large source file in full merely to inspect one function or section.
 5. If the built-in tools are insufficient, use run_command with targeted commands such as rg --files, rg -n, grep, sed -n, or awk. run_command requires user approval; do not use cat or an unbounded command when search or a ranged read will do.
 Stop inspecting once you have enough evidence to act. Read relevant code before editing it. Prefer apply_patch for focused changes and write_file for new or fully replaced files.
+${patch_instructions}
 Act instead of only narrating: if more work remains, call the appropriate work tool in that response.
 ${completion_instructions}
 Never invent tool results. Keep changes inside the workspace."
 }
 
 agent_sysadmin_system_prompt() {
-  local completion_instructions=""
+  local completion_instructions="" patch_instructions=""
   agent_completion_instructions
   completion_instructions="$REPLY"
+  agent_patch_instructions
+  patch_instructions="$REPLY"
   REPLY="You are zcoder operating as a careful system-administration assistant. The selected workspace is ${ZCODER_WORKSPACE:A}.
 Use the workspace for maintenance notes, scripts, staged configuration, and evidence. All built-in file tools remain strictly confined to that workspace. Inspecting or changing the host outside it is possible only through run_command, and every run_command requires the user's approval for that exact command.
 
@@ -98,6 +107,7 @@ Fail-closed command construction:
 17. Never use the unsafe shape crontab -l > /tmp/file; append content; crontab /tmp/file. Its final step can erase existing jobs when the export fails. Apply the same reasoning to every read-modify-replace command.
 
 For each proposed host change, state the observed problem, exact intended effect, risk, rollback, and verification. Use run_command only after enough evidence exists to justify the exact command. Workspace-confined write_file and apply_patch may prepare files, but they do not authorize copying those files onto the host.
+${patch_instructions}
 Act instead of only narrating when a safe next tool call exists. ${completion_instructions} Never invent tool results."
 }
 
@@ -190,6 +200,7 @@ agent_parse_finish() {
 agent_reset() {
   AGENT_MESSAGES=()
   AGENT_LAST_RESPONSE=""
+  TOOL_PATCH_RETRY_REQUIRED=0
   (( $+functions[skills_reset_activations] )) && skills_reset_activations
   agent_loop_reset
   agent_compaction_reset
@@ -357,12 +368,12 @@ agent_ollama_chat() {
     ui_wait_for_generation
     wait_status=$?
     if (( wait_status == 130 )); then
-      http_async_cancel
+      http_async_cancel "Escape pressed"
       AGENT_CANCELLED=1
       ui_draw_footer
       return 130
     elif (( wait_status != 0 )); then
-      http_async_cancel
+      http_async_cancel "UI wait failed with status ${wait_status}"
       ui_draw_footer
       return "$wait_status"
     fi
@@ -383,6 +394,7 @@ agent_user_turn() {
   local -i step i request_status prepare_status incomplete_retries=0 needs_continuation=0
 
   AGENT_LAST_RESPONSE=""
+  TOOL_PATCH_RETRY_REQUIRED=0
   agent_loop_reset
   if (( $+functions[skills_activate_explicit_from_text] )); then
     skills_activate_explicit_from_text "$user_content"

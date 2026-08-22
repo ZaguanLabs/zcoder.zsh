@@ -64,7 +64,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..293"
+print -r -- "1..310"
 
 input_reset
 input_layout 20 4
@@ -192,11 +192,27 @@ fi
 tool_apply_patch $'*** Begin Patch\n*** Update File: src/note.txt\n@@\n-TWO\n+two\n*** End Patch\n'
 assert_failure "apply_patch rejects unsupported patch envelopes clearly" $?
 assert_contains "$TOOL_RESULT" "complete standard unified diff" "patch errors teach the model the accepted format"
+tools_schema_json
+assert_not_contains "$REPLY" '"name":"write_file"' "write_file is hidden after a rejected patch"
+tool_write_file "src/note.txt" "destructive fallback"
+assert_failure "write_file cannot bypass a rejected focused patch" $?
+assert_contains "$TOOL_RESULT" "corrected apply_patch" "blocked write_file directs the model back to patching"
+assert_contains "${mapfile[$TEST_TMP/src/note.txt]}" "TWO" "blocked write_file leaves the target unchanged"
+tool_apply_patch $'--- a/src/note.txt\n+++ b/src/note.txt\n@@ -1,3 +1,3 @@\n one\n-TWO\n+two\n three\n'
+assert_success "a corrected apply_patch releases patch recovery" $?
+tools_schema_json
+assert_contains "$REPLY" '"name":"write_file"' "write_file returns after the corrected patch succeeds"
+mapfile[$TEST_TMP/src/no-final-newline.txt]=$'before\n'
+tool_apply_patch $'--- a/src/no-final-newline.txt\n+++ b/src/no-final-newline.txt\n@@ -1 +1 @@\n-before\n+after'
+assert_success "apply_patch normalizes a missing final diff newline" $?
+assert_contains "${mapfile[$TEST_TMP/src/no-final-newline.txt]}" "after" "normalized patch content is applied"
+assert_not_contains "$TOOL_RESULT" "\$'\\n'" "patch success output contains real newlines"
 
 tool_apply_patch $'*** ../escape.txt\n--- ../escape.txt\n***************\n*** 1 ****\n! outside\n--- 1 ----\n! escaped\n'
 assert_failure "patch fallback rejects parent traversal" $?
 if [[ -e "$TEST_TMP/../escape.txt" ]]; then escape_absent=1; else escape_absent=0; fi
 assert_success "patch fallback leaves outside paths untouched" "$escape_absent"
+TOOL_PATCH_RETRY_REQUIRED=0
 
 ZCODER_PROFILE=sysadmin
 ZCODER_COMMAND_POLICY=allow
@@ -302,6 +318,7 @@ agent_ollama_chat '{}' "mock.invalid:11434"
 agent_cancel_status=$?
 assert_eq "130" "$agent_cancel_status" "agent maps Escape polling to cancellation"
 assert_eq "1" "$AGENT_CANCELLED" "agent records intentional cancellation"
+assert_contains "$HTTP_ERROR" "Escape pressed" "HTTP cancellation records why the client disconnected"
 UI_ACTIVE=0
 unfunction ui_wait_for_generation ui_draw_footer
 
@@ -481,6 +498,7 @@ assert_contains "$REPLY" "use set -o pipefail" "sysadmin prompt prevents hidden 
 assert_contains "$REPLY" "Use mktemp for temporary files" "sysadmin prompt rejects predictable temporary paths"
 assert_contains "$REPLY" "replace the entire stored state" "sysadmin prompt identifies replacement-style command risk"
 assert_contains "$REPLY" "crontab -l > /tmp/file; append content; crontab /tmp/file" "sysadmin prompt names the unsafe crontab pattern"
+assert_contains "$REPLY" "Good example:" "sysadmin prompt also teaches the workspace patch protocol"
 agent_select_profile unknown
 assert_failure "unknown prompt profiles are rejected" $?
 assert_eq "sysadmin" "$ZCODER_PROFILE" "invalid profile selection preserves the active profile"
@@ -497,6 +515,10 @@ assert_contains "$REPLY" "Stop inspecting once you have enough evidence" "system
 assert_contains "$REPLY" "do not repeat discovery with minor query variations" "system prompt prevents redundant discovery searches"
 assert_contains "$REPLY" "non-empty plain assistant response is also accepted as final" "default prompt permits compatible tool-free completion"
 assert_contains "$REPLY" "Never use a tool-free response as a preamble" "default prompt still requires tools while work remains"
+assert_contains "$REPLY" "Good example:" "coding prompt includes a valid unified-diff example"
+assert_contains "$REPLY" "@@ -10,3 +10,3 @@" "valid patch example includes concrete hunk ranges"
+assert_contains "$REPLY" "Bad example" "coding prompt contrasts an unsupported patch envelope"
+assert_contains "$REPLY" "Never bypass a focused patch failure with write_file" "coding prompt requires patch retry instead of replacement"
 tools_schema_json
 assert_contains "$REPLY" "defaults to 100" "list_files schema advertises its conservative default"
 assert_contains "$REPLY" "defaults to 50" "search schema advertises its conservative default"
@@ -547,13 +569,18 @@ ZCODER_MODEL="unloaded-model:latest"
 agent_context_configure
 assert_eq "65536" "$AGENT_CONTEXT_WINDOW" "automatic context sizing uses the fallback before first load"
 assert_eq "1" "$AGENT_CONTEXT_DISCOVERY_PENDING" "automatic context sizing refreshes after an unloaded model responds"
+agent_context_options_json
+assert_eq "" "$REPLY" "automatic context does not override an unloaded model's declared window"
+agent_build_payload
+assert_not_contains "$REPLY" '"num_ctx"' "first automatic request leaves Ollama context selection intact"
 functions[ollama_get_running_context]="$saved_context_lookup"
 ZCODER_MODEL="$saved_model"
 AGENT_CONTEXT_MODEL=""
 ZCODER_CONTEXT_WINDOW=auto
 AGENT_CONTEXT_WINDOW=131072
+AGENT_CONTEXT_DISCOVERY_PENDING=0
 agent_context_options_json
-assert_contains "$REPLY" '"num_ctx":131072' "automatic context sizing pins num_ctx in Ollama requests"
+assert_contains "$REPLY" '"num_ctx":131072' "automatic context preserves a known loaded allocation"
 
 ZCODER_CONTEXT_WINDOW=8192
 ZCODER_COMPACT_PERCENT=70
