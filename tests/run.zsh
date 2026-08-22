@@ -17,6 +17,7 @@ source "${PROJECT_DIR}/lib/input.zsh"
 source "${PROJECT_DIR}/lib/tools.zsh"
 source "${PROJECT_DIR}/lib/compact.zsh"
 source "${PROJECT_DIR}/lib/agent.zsh"
+source "${PROJECT_DIR}/lib/state.zsh"
 source "${PROJECT_DIR}/lib/delegate.zsh"
 
 typeset -gi TESTS=0 FAILURES=0
@@ -64,7 +65,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..310"
+print -r -- "1..336"
 
 input_reset
 input_layout 20 4
@@ -476,6 +477,96 @@ assert_contains "$REPLY" "PROJECT SHARED BODY" "active skills survive conversati
 agent_reset
 assert_eq "0" "${#SKILL_ACTIVE_NAMES}" "new conversations clear active skills"
 
+# The transcript exporter is UI code but does not require curses to be active.
+source "${PROJECT_DIR}/lib/ui.zsh"
+
+ZCODER_SESSIONS_DIR="$TEST_TMP/zcoder-sessions"
+STATE_ENABLED=0
+CURRENT_SESSION_ID=""
+ZCODER_WORKSPACE="$skill_project_root"
+ZCODER_PROFILE=coding
+ZCODER_MODEL="session-model"
+ZCODER_MODEL_OVERRIDE=0
+state_init
+assert_eq "1" "$STATE_ENABLED" "session storage initializes in the standard config root"
+saved_session_id="$CURRENT_SESSION_ID"
+_state_valid_id "$saved_session_id"
+assert_success "new sessions receive traversal-safe identifiers" $?
+state_note_user $'Repair the deployment\nwithout losing context'
+AGENT_MESSAGES=('{"role":"user","content":"Repair the deployment"}' '{"role":"assistant","content":"Working"}')
+AGENT_USER_MESSAGES=("Repair the deployment")
+UI_ROLES=(user assistant)
+UI_CONTENTS=("Repair the deployment" "Work completed")
+UI_THINKINGS=("" "private reasoning")
+UI_TIMES=("12:00" "12:01")
+UI_REASONING_OPEN=(0 0)
+AGENT_COMPACTION_SUMMARY="durable resumed checkpoint"
+AGENT_COMPACTION_COUNT=2
+AGENT_COMPACTION_REARM_TOKENS=1234
+AGENT_LAST_PROMPT_TOKENS=4321
+AGENT_LAST_OUTPUT_TOKENS=55
+AGENT_LAST_PAYLOAD_BYTES=9876
+skills_activate folded-skill >/dev/null
+state_save_and_refresh
+assert_eq "Repair the deployment without losing conte" "$SESSION_TITLE" "first user request becomes a bounded resumable session title"
+assert_contains "${(j:,:)SESSION_IDS}" "$saved_session_id" "saved sessions appear in the sidebar cache"
+
+foreign_profile_id="9999999999_101"
+foreign_workspace_id="9999999999_102"
+zf_mkdir -p "$ZCODER_SESSIONS_DIR/$foreign_profile_id.session" "$ZCODER_SESSIONS_DIR/$foreign_workspace_id.session"
+mapfile[$ZCODER_SESSIONS_DIR/$foreign_profile_id.session/workspace]="${ZCODER_WORKSPACE:A}"
+mapfile[$ZCODER_SESSIONS_DIR/$foreign_profile_id.session/profile]="sysadmin"
+mapfile[$ZCODER_SESSIONS_DIR/$foreign_profile_id.session/updated_at]="9999999999"
+mapfile[$ZCODER_SESSIONS_DIR/$foreign_workspace_id.session/workspace]="$TEST_TMP/another-project"
+mapfile[$ZCODER_SESSIONS_DIR/$foreign_workspace_id.session/profile]="coding"
+mapfile[$ZCODER_SESSIONS_DIR/$foreign_workspace_id.session/updated_at]="9999999999"
+state_refresh_sessions_list
+session_ids_joined="${(j:,:)SESSION_IDS}"
+assert_not_contains "$session_ids_joined" "$foreign_profile_id" "session list isolates prompt profiles"
+assert_not_contains "$session_ids_joined" "$foreign_workspace_id" "session list isolates canonical workspaces"
+
+CURRENT_SESSION_ID=""
+AGENT_MESSAGES=()
+AGENT_USER_MESSAGES=()
+UI_ROLES=(); UI_CONTENTS=(); UI_THINKINGS=(); UI_TIMES=(); UI_REASONING_OPEN=()
+AGENT_COMPACTION_SUMMARY=""
+AGENT_COMPACTION_COUNT=0
+skills_reset_activations
+ZCODER_MODEL="other-model"
+state_load_session "$saved_session_id"
+assert_eq "session-model" "$ZCODER_MODEL" "resuming restores the session model without a CLI override"
+assert_eq "2" "${#AGENT_MESSAGES}" "resuming restores complete model/tool history"
+assert_contains "${AGENT_MESSAGES[2]}" "Working" "resumed model history remains exact JSON"
+assert_eq "Work completed" "${UI_CONTENTS[2]}" "resuming restores the visible transcript"
+assert_eq "private reasoning" "${UI_THINKINGS[2]}" "resuming restores reasoning text"
+assert_eq "durable resumed checkpoint" "$AGENT_COMPACTION_SUMMARY" "resuming restores compacted context"
+assert_eq "2" "$AGENT_COMPACTION_COUNT" "resuming restores compaction metadata"
+assert_eq "Repair the deployment" "${AGENT_USER_MESSAGES[1]}" "resuming restores the exact-user ledger"
+assert_contains "${(j:,:)SKILL_ACTIVE_NAMES}" "folded-skill" "resuming reactivates available Skills"
+
+CURRENT_SESSION_ID=""
+ZCODER_MODEL_OVERRIDE=1
+ZCODER_MODEL="cli-selected-model"
+state_load_session "$saved_session_id"
+assert_eq "cli-selected-model" "$ZCODER_MODEL" "explicit CLI model selection wins when resuming"
+ui_plain_transcript
+assert_contains "$REPLY" "Work completed" "copy view exports the visible transcript as plain text"
+assert_not_contains "$REPLY" "private reasoning" "copy view omits collapsed reasoning"
+UI_REASONING_OPEN[2]=1
+ui_plain_transcript
+assert_contains "$REPLY" "private reasoning" "copy view includes expanded reasoning"
+
+previous_session_id="$CURRENT_SESSION_ID"
+ZCODER_MODEL_OVERRIDE=0
+state_new_session
+[[ "$CURRENT_SESSION_ID" != "$previous_session_id" ]]
+assert_success "new chat creates a separate saved session" $?
+assert_eq "0" "${#AGENT_MESSAGES}" "new sessions clear model history"
+assert_eq "0" "${#UI_ROLES}" "new sessions clear the visible transcript"
+STATE_ENABLED=0
+CURRENT_SESSION_ID=""
+SESSION_IDS=(); SESSION_TITLES=(); SESSION_MODELS=()
+
 skills_reset
 tools_schema_json
 assert_not_contains "$REPLY" '"name":"activate_skill"' "skill tools are omitted when no Skills are disclosed"
@@ -854,7 +945,6 @@ assert_eq "" "$DELEGATE_BASE" "delegate cancellation removes worker files"
 
 # Keep curses dispatch testable without initializing a terminal. In particular,
 # delwin accepts one window per call and refresh accepts the complete frame.
-source "${PROJECT_DIR}/lib/ui.zsh"
 
 UI_ROLES=(tool)
 UI_CONTENTS=($'Apply Patch\n--- a/example.ts\n+++ b/example.ts\n@@ -1 +1 @@\n-old\n+new\n✓ Patch applied')
@@ -905,6 +995,25 @@ ui_draw_chat
 render_calls="${(j:\n:)MOCK_ZCURSES_CALLS}"
 assert_contains "$render_calls" "attr chat_win bold magenta/black" "curses renderer applies keyword attributes"
 assert_contains "$render_calls" 'string chat_win "hello"' "curses renderer writes highlighted string segments"
+
+SCREEN_H=40; SCREEN_W=120; SIDE_W=25; TOP_H=3; INPUT_H=3; FOOT_H=1
+UI_FOCUS=sidebar
+SESSION_IDS=(111_1 222_2)
+SESSION_TITLES=("Older job" "Current job")
+SESSION_MODELS=(model-a model-b)
+CURRENT_SESSION_ID=222_2
+MOCK_ZCURSES_CALLS=()
+ui_draw_sidebar
+sidebar_calls="${(j:\n:)MOCK_ZCURSES_CALLS}"
+assert_contains "$sidebar_calls" "Sessions (2)" "sidebar renders the resumable session log"
+assert_contains "$sidebar_calls" "Current job" "sidebar highlights the active saved job"
+assert_contains "$sidebar_calls" "───────────────────────" "project details are separated from sessions by a divider"
+session_call_index=0; project_call_index=0
+for (( render_index=1; render_index<=${#MOCK_ZCURSES_CALLS}; render_index++ )); do
+  [[ "${MOCK_ZCURSES_CALLS[render_index]}" == *"Current job"* ]] && session_call_index=$render_index
+  [[ "${MOCK_ZCURSES_CALLS[render_index]}" == "string side_win Project" ]] && project_call_index=$render_index
+done
+assert_success "session log is rendered above the bottom Project block" $(( session_call_index > 0 && project_call_index > session_call_index ? 0 : 1 ))
 
 MOCK_ZCURSES_CALLS=()
 ui_destroy_windows

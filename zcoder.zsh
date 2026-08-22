@@ -9,7 +9,7 @@ zmodload zsh/curses zsh/datetime zsh/files zsh/mapfile zsh/net/tcp \
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.4.2"
+typeset -gr ZCODER_VERSION="0.4.3"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -25,12 +25,14 @@ source "${ZCODER_DIR}/lib/ui.zsh"
 source "${ZCODER_DIR}/lib/tools.zsh"
 source "${ZCODER_DIR}/lib/compact.zsh"
 source "${ZCODER_DIR}/lib/agent.zsh"
+source "${ZCODER_DIR}/lib/state.zsh"
 source "${ZCODER_DIR}/lib/delegate.zsh"
 
 typeset -g ONE_SHOT_PROMPT=""
 typeset -gi RUNNING=1
 typeset -gi PRINT_INSTRUCTIONS=0
 typeset -gi PRINT_SKILLS=0
+typeset -gi ZCODER_MODEL_OVERRIDE=0
 
 usage() {
   print -r -- "Usage: ${ZCODER_NAME} [options]"
@@ -61,7 +63,7 @@ require_option_value() {
 
 while (( $# > 0 )); do
   case "$1" in
-    -m|--model) require_option_value "$1" "${2:-}"; ZCODER_MODEL="$2"; shift ;;
+    -m|--model) require_option_value "$1" "${2:-}"; ZCODER_MODEL="$2"; ZCODER_MODEL_OVERRIDE=1; shift ;;
     -h|--host)
       require_option_value "$1" "${2:-}"
       if ! ollama_normalize_host "$2"; then print -u2 -- "Error: $HTTP_ERROR"; exit 2; fi
@@ -158,6 +160,7 @@ cleanup() {
   local exit_status=$?
   zcoder_debug session_end "status=$exit_status running=$RUNNING async_pid=${HTTP_ASYNC_PID:-none} delegate_pid=${DELEGATE_PID:-none}"
   RUNNING=0
+  (( $+functions[state_save_session] )) && state_save_session
   delegate_async_cancel
   http_async_cancel
   ui_end
@@ -169,10 +172,19 @@ handle_slash_command() {
   local -i delegate_status=0
   case "$text" in
     /new|/clear)
-      agent_reset
-      UI_ROLES=(); UI_CONTENTS=(); UI_THINKINGS=(); UI_TIMES=(); UI_REASONING_OPEN=()
-      UI_SCROLL=0; UI_AUTO_SCROLL=1
+      state_new_session
+      UI_FOCUS="input"
       ui_set_status "Ready"
+      ;;
+    /sessions)
+      if (( SIDE_W > 0 )); then
+        UI_FOCUS="sidebar"
+      else
+        ui_append_message error "The terminal is too narrow to show the session sidebar."
+      fi
+      ;;
+    /copy)
+      ui_copy_view
       ;;
     /model)
       ui_select_model; ;;
@@ -271,17 +283,22 @@ handle_slash_command() {
       fi
       ;;
     /help|/\?)
-      ui_append_message system $'Enter sends a prompt. Shift+Enter inserts a newline; Alt+Enter is the fallback for terminals that do not report Shift+Enter separately. Pasted multiline text keeps its formatting. Escape stops a running Ollama response or external consultation.\nCtrl+O selects an Ollama model. Ctrl+R toggles reasoning. Ctrl+N clears the conversation. PgUp/PgDn scroll. Ctrl+U clears input. Ctrl+W deletes a word. Ctrl+Q exits.\n/claude REQUEST, /codex REQUEST, /agy REQUEST, and /opencode REQUEST run read-only external consultations. /opencode with no request selects its provider/model. /skills lists installed Agent Skills; /skill NAME activates one. Prefix a request with $skill-name for explicit activation. /model opens the Ollama picker; /host HOST changes Ollama; /instructions lists active AGENTS.md files; /compact creates a context checkpoint; /context shows the token budget; /new starts over.'
+      ui_append_message system $'Enter sends a prompt. Shift+Enter inserts a newline; Alt+Enter is the fallback for terminals that do not report Shift+Enter separately. Pasted multiline text keeps its formatting. Escape stops a running Ollama response or external consultation.\nTab moves focus between the prompt, session sidebar, and transcript. Use Up/Down in the sidebar to resume another job. Ctrl+Y or /copy opens a stable plain-text view for native terminal selection and copying.\nCtrl+O selects an Ollama model. Ctrl+R toggles reasoning. Ctrl+N starts a new saved session. PgUp/PgDn scroll. Ctrl+U clears input. Ctrl+W deletes a word. Ctrl+Q exits.\n/claude REQUEST, /codex REQUEST, /agy REQUEST, and /opencode REQUEST run read-only external consultations. /opencode with no request selects its provider/model. /skills lists installed Agent Skills; /skill NAME activates one. Prefix a request with $skill-name for explicit activation. /model opens the Ollama picker; /host HOST changes Ollama; /instructions lists active AGENTS.md files; /compact creates a context checkpoint; /context shows the token budget; /sessions focuses saved jobs; /new starts a saved job.'
       ;;
     /quit|/exit|/q) RUNNING=0 ;;
     *) return 1 ;;
   esac
+  (( $+functions[state_save_and_refresh] )) && state_save_and_refresh
   ui_refresh_all
 }
 
 main_tui() {
   local ch="" key="" mouse="" text=""
+  local -i current_index=1 i=1
   input_reset
+  if ! state_init; then
+    print -u2 -- "Warning: could not initialize session storage at $ZCODER_SESSIONS_DIR"
+  fi
   ui_init || { print -u2 -- "Error: could not initialize curses UI"; return 1; }
   while (( RUNNING )); do
     ui_poll_resize
@@ -309,22 +326,56 @@ main_tui() {
       input_clear; ui_input_changed
     elif [[ "$ch" == $'\x0e' ]]; then
       handle_slash_command /new
+    elif [[ "$ch" == $'\x19' ]]; then
+      ui_copy_view
     elif [[ "$ch" == $'\x0f' ]]; then
       ui_select_model
+      state_save_and_refresh
     elif [[ "$ch" == $'\x12' ]]; then
       ui_toggle_reasoning
+    elif [[ "$ch" == $'\t' || "$key" == TAB ]]; then
+      case "$UI_FOCUS" in
+        input) (( SIDE_W > 0 )) && UI_FOCUS="sidebar" || UI_FOCUS="chat" ;;
+        sidebar) UI_FOCUS="chat" ;;
+        *) UI_FOCUS="input" ;;
+      esac
+      ui_refresh_all
     elif [[ "$key" == PPAGE ]]; then
       UI_AUTO_SCROLL=0; (( UI_SCROLL -= 6 )); (( UI_SCROLL < 0 )) && UI_SCROLL=0; ui_draw_chat
     elif [[ "$key" == NPAGE ]]; then
       (( UI_SCROLL += 6 )); ui_draw_chat
+    elif [[ "$UI_FOCUS" == sidebar ]]; then
+      current_index=1
+      for (( i=1; i<=${#SESSION_IDS}; i++ )); do
+        [[ "${SESSION_IDS[i]}" == "$CURRENT_SESSION_ID" ]] && { current_index=$i; break; }
+      done
+      if [[ "$key" == UP || "$ch" == k ]]; then
+        if (( current_index > 1 )); then
+          state_load_session "${SESSION_IDS[current_index-1]}"
+          ui_set_status "Ready"
+          ui_refresh_all
+        fi
+      elif [[ "$key" == DOWN || "$ch" == j ]]; then
+        if (( current_index < ${#SESSION_IDS} )); then
+          state_load_session "${SESSION_IDS[current_index+1]}"
+          ui_set_status "Ready"
+          ui_refresh_all
+        fi
+      elif [[ "$ch" == $'\n' || "$ch" == $'\r' || "$key" == ENTER || "$key" == PADENTER ]]; then
+        UI_FOCUS="input"
+        ui_refresh_all
+      fi
+    elif [[ "$UI_FOCUS" == chat ]]; then
+      :
     elif [[ "$ch" == $'\n' || "$ch" == $'\r' || "$key" == ENTER || "$key" == PADENTER ]]; then
       input_submit; text="$INPUT_SUBMITTED"
       ui_input_changed
       if [[ -n "$text" ]]; then
         if [[ "$text" == /* ]]; then
-          handle_slash_command "$text" || agent_user_turn "$text"
+          handle_slash_command "$text" || { agent_user_turn "$text"; state_save_and_refresh; }
         else
           agent_user_turn "$text"
+          state_save_and_refresh
         fi
       fi
     elif [[ "$key" == BACKSPACE || "$ch" == $'\x7f' || "$ch" == $'\b' ]]; then

@@ -404,6 +404,8 @@ agent_user_turn() {
   zcoder_debug user_turn_start "content=${(qqq)user_content}"
   if (( $+functions[ui_append_message] && ${UI_ACTIVE:-0} )); then
     ui_append_message user "$user_content"
+    (( $+functions[state_note_user] )) && state_note_user "$user_content"
+    (( $+functions[state_save_and_refresh] )) && state_save_and_refresh
     ui_refresh_all
   fi
 

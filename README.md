@@ -149,11 +149,17 @@ Skill files and bundled scripts are potentially untrusted. Their instructions ca
 The adaptive curses layout includes:
 
 - header with model, Ollama host, workspace, and agent status
-- workspace sidebar with available tools and command policy
+- session sidebar with resumable jobs above a separated project, tool, and command-policy block
 - scrollable transcript with tool activity and collapsible reasoning
 - native syntax highlighting for `write_file` previews and semantic diff colors for `apply_patch`
 - native multiline editor with a four-line cursor-following viewport and prompt history
 - command-approval modal
+
+Interactive jobs are saved under `${ZCODER_HOME}/sessions` (normally `${XDG_CONFIG_HOME:-$HOME/.config}/zcoder/sessions`) and the most recently updated matching job is resumed at startup. A session retains the current Ollama/tool context, visible transcript, compaction checkpoint and accounting, active Skills, selected model, and reasoning-expansion state. Sessions are isolated by both canonical workspace and prompt profile, so a coding conversation is never offered inside a sysadmin workspace session. The storage directory is private to the current user.
+
+Press Tab to focus the sidebar, then Up or Down to resume a job; Enter returns to the prompt. Ctrl+N creates a new saved job without deleting older ones. `/sessions` focuses the same list.
+
+Curses redraws make ordinary mouse selection unreliable in many terminals. Ctrl+Y or `/copy` temporarily leaves the TUI and prints the visible transcript as stable plain text. Select and copy it with the terminal's normal mouse and keyboard controls, then press Enter to return. Expanded reasoning is included; collapsed reasoning remains hidden, matching the TUI.
 
 Keyboard shortcuts:
 
@@ -162,16 +168,18 @@ Keyboard shortcuts:
 | Enter | Send prompt |
 | Shift+Enter | Insert a newline; Alt+Enter is the fallback when the terminal cannot distinguish Shift+Enter |
 | Escape | Stop the running Ollama response or external consultation |
+| Tab | Move focus between the prompt, session sidebar, and transcript |
 | Ctrl+O | Open the Ollama model picker |
 | Ctrl+R | Toggle the latest reasoning block |
-| Ctrl+N | Start a new conversation |
+| Ctrl+N | Start a new saved session |
+| Ctrl+Y | Open the plain-text transcript copy view |
 | Page Up / Page Down | Scroll transcript |
 | Ctrl+U | Clear input |
 | Ctrl+W | Delete previous word |
 | Up / Down | Move within multiline input, then navigate prompt history at its boundaries |
 | Ctrl+Q / Ctrl+D | Exit |
 
-Slash commands: `/model` opens the picker; `/model NAME`, `/host HOST`, `/instructions`, `/skills`, `/skills reload`, `/skill NAME`, `/compact`, `/context`, `/new`, `/help`, and `/quit` are also available.
+Slash commands: `/model` opens the picker; `/model NAME`, `/host HOST`, `/instructions`, `/skills`, `/skills reload`, `/skill NAME`, `/compact`, `/context`, `/sessions`, `/copy`, `/new`, `/help`, and `/quit` are also available.
 
 ## External consultants
 
@@ -200,6 +208,7 @@ lib/
   delegate.zsh          read-only external harness consultations
   instructions.zsh      AGENTS.md discovery, precedence, and prompt assembly
   skills.zsh            standard Agent Skills discovery and progressive loading
+  state.zsh             workspace/profile-scoped persistent sessions
   http.zsh              native TCP/HTTP Ollama client
   json.zsh              native tokenizer, decoder, and encoder
   tools.zsh             schemas, confinement, dispatch, and execution

@@ -8,6 +8,7 @@ typeset -gF UI_NEXT_RESIZE_CHECK=0.0
 typeset -grF UI_RESIZE_CHECK_INTERVAL=0.25
 typeset -g UI_STATUS="Ready"
 typeset -gi UI_SCROLL=0 UI_AUTO_SCROLL=1
+typeset -g UI_FOCUS="input"
 typeset -ga UI_ROLES=() UI_CONTENTS=() UI_THINKINGS=() UI_TIMES=() UI_REASONING_OPEN=()
 typeset -ga UI_LINES=() UI_ATTRS=()
 typeset -ga UI_LINE_SEGMENT_STARTS=() UI_LINE_SEGMENT_COUNTS=()
@@ -145,21 +146,14 @@ ui_draw_header() {
 ui_draw_sidebar() {
   (( UI_ACTIVE && SIDE_W > 0 )) || return 0
   local -i defer_refresh="${1:-0}"
-  local root="${ZCODER_WORKSPACE:t}" policy="$ZCODER_COMMAND_POLICY"
+  local root="${ZCODER_WORKSPACE:t}" policy="$ZCODER_COMMAND_POLICY" divider="" display=""
+  local session_id="" title="" skill_name=""
+  local -a names=(list_files read_file read_file_range)
+  local -i inner_h=$(( SCREEN_H - TOP_H - INPUT_H - FOOT_H - 2 )) inner_w=$(( SIDE_W - 2 ))
+  local -i i row current_index=1 session_start=1 session_rows divider_row bottom_needed inactive_skills=0
   [[ "$ZCODER_PROFILE" == sysadmin ]] && policy="per-command"
-  zcurses clear side_win
-  zcurses attr side_win dim white/black
-  zcurses border side_win
-  zcurses move side_win 0 2
-  zcurses attr side_win bold cyan/black
-  zcurses string side_win " Agent Workspace "
-  zcurses move side_win 2 2; zcurses attr side_win bold white/black; zcurses string side_win "Project"
-  zcurses move side_win 3 2; zcurses attr side_win green/black; zcurses string side_win "${root[1,20]}"
-  zcurses move side_win 4 2; zcurses attr side_win dim cyan/black; zcurses string side_win "${ZCODER_PROFILE} · Guides: ${#INSTRUCTION_SOURCES}"
-  zcurses move side_win 5 2; zcurses attr side_win bold white/black; zcurses string side_win "Available tools"
-  local -a names=(list_files read_file read_file_range write_file apply_patch search run_command)
-  local skill_name=""
-  local -i inactive_skills=0
+  (( ! ${TOOL_PATCH_RETRY_REQUIRED:-0} )) && names+=(write_file)
+  names+=(apply_patch search run_command)
   for skill_name in "${SKILL_CATALOG_NAMES[@]}"; do
     if ! _skills_is_active "$skill_name"; then
       inactive_skills=1
@@ -169,16 +163,123 @@ ui_draw_sidebar() {
   (( inactive_skills )) && names+=(activate_skill)
   (( ${#SKILL_ACTIVE_NAMES} > 0 )) && names+=(read_skill_resource)
   names+=(finish)
-  local -i row=6 i
+
+  bottom_needed=$(( ${#names} + 7 ))
+  divider_row=$(( inner_h - bottom_needed + 1 ))
+  (( divider_row < 2 )) && divider_row=2
+  session_rows=$(( divider_row - 1 ))
+  for (( i=1; i<=${#SESSION_IDS}; i++ )); do
+    [[ "${SESSION_IDS[i]}" == "$CURRENT_SESSION_ID" ]] && { current_index=$i; break; }
+  done
+  if (( current_index > session_rows )); then
+    session_start=$(( current_index - session_rows + 1 ))
+  fi
+
+  zcurses clear side_win
+  [[ "$UI_FOCUS" == sidebar ]] && zcurses attr side_win bold yellow/black || zcurses attr side_win dim white/black
+  zcurses border side_win
+  zcurses move side_win 0 2
+  zcurses attr side_win bold cyan/black
+  zcurses string side_win " Sessions (${#SESSION_IDS}) "
+
+  row=1
+  for (( i=session_start; i<=${#SESSION_IDS} && row<=session_rows; i++ )); do
+    session_id="${SESSION_IDS[i]}"
+    title="${SESSION_TITLES[i]:-Untitled}"
+    display="${title[1,$(( inner_w - 4 ))]}"
+    zcoder_pad "$display" $(( inner_w - 4 )); display="$REPLY"
+    zcurses move side_win $row 1
+    if [[ "$session_id" == "$CURRENT_SESSION_ID" ]]; then
+      zcurses attr side_win bold green/black
+      zcurses string side_win " ▶ $display"
+    else
+      zcurses attr side_win dim white/black
+      zcurses string side_win "   $display"
+    fi
+    (( row++ ))
+  done
+
+  divider=""
+  for (( i=1; i<=inner_w; i++ )); do divider+="─"; done
+  if (( divider_row <= inner_h )); then
+    zcurses move side_win $divider_row 1
+    zcurses attr side_win dim cyan/black
+    zcurses string side_win "$divider"
+  fi
+  row=$(( divider_row + 1 ))
+  if (( row <= inner_h )); then zcurses move side_win $row 2; zcurses attr side_win bold white/black; zcurses string side_win "Project"; fi
+  (( row++ ))
+  if (( row <= inner_h )); then zcurses move side_win $row 2; zcurses attr side_win green/black; zcurses string side_win "${root[1,$(( inner_w - 1 ))]}"; fi
+  (( row++ ))
+  if (( row <= inner_h )); then zcurses move side_win $row 2; zcurses attr side_win dim cyan/black; zcurses string side_win "${ZCODER_PROFILE} · Guides: ${#INSTRUCTION_SOURCES}"; fi
+  (( row++ ))
+  if (( row <= inner_h )); then zcurses move side_win $row 2; zcurses attr side_win bold white/black; zcurses string side_win "Available tools"; fi
+  (( row++ ))
   for (( i=1; i<=${#names}; i++ )); do
+    (( row > inner_h )) && break
     zcurses move side_win $row 2
     [[ "${names[i]}" == run_command ]] && zcurses attr side_win yellow/black || zcurses attr side_win dim white/black
     zcurses string side_win "• ${names[i]}"
     (( row++ ))
   done
-  zcurses move side_win $(( row + 1 )) 2; zcurses attr side_win bold white/black; zcurses string side_win "Shell approval"
-  zcurses move side_win $(( row + 2 )) 2; zcurses attr side_win yellow/black; zcurses string side_win "$policy"
+  if (( row <= inner_h )); then zcurses move side_win $row 2; zcurses attr side_win bold white/black; zcurses string side_win "Shell approval"; fi
+  (( row++ ))
+  if (( row <= inner_h )); then zcurses move side_win $row 2; zcurses attr side_win yellow/black; zcurses string side_win "$policy"; fi
   (( defer_refresh )) || zcurses refresh side_win
+}
+
+ui_plain_transcript() {
+  local output="" label="" role="" content="" thinking="" time=""
+  local -i i
+  for (( i=1; i<=${#UI_ROLES}; i++ )); do
+    role="${UI_ROLES[i]}"
+    content="${UI_CONTENTS[i]}"
+    thinking="${UI_THINKINGS[i]}"
+    time="${UI_TIMES[i]}"
+    case "$role" in
+      user) label="You" ;;
+      assistant) label="Assistant (${ZCODER_MODEL})" ;;
+      tool) label="Tool activity" ;;
+      claude) label="Claude consultant" ;;
+      codex) label="Codex consultant" ;;
+      agy) label="Antigravity consultant" ;;
+      opencode) label="OpenCode consultant" ;;
+      error) label="Error" ;;
+      *) label="${role:u}" ;;
+    esac
+    [[ -n "$output" ]] && output+=$'\n'
+    output+="=== ${label}${time:+  ${time}} ==="$'\n'
+    if [[ -n "$thinking" ]] && (( ${UI_REASONING_OPEN[i]:-0} )); then
+      output+=$'Reasoning:\n'"$thinking"$'\n\n'
+    fi
+    output+="$content"$'\n'
+  done
+  [[ -n "$output" ]] || output="(No transcript events yet.)"$'\n'
+  REPLY="$output"
+}
+
+# Leave curses temporarily and print a stable plain-text transcript. While the
+# screen is not being repainted, the terminal's native mouse selection and
+# clipboard shortcuts work normally without adding a clipboard dependency.
+ui_copy_view() {
+  local transcript="" ignored=""
+  (( UI_ACTIVE )) || return 1
+  (( $+functions[state_save_session] )) && state_save_session
+  ui_plain_transcript
+  transcript="$REPLY"
+  ui_end
+  {
+    print -rn -- $'\e[2J\e[H'
+    print -r -- "zcoder.zsh transcript copy view"
+    print -r -- "Select text with the terminal mouse and use its normal copy shortcut. Scroll as needed."
+    print -r -- "Press Enter when finished to return to zcoder."
+    print -r -- ""
+    print -r -- "$transcript"
+    print -r -- ""
+    print -rn -- "Press Enter to return: "
+  } > /dev/tty
+  IFS= read -r ignored < /dev/tty
+  ui_init
 }
 
 _ui_add_line() {
@@ -463,7 +564,7 @@ ui_render_messages() {
     _ui_add_line "  the workspace with tools. Shell commands always require your approval." "dim white/black"
     _ui_add_line "" default/default
     _ui_add_line "  /model NAME   switch model       /host HOST   switch Ollama server" "dim cyan/black"
-    _ui_add_line "  /new          clear chat         /help        show shortcuts" "dim cyan/black"
+    _ui_add_line "  /new          start saved job    /help        show shortcuts" "dim cyan/black"
     return 0
   fi
   for (( i=1; i<=count; i++ )); do
@@ -510,7 +611,7 @@ ui_draw_chat() {
   (( UI_SCROLL > max_scroll )) && UI_SCROLL=$max_scroll
   (( UI_SCROLL < 0 )) && UI_SCROLL=0
   zcurses clear chat_win
-  zcurses attr chat_win dim white/black
+  [[ "$UI_FOCUS" == chat ]] && zcurses attr chat_win bold yellow/black || zcurses attr chat_win dim white/black
   zcurses border chat_win
   zcurses move chat_win 0 2; zcurses attr chat_win bold cyan/black; zcurses string chat_win " Agent Transcript (${#UI_ROLES} events) "
   for (( row=1; row<=inner_h; row++ )); do
@@ -555,7 +656,8 @@ ui_draw_input() {
   input_layout "$REPLY" "$max_rows"
   total=${#INPUT_VISUAL_LINES}
   zcurses clear input_win
-  zcurses attr input_win bold green/black; zcurses border input_win
+  [[ "$UI_FOCUS" == input ]] && zcurses attr input_win bold green/black || zcurses attr input_win dim white/black
+  zcurses border input_win
   if (( total > INPUT_VISIBLE_ROWS )); then
     title=" Prompt (Enter sends · Shift-Enter newline · ${INPUT_VIEW_TOP}-$(( INPUT_VIEW_TOP + INPUT_VISIBLE_ROWS - 1 ))/${total}) "
   fi
@@ -602,7 +704,8 @@ ui_input_changed() {
 ui_draw_footer() {
   (( UI_ACTIVE )) || return 0
   local -i defer_refresh="${1:-0}"
-  local text=" Enter Send  S/M-Enter Newline  Esc Stop  ^O Model  ^R Reason  ^N New  PgUp/Dn Scroll  ^Q Quit"
+  local text=" Enter Send  S/M-Enter Newline  ^Q Quit  Tab Sessions  ^Y Copy  Esc Stop  ^O Model  ^R Reason  ^N New  PgUp/Dn Scroll"
+  text="${text[1,$SCREEN_W]}"
   zcurses clear foot_win; zcurses attr foot_win reverse dim white/black
   zcoder_pad "$text" "$SCREEN_W"; zcurses move foot_win 0 0; zcurses string foot_win "$REPLY"
   (( defer_refresh )) || zcurses refresh foot_win
@@ -685,6 +788,7 @@ ui_toggle_reasoning() {
       break
     fi
   done
+  (( $+functions[state_save_and_refresh] )) && state_save_and_refresh
   ui_draw_chat
 }
 
