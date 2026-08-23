@@ -184,8 +184,8 @@ agent_compaction_replace_history() {
 }
 
 agent_compact_history() {
-  local trigger="${1:-manual}" payload="" response="" summary="" dropped_note="" size_note=""
-  local -i start=1 count=${#AGENT_MESSAGES} hard_limit estimate request_status before after
+  local trigger="${1:-manual}" payload="" best_payload="" response="" summary="" dropped_note="" size_note=""
+  local -i start=1 count=${#AGENT_MESSAGES} hard_limit estimate request_status before after low high midpoint best_start
   HTTP_ERROR=""
   AGENT_CANCELLED=0
   (( count > 0 || ${#AGENT_COMPACTION_SUMMARY} > 0 )) || return 2
@@ -196,14 +196,37 @@ agent_compact_history() {
   before="$AGENT_ESTIMATED_TOKENS"
   hard_limit=$(( AGENT_CONTEXT_WINDOW * 85 / 100 ))
 
-  while true; do
+  # The payload shrinks monotonically as its oldest records are omitted. Find
+  # the smallest fitting start with a binary search instead of rebuilding and
+  # JSON-escaping the whole history once for every discarded message.
+  low=1
+  high=$count
+  best_start=$count
+  while (( low <= high )); do
+    midpoint=$(( (low + high) / 2 ))
+    agent_build_compaction_payload "$midpoint"
+    payload="$REPLY"
+    agent_estimate_payload_tokens "$payload"
+    estimate=$REPLY
+    if (( estimate <= hard_limit )); then
+      best_start=$midpoint
+      best_payload="$payload"
+      high=$(( midpoint - 1 ))
+    else
+      low=$(( midpoint + 1 ))
+    fi
+  done
+  start=$best_start
+  if [[ -n "$best_payload" ]]; then
+    payload="$best_payload"
+    agent_estimate_payload_tokens "$payload"
+    estimate=$REPLY
+  else
     agent_build_compaction_payload "$start"
     payload="$REPLY"
     agent_estimate_payload_tokens "$payload"
     estimate=$REPLY
-    (( estimate <= hard_limit || start >= count )) && break
-    (( start++ ))
-  done
+  fi
 
   agent_set_status "Compacting"
   agent_ollama_chat "$payload" "$OLLAMA_HOST"

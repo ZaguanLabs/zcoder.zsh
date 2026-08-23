@@ -20,7 +20,7 @@ typeset -ga JSON_MODEL_NAMES=()
 typeset -gi JSON_RUNNING_MODEL_CONTEXT=0
 typeset -gA JSON_OBJECT=()
 
-json_quote() {
+_json_quote_slow() {
   local input="$1" output='"' ch="" escaped=""
   local -i i code
 
@@ -28,7 +28,7 @@ json_quote() {
     ch="${input[i]}"
     case "$ch" in
       '"') output+='\"' ;;
-      $'\\') output+='\\\\' ;;
+      $'\\') output+='\\' ;;
       $'\b') output+='\b' ;;
       $'\f') output+='\f' ;;
       $'\n') output+='\n' ;;
@@ -46,6 +46,32 @@ json_quote() {
     esac
   done
   REPLY="${output}\""
+}
+
+json_quote() {
+  local input="$1" output="" control_check=""
+
+  # Parameter substitution performs the common JSON string encoding in native
+  # Zsh internals. Building the result one character at a time is quadratic
+  # for large resumed histories and can pin a core during compaction.
+  control_check="${input//$'\b'/}"
+  control_check="${control_check//$'\f'/}"
+  control_check="${control_check//$'\n'/}"
+  control_check="${control_check//$'\r'/}"
+  control_check="${control_check//$'\t'/}"
+  if [[ "$control_check" == *[[:cntrl:]]* ]]; then
+    _json_quote_slow "$input"
+    return
+  fi
+
+  output="${input//\\/\\\\}"
+  output="${output//\"/\\\"}"
+  output="${output//$'\b'/\\b}"
+  output="${output//$'\f'/\\f}"
+  output="${output//$'\n'/\\n}"
+  output="${output//$'\r'/\\r}"
+  output="${output//$'\t'/\\t}"
+  REPLY="\"${output}\""
 }
 
 json_begin() {

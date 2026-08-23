@@ -66,7 +66,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..382"
+print -r -- "1..387"
 
 input_reset
 input_layout 20 4
@@ -123,6 +123,15 @@ zcoder_debug_init
 assert_success "debug log initializes" $?
 zcoder_debug unit_test $'first line\nsecond line'
 assert_contains "${mapfile[$ZCODER_DEBUG_LOG]}" 'unit_test first line\nsecond line' "debug log escapes multiline records"
+
+quote_sample=$'quote " and slash \\\nline\ttab æøå'
+json_quote "$quote_sample"; fast_quoted="$REPLY"
+json_begin "$fast_quoted"
+assert_success "bulk JSON quoting produces valid JSON" $?
+assert_eq "$quote_sample" "$JSON_TOKEN_VALUE" "bulk JSON quoting round-trips mixed content"
+control_quote_sample=$'slash \\ and control \x01'
+json_quote "$control_quote_sample"; json_begin "$REPLY"
+assert_eq "$control_quote_sample" "$JSON_TOKEN_VALUE" "fallback JSON quoting round-trips uncommon controls"
 
 tool_write_file "src/note.txt" $'one\ntwo\nthree\n'
 assert_success "write_file creates parent directories" $?
@@ -807,6 +816,26 @@ prepared_payload="$REPLY"
 assert_success "oversized prompts trigger automatic compaction" "$auto_compact_status"
 assert_eq "1" "$AGENT_COMPACTION_COUNT" "automatic compaction creates one checkpoint"
 assert_contains "$prepared_payload" "checkpoint summary with exact state" "automatic compaction rebuilds the pending prompt from its checkpoint"
+
+functions[_test_real_compaction_builder]="${functions[agent_build_compaction_payload]}"
+typeset -gi MOCK_COMPACTION_BUILDS=0
+agent_build_compaction_payload() {
+  (( MOCK_COMPACTION_BUILDS++ ))
+  _test_real_compaction_builder "$@"
+}
+ZCODER_CONTEXT_WINDOW=4096
+AGENT_CONTEXT_WINDOW=4096
+AGENT_CONTEXT_MODEL="$ZCODER_MODEL"
+agent_reset
+for compact_record in {1..128}; do
+  agent_add_message tool "record ${compact_record}: ${(l:240::x:)}" read_file
+done
+agent_compact_history manual >/dev/null
+large_compact_status=$?
+assert_success "large-history compaction completes" "$large_compact_status"
+assert_success "large-history compaction uses a logarithmic cutoff search" $(( MOCK_COMPACTION_BUILDS <= 9 ? 0 : 1 ))
+functions[agent_build_compaction_payload]="${functions[_test_real_compaction_builder]}"
+unfunction _test_real_compaction_builder
 
 typeset -gi MOCK_INCOMPLETE_TURNS=0
 agent_ollama_chat() {
