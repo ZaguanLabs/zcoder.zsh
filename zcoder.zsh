@@ -9,7 +9,7 @@ zmodload zsh/curses zsh/datetime zsh/files zsh/mapfile zsh/net/tcp \
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.4.3"
+typeset -gr ZCODER_VERSION="0.4.4"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -17,6 +17,7 @@ typeset -gr ZCODER_DIR="${0:A:h}"
 
 source "${ZCODER_DIR}/lib/util.zsh"
 source "${ZCODER_DIR}/lib/json.zsh"
+source "${ZCODER_DIR}/lib/mcp.zsh"
 source "${ZCODER_DIR}/lib/http.zsh"
 source "${ZCODER_DIR}/lib/instructions.zsh"
 source "${ZCODER_DIR}/lib/skills.zsh"
@@ -36,6 +37,7 @@ typeset -gi ZCODER_MODEL_OVERRIDE=0
 
 usage() {
   print -r -- "Usage: ${ZCODER_NAME} [options]"
+  print -r -- "       ${ZCODER_NAME} mcp list|add|get|remove|enable|disable|test ..."
   print -r -- ""
   print -r -- "Options:"
   print -r -- "  -m, --model NAME       Ollama model (default: ${ZCODER_MODEL})"
@@ -43,7 +45,6 @@ usage() {
   print -r -- "  -w, --workspace PATH   Directory the agent may access (default: current)"
   print -r -- "      --profile NAME     System prompt profile: coding or sysadmin (default: ${ZCODER_PROFILE})"
   print -r -- "  -p, --prompt TEXT      Run one prompt without the full-screen UI"
-  print -r -- "      --max-turns COUNT  Emergency model-turn limit (default: ${AGENT_MAX_STEPS})"
   print -r -- "      --context-window N Context tokens to request, or auto (default: ${ZCODER_CONTEXT_WINDOW})"
   print -r -- "      --compact-at PCT   Compact at this context percentage (default: ${ZCODER_COMPACT_PERCENT})"
   print -r -- "      --yes              Allow shell commands (coding profile only)"
@@ -56,6 +57,12 @@ usage() {
   print -r -- "  -V, --version          Show version"
   print -r -- "      --help             Show this help"
 }
+
+if [[ "${1:-}" == mcp ]]; then
+  shift
+  mcp_cli "$@"
+  exit $?
+fi
 
 require_option_value() {
   [[ -n "${2:-}" ]] || { print -u2 -- "Error: $1 requires a value"; exit 2; }
@@ -80,11 +87,6 @@ while (( $# > 0 )); do
       shift
       ;;
     -p|--prompt) require_option_value "$1" "${2:-}"; ONE_SHOT_PROMPT="$2"; shift ;;
-    --max-turns)
-      require_option_value "$1" "${2:-}"
-      [[ "$2" == <1-> ]] || { print -u2 -- "Error: --max-turns expects a positive integer"; exit 2; }
-      AGENT_MAX_STEPS="$2"; shift
-      ;;
     --context-window)
       require_option_value "$1" "${2:-}"
       [[ "$2" == auto || "$2" == <4096-> ]] || { print -u2 -- "Error: --context-window expects auto or an integer of at least 4096"; exit 2; }
@@ -132,6 +134,9 @@ if [[ -n "$ZCODER_DEBUG_LOG" ]]; then
 fi
 instructions_load "$ZCODER_WORKSPACE"
 skills_load "$ZCODER_WORKSPACE"
+if ! mcp_load; then
+  print -u2 -- "Warning: $MCP_ERROR"
+fi
 
 if (( PRINT_INSTRUCTIONS )); then
   instructions_summary
@@ -163,6 +168,7 @@ cleanup() {
   (( $+functions[state_save_session] )) && state_save_session
   delegate_async_cancel
   http_async_cancel
+  mcp_shutdown_all
   ui_end
 }
 trap cleanup EXIT INT TERM HUP
@@ -214,6 +220,16 @@ handle_slash_command() {
       skills_load "$ZCODER_WORKSPACE"
       skills_summary
       ui_append_message system "Skills reloaded."$'\n'"$REPLY"
+      ;;
+    /mcp)
+      ui_mcp_servers
+      ;;
+    /mcp\ reload)
+      if mcp_load; then
+        ui_append_message system "MCP configuration reloaded."
+      else
+        ui_append_message error "$MCP_ERROR"
+      fi
       ;;
     /skill)
       ui_append_message error "/skill requires an installed Skill name"
@@ -283,7 +299,7 @@ handle_slash_command() {
       fi
       ;;
     /help|/\?)
-      ui_append_message system $'Enter sends a prompt. Shift+Enter inserts a newline; Alt+Enter is the fallback for terminals that do not report Shift+Enter separately. Pasted multiline text keeps its formatting. Escape stops a running Ollama response or external consultation.\nTab moves focus between the prompt, session sidebar, and transcript. Use Up/Down in the sidebar to resume another job. Ctrl+Y or /copy opens a stable plain-text view for native terminal selection and copying.\nCtrl+O selects an Ollama model. Ctrl+R toggles reasoning. Ctrl+N starts a new saved session. PgUp/PgDn scroll. Ctrl+U clears input. Ctrl+W deletes a word. Ctrl+Q exits.\n/claude REQUEST, /codex REQUEST, /agy REQUEST, and /opencode REQUEST run read-only external consultations. /opencode with no request selects its provider/model. /skills lists installed Agent Skills; /skill NAME activates one. Prefix a request with $skill-name for explicit activation. /model opens the Ollama picker; /host HOST changes Ollama; /instructions lists active AGENTS.md files; /compact creates a context checkpoint; /context shows the token budget; /sessions focuses saved jobs; /new starts a saved job.'
+      ui_append_message system $'Enter sends a prompt. Shift+Enter inserts a newline; Alt+Enter is the fallback for terminals that do not report Shift+Enter separately. Pasted multiline text keeps its formatting. Escape stops a running Ollama response or external consultation.\nTab moves focus between the prompt, session sidebar, and transcript. Use Up/Down in the sidebar to resume another job. Ctrl+Y or /copy opens a stable plain-text view for native terminal selection and copying.\nCtrl+O selects an Ollama model. Ctrl+R toggles reasoning. Ctrl+N starts a new saved session. PgUp/PgDn scroll. Ctrl+U clears input. Ctrl+W deletes a word. Ctrl+Q exits.\n/claude REQUEST, /codex REQUEST, /agy REQUEST, and /opencode REQUEST run read-only external consultations. /opencode with no request selects its provider/model. /mcp shows configured servers and live status; /mcp reload reloads configuration. /skills lists installed Agent Skills; /skill NAME activates one. Prefix a request with $skill-name for explicit activation. /model opens the Ollama picker; /host HOST changes Ollama; /instructions lists active AGENTS.md files; /compact creates a context checkpoint; /context shows the token budget; /sessions focuses saved jobs; /new starts a saved job.'
       ;;
     /quit|/exit|/q) RUNNING=0 ;;
     *) return 1 ;;

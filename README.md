@@ -22,6 +22,8 @@ Claude Code, Codex, Google Antigravity, and OpenCode are optional. When their CL
 
 The Skills CLI from [skills.sh](https://skills.sh) is optional. zcoder consumes standard installed Skill directories directly and does not require Node.js or `npx` at runtime.
 
+Stdio MCP support adds no runtime dependency: zcoder manages each configured server as a persistent child process using native Zsh IPC and JSON handling.
+
 Start Ollama, pull a coding model, then run:
 
 ```sh
@@ -57,7 +59,7 @@ An additional pre-execution guard rejects unmistakably catastrophic literal comm
 
 Set `ZCODER_PROFILE=sysadmin` to make the profile the environment default. `--profile coding` selects the original coding prompt explicitly. The existing `-p, --prompt TEXT` option remains the one-shot user request and is independent of the profile.
 
-Agent runs have a configurable emergency ceiling of 100 model turns. Override it with `--max-turns COUNT` or `ZCODER_MAX_TURNS`; this is a final safety fuse, not the primary loop detector.
+Agent runs have no fixed model-turn ceiling. They continue while useful progress is being made and stop structurally when the model finishes, the user presses Escape, an error blocks the run, or the progress-aware loop guard detects a repeated sequence.
 
 Context sizing defaults to `auto`. If the selected model is already loaded, zcoder uses the allocation reported by Ollama's `/api/ps`. For an unloaded model, the conservative 65,536-token fallback is used only for initial internal accounting: the first request omits `num_ctx`, allowing Ollama to honor the model's Modelfile or server default, and zcoder refreshes its accounting from `/api/ps` after the response. Use `--context-window TOKENS` or `ZCODER_CONTEXT_WINDOW` when a model should be loaded with a specific allocation from its first request.
 
@@ -87,6 +89,47 @@ The system prompt asks the model to search first—using the `search` tool backe
 Successful reads are compact in the TUI: `Read(path)` and `Read File Range(path:start-end)`. The actual contents remain in model history. `write_file` and `apply_patch` continue to display their proposed content so edits stay reviewable.
 
 `apply_patch` does not require the workspace to be a Git repository. It first validates with `git apply --check`; if Git rejects an otherwise usable diff, it tries a workspace-confined `patch --dry-run` before applying. Both system-prompt profiles include valid and invalid patch examples. After a rejected patch, `write_file` is removed from the tool schema and rejected for the rest of that user turn until a corrected patch succeeds, preventing it from becoming an accidental focused-edit fallback.
+
+## MCP servers
+
+zcoder implements the MCP tools client subset over stdio for the exact protocol versions `2025-11-25` and `2026-07-28`. It sends the modern `server/discover` probe first. A 2026 server then receives the required namespaced client metadata on every request; a legacy server falls back to `initialize` and `notifications/initialized`. Tool listing follows pagination, input schemas are passed through to Ollama, nested tool arguments are preserved, and results are retained in normal tool history. MCP tools appear as `mcp__SERVER__TOOL`, with punctuation normalized to underscores for model compatibility. The system prompt includes a bounded exact mapping from each server's short tool name to that namespaced function, allowing project instructions such as “use `fast_context` first” to remain actionable for smaller models. Project-designated MCP routing takes precedence over the default built-in search workflow.
+
+Configuration uses the common `mcpServers` JSON shape. User servers live in `${ZCODER_HOME}/mcp.json`; project servers live in `<workspace>/.mcp.json` and override a same-named user server:
+
+```json
+{
+  "mcpServers": {
+    "project-index": {
+      "type": "stdio",
+      "command": "example-mcp-server",
+      "args": ["--stdio"],
+      "env": {"EXAMPLE_MODE": "local"},
+      "enabled": true
+    }
+  }
+}
+```
+
+Manage the registry without starting Ollama:
+
+```sh
+./zcoder.zsh mcp list
+./zcoder.zsh mcp list --json
+./zcoder.zsh mcp get project-index --json
+./zcoder.zsh mcp add project-index -- example-mcp-server --stdio
+./zcoder.zsh mcp add --scope project --env EXAMPLE_MODE=local \
+  project-index -- example-mcp-server --stdio
+./zcoder.zsh mcp disable project-index
+./zcoder.zsh mcp enable project-index
+./zcoder.zsh mcp test project-index
+./zcoder.zsh mcp remove project-index
+```
+
+`delete` is accepted as an alias for `remove`. New servers default to the `user` scope; pass `--scope project` to write `.mcp.json`. Enable, disable, and remove operate on the visible definition unless a scope is explicit. `list` reports configuration state without launching servers, while `test` performs negotiation and tool discovery. Inside the TUI, `/mcp` opens a live status modal and connects enabled servers; `r` restarts the selected server. `/mcp reload` rereads both configuration files. Normal launch remains fast because servers start lazily when MCP tools are first needed.
+
+Adding and enabling an MCP server is the trust boundary. Its tools are exposed to the model and run without a second per-call approval prompt. This does not change `run_command`: shell commands requested through zcoder still use the existing approval gate, and the sysadmin profile's restrictions remain active. Review server commands, arguments, environment variables, and project `.mcp.json` before use.
+
+This release is stdio-first. Streamable HTTP, OAuth, prompts, resources, sampling, and elicitation are not yet exposed. Configured non-stdio servers remain visible with an `unsupported` status instead of being silently ignored.
 
 ## Permission model
 
@@ -179,7 +222,7 @@ Keyboard shortcuts:
 | Up / Down | Move within multiline input, then navigate prompt history at its boundaries |
 | Ctrl+Q / Ctrl+D | Exit |
 
-Slash commands: `/model` opens the picker; `/model NAME`, `/host HOST`, `/instructions`, `/skills`, `/skills reload`, `/skill NAME`, `/compact`, `/context`, `/sessions`, `/copy`, `/new`, `/help`, and `/quit` are also available.
+Slash commands: `/model` opens the picker; `/model NAME`, `/host HOST`, `/instructions`, `/mcp`, `/mcp reload`, `/skills`, `/skills reload`, `/skill NAME`, `/compact`, `/context`, `/sessions`, `/copy`, `/new`, `/help`, and `/quit` are also available.
 
 ## External consultants
 
@@ -206,6 +249,7 @@ lib/
   agent.zsh             Ollama messages and iterative tool loop
   compact.zsh           token accounting and conversation checkpoints
   delegate.zsh          read-only external harness consultations
+  mcp.zsh               MCP registry, stdio brokers, version negotiation, and tools
   instructions.zsh      AGENTS.md discovery, precedence, and prompt assembly
   skills.zsh            standard Agent Skills discovery and progressive loading
   state.zsh             workspace/profile-scoped persistent sessions
@@ -253,4 +297,4 @@ Use `/compact` to create a checkpoint manually and `/context` to inspect the cur
 make test
 ```
 
-The tests cover native JSON decoding, token accounting and compaction, path confinement, file reads and writes, search, patch application, loop detection, cancellation, and both denied and allowed command execution.
+The tests cover native JSON decoding, both MCP protocol generations, paginated MCP tools and nested calls, token accounting and compaction, path confinement, file reads and writes, search, patch application, loop detection, cancellation, and both denied and allowed command execution.

@@ -897,6 +897,68 @@ ui_select_model() {
   return 0
 }
 
+ui_mcp_servers() {
+  local previous_status="$UI_STATUS" ch="" key="" mouse="" name="" display="" detail="" marker=""
+  local -i selected=1 total=${#MCP_NAMES} i row modal_h=18 modal_w=82 max_visible scroll_top=1
+  ui_set_status "Connecting MCP"
+  ui_draw_header
+  mcp_connect_all >/dev/null 2>&1 || true
+  total=${#MCP_NAMES}
+  (( modal_h > SCREEN_H - 4 )) && modal_h=$(( SCREEN_H - 4 ))
+  (( modal_w > SCREEN_W - 4 )) && modal_w=$(( SCREEN_W - 4 ))
+  (( modal_h < 8 )) && modal_h=8
+  (( modal_w < 44 )) && modal_w=44
+  local -i modal_y=$(( (SCREEN_H - modal_h) / 2 )) modal_x=$(( (SCREEN_W - modal_w) / 2 ))
+  max_visible=$(( modal_h - 5 )); (( max_visible < 1 )) && max_visible=1
+  zcurses addwin mcp_win $modal_h $modal_w $modal_y $modal_x 2>/dev/null || { ui_set_status "$previous_status"; return 1; }
+  while true; do
+    _ui_modal_frame mcp_win "MCP Servers (↑/↓, r Restart, Esc)" "cyan/black"
+    if (( total == 0 )); then
+      zcurses move mcp_win 3 3; zcurses attr mcp_win dim white/black
+      zcurses string mcp_win "No MCP servers configured. Use: zcoder.zsh mcp add ..."
+    else
+      (( selected < scroll_top )) && scroll_top=$selected
+      (( selected >= scroll_top + max_visible )) && scroll_top=$(( selected - max_visible + 1 ))
+      row=2
+      for (( i=scroll_top; i<=total && i<scroll_top+max_visible; i++ )); do
+        name="${MCP_NAMES[i]}"
+        case "${MCP_STATUS[$name]}" in connected) marker="●" ;; disabled) marker="○" ;; *) marker="!" ;; esac
+        display="${marker} ${name} · ${MCP_STATUS[$name]} · ${MCP_TYPE[$name]} · ${MCP_SCOPE[$name]}"
+        [[ -n "${MCP_PROTOCOL[$name]:-}" ]] && display+=" · ${MCP_PROTOCOL[$name]}"
+        zcoder_pad "${display[1,$(( modal_w - 4 ))]}" $(( modal_w - 4 )); display="$REPLY"
+        zcurses move mcp_win $row 2
+        if (( i == selected )); then
+          zcurses attr mcp_win reverse bold cyan/black; zcurses string mcp_win "$display"; zcurses attr mcp_win -reverse default/default
+        else
+          [[ "${MCP_STATUS[$name]}" == connected ]] && zcurses attr mcp_win green/black || zcurses attr mcp_win white/black
+          zcurses string mcp_win "$display"
+        fi
+        (( row++ ))
+      done
+      name="${MCP_NAMES[selected]}"; detail="${MCP_DETAIL[$name]:-Ready to connect on first use}"
+      zcurses move mcp_win $(( modal_h - 2 )) 2; zcurses attr mcp_win dim white/black
+      zcurses string mcp_win "${detail[1,$(( modal_w - 4 ))]}"
+    fi
+    zcurses refresh mcp_win
+    ch=""; key=""; mouse=""; zcurses timeout mcp_win -1; zcurses input mcp_win ch key mouse
+    if [[ "$key" == UP || "$ch" == k ]]; then (( selected > 1 )) && (( selected-- ))
+    elif [[ "$key" == DOWN || "$ch" == j ]]; then (( selected < total )) && (( selected++ ))
+    elif [[ "$ch" == r && total -gt 0 ]]; then
+      name="${MCP_NAMES[selected]}"; mcp_broker_stop "$name"; MCP_PROTOCOL[$name]=""; MCP_SERVER_TOOLS[$name]=""
+      if (( ${MCP_ENABLED[$name]:-0} )); then
+        MCP_STATUS[$name]="configured"
+        if ! mcp_connect "$name"; then MCP_DETAIL[$name]="$MCP_ERROR"; fi
+      else
+        MCP_STATUS[$name]="disabled"; MCP_DETAIL[$name]=""
+      fi
+    elif [[ "$ch" == $'\x1b' || "$ch" == q || "$ch" == $'\x03' ]]; then break
+    fi
+  done
+  zcurses delwin mcp_win 2>/dev/null
+  ui_set_status "$previous_status"
+  ui_refresh_all
+}
+
 ui_select_opencode_model() {
   local previous_status="$UI_STATUS" fetch_error=""
   local -a models=()

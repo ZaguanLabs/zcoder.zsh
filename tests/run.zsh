@@ -10,6 +10,7 @@ typeset -gr PROJECT_DIR="${TEST_DIR:h}"
 
 source "${PROJECT_DIR}/lib/util.zsh"
 source "${PROJECT_DIR}/lib/json.zsh"
+source "${PROJECT_DIR}/lib/mcp.zsh"
 source "${PROJECT_DIR}/lib/http.zsh"
 source "${PROJECT_DIR}/lib/instructions.zsh"
 source "${PROJECT_DIR}/lib/skills.zsh"
@@ -65,7 +66,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..336"
+print -r -- "1..382"
 
 input_reset
 input_layout 20 4
@@ -214,6 +215,94 @@ assert_failure "patch fallback rejects parent traversal" $?
 if [[ -e "$TEST_TMP/../escape.txt" ]]; then escape_absent=1; else escape_absent=0; fi
 assert_success "patch fallback leaves outside paths untouched" "$escape_absent"
 TOOL_PATCH_RETRY_REQUIRED=0
+
+mcp_home="$TEST_TMP/mcp-home"
+mcp_fixture="${PROJECT_DIR}/tests/fixtures/mcp_server.zsh"
+mcp_modern_log="$mcp_home/modern.log"
+mcp_legacy_log="$mcp_home/legacy.log"
+zf_mkdir -p "$mcp_home"
+json_quote "$mcp_fixture"; mcp_fixture_json="$REPLY"
+json_quote "$mcp_modern_log"; mcp_modern_log_json="$REPLY"
+json_quote "$mcp_legacy_log"; mcp_legacy_log_json="$REPLY"
+mapfile[$mcp_home/mcp.json]='{"mcpServers":{"modern":{"type":"stdio","command":"zsh","args":['"${mcp_fixture_json}"',"modern"],"env":{"MCP_FIXTURE_LOG":'"${mcp_modern_log_json}"'}},"shadowed":{"type":"stdio","command":"missing-user-command","args":[]}}}'
+mapfile[$TEST_TMP/.mcp.json]='{"mcpServers":{"legacy":{"type":"stdio","command":"zsh","args":['"${mcp_fixture_json}"',"legacy"],"env":{"MCP_FIXTURE_LOG":'"${mcp_legacy_log_json}"'}},"shadowed":{"type":"stdio","command":"missing-project-command","args":[],"enabled":false}}}'
+ZCODER_HOME="$mcp_home"
+ZCODER_WORKSPACE="$TEST_TMP"
+mcp_load
+assert_success "MCP configuration loads user and project scopes" $?
+assert_eq "3" "${#MCP_NAMES}" "MCP configuration merges named servers"
+assert_eq "project" "${MCP_SCOPE[shadowed]}" "project MCP definitions override user definitions"
+assert_eq "disabled" "${MCP_STATUS[shadowed]}" "disabled MCP servers remain visible without starting"
+assert_eq "0" "${#MCP_BROKER_PID}" "MCP server processes are lazy at launch"
+
+raw_mcp_object='{"description":"mentions \"inputSchema\" before the field and contains } ]","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"commas, braces }, and brackets ] stay inside strings"}}}}'
+_mcp_raw_member "$raw_mcp_object" inputSchema
+assert_success "raw MCP member scan ignores field names and delimiters inside strings" $?
+assert_eq '{"type":"object","properties":{"query":{"type":"string","description":"commas, braces }, and brackets ] stay inside strings"}}}' "$REPLY" "raw MCP member scan preserves the exact nested schema"
+_mcp_raw_array_items '[{"value":"one,two"}, {"nested":[1,{"text":"]}"}]}, true]'
+assert_success "raw MCP array scan handles nested values and delimiters in strings" $?
+assert_eq "3" "${#MCP_RAW_ITEMS}" "raw MCP array scan returns every top-level item"
+_mcp_response_parse '{"jsonrpc":"2.0","id":17,"result":{"tools":[{"description":"mentions \"result\""}]}}'
+assert_eq '{"tools":[{"description":"mentions \"result\""}]}' "$MCP_RESPONSE_RESULT" "MCP response parsing preserves its raw result envelope"
+
+mcp_connect modern
+assert_success "modern stdio MCP server connects" $?
+assert_eq "$MCP_VERSION_MODERN" "${MCP_PROTOCOL[modern]}" "server/discover negotiates the 2026 protocol"
+assert_eq "2" "${#MCP_TOOL_NAMES}" "paginated modern tool discovery loads every page"
+mcp_tools_schema_json
+assert_contains "$REPLY" '"name":"mcp__modern__find_symbol"' "MCP tool names are namespaced and normalized for Ollama"
+assert_contains "$REPLY" '"required":["query"]' "MCP input schemas remain intact in Ollama tool definitions"
+assert_contains "$REPLY" "short tool name 'find-symbol'" "MCP schemas teach models how short instruction names map to functions"
+mcp_prompt_block
+assert_contains "$REPLY" 'modern/find-symbol -> mcp__modern__find_symbol' "MCP prompt supplies an exact short-name routing map"
+assert_contains "$REPLY" "mandatory tool-selection rules" "MCP prompt makes required project routing mandatory"
+assert_contains "$REPLY" "On the first model turn of each user request" "MCP prompt requires designated orientation before built-ins"
+tools_schema_json
+first_name_marker='"name":"'
+first_exposed_tool="${REPLY#*${first_name_marker}}"; first_exposed_tool="${first_exposed_tool%%\"*}"
+[[ "$first_exposed_tool" == mcp__* ]]
+assert_success "connected MCP tools precede generic built-ins" $?
+assert_contains "$REPLY" "only when project instructions do not designate an MCP navigation tool" "search schema defers to project-designated MCP navigation"
+agent_build_payload
+assert_contains "$REPLY" 'modern/find-symbol -> mcp__modern__find_symbol' "regular Ollama payloads include connected MCP routing"
+tool_dispatch mcp__modern__echo_data '{"payload":{"nested":true}}'
+assert_success "nested MCP tool arguments bypass the flat built-in decoder" $?
+assert_contains "$TOOL_RESULT" "fixture call completed" "MCP tool results return to the model context"
+assert_contains "${mapfile[$mcp_modern_log]}" '"io.modelcontextprotocol/clientCapabilities"' "modern MCP requests carry namespaced client metadata"
+assert_contains "${mapfile[$mcp_modern_log]}" '"cursor":"page-2"' "MCP tool discovery follows pagination cursors"
+
+mcp_connect legacy
+assert_success "legacy stdio MCP server connects after the discovery probe" $?
+assert_eq "$MCP_VERSION_LEGACY" "${MCP_PROTOCOL[legacy]}" "initialize negotiates the 2025 protocol"
+assert_contains "${mapfile[$mcp_legacy_log]}" '"method":"initialize"' "legacy negotiation sends initialize after unsupported discovery"
+assert_contains "${mapfile[$mcp_legacy_log]}" '"method":"notifications/initialized"' "legacy negotiation completes the initialization lifecycle"
+mcp_tools_schema_json
+assert_contains "$REPLY" '"name":"mcp__legacy__echo_data"' "tool catalog combines connected MCP servers"
+mcp_status_text
+assert_contains "$REPLY" $'modern\tconnected\tstdio\tuser\t2026-07-28' "MCP status includes connection, transport, scope, and version"
+modern_broker_pid="${MCP_BROKER_PID[modern]}"
+legacy_broker_pid="${MCP_BROKER_PID[legacy]}"
+mcp_shutdown_all
+assert_eq "0" "${#MCP_BROKER_PID}" "MCP shutdown clears every broker process"
+kill -0 "$modern_broker_pid" 2>/dev/null
+assert_failure "MCP shutdown reaps the modern broker" $?
+kill -0 "$legacy_broker_pid" 2>/dev/null
+assert_failure "MCP shutdown reaps the legacy broker" $?
+cli_output="$(mcp_cli add --scope project --env FIXTURE_MODE=cli cli-server -- zsh "$mcp_fixture" legacy)"
+assert_success "MCP CLI adds a project-scoped stdio server" $?
+assert_contains "$cli_output" "Added MCP server 'cli-server'" "MCP CLI reports the added server"
+mcp_load
+assert_contains "${MCP_ARGS[cli-server]}" '"legacy"' "MCP CLI preserves command arguments as separate JSON values"
+assert_contains "${MCP_ENV[cli-server]}" '"FIXTURE_MODE":"cli"' "MCP CLI preserves explicit environment values"
+cli_output="$(mcp_cli disable --scope project cli-server)"; mcp_load
+assert_eq "disabled" "${MCP_STATUS[cli-server]}" "MCP CLI disables the selected scope"
+cli_output="$(mcp_cli enable --scope project cli-server)"; mcp_load
+assert_eq "configured" "${MCP_STATUS[cli-server]}" "MCP CLI re-enables the selected scope"
+cli_output="$(mcp_cli remove --scope project cli-server)"; mcp_load
+[[ -z "${MCP_RAW[cli-server]:-}" ]]
+assert_success "MCP CLI removes the selected scope" $?
+zf_rm -f "$mcp_home/mcp.json" "$TEST_TMP/.mcp.json" 2>/dev/null
+mcp_load
 
 ZCODER_PROFILE=sysadmin
 ZCODER_COMMAND_POLICY=allow
@@ -596,6 +685,8 @@ assert_eq "sysadmin" "$ZCODER_PROFILE" "invalid profile selection preserves the 
 agent_select_profile coding
 assert_success "coding prompt profile is accepted" $?
 agent_default_system_prompt
+assert_contains "$REPLY" "Project instructions override the default inspection order" "system prompt makes project inspection routing authoritative"
+assert_contains "$REPLY" "MCP navigation tool returns a relevant source range" "system prompt routes MCP locations into bounded reads"
 assert_contains "$REPLY" "Use search first" "system prompt prefers indexed search before broad reads"
 assert_contains "$REPLY" "Use read_file_range" "system prompt directs large-file inspection to ranges"
 assert_contains "$REPLY" "rg --files, rg -n, grep, sed -n, or awk" "system prompt names shell text-processing fallbacks"
@@ -844,7 +935,6 @@ tool_dispatch() {
   TOOL_RESULT_OK=1
   return 0
 }
-AGENT_MAX_STEPS=10
 ZCODER_CONTEXT_WINDOW=16384
 AGENT_CONTEXT_MODEL=""
 agent_user_turn "keep reading forever" >/dev/null 2>&1
@@ -852,6 +942,32 @@ mock_loop_status=$?
 assert_failure "agent stops when a model ignores the loop warning" "$mock_loop_status"
 assert_eq "4" "$MOCK_LOOP_TURNS" "agent gives one recovery turn before stopping"
 assert_contains "$AGENT_LOOP_NUDGE" "materially different action" "loop warning tells the model how to recover"
+
+typeset -gi MOCK_LONG_TURNS=0
+agent_prepare_payload() {
+  REPLY='{}'
+  return 0
+}
+agent_ollama_chat() {
+  (( MOCK_LONG_TURNS++ ))
+  if (( MOCK_LONG_TURNS <= 105 )); then
+    HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"read_file","arguments":{"path":"unique-'"${MOCK_LONG_TURNS}"'.txt"}}}]},"prompt_eval_count":100,"eval_count":4}'
+  else
+    HTTP_BODY='{"message":{"content":"completed beyond the former ceiling"},"prompt_eval_count":100,"eval_count":6}'
+  fi
+  HTTP_ERROR=""
+  return 0
+}
+tool_dispatch() {
+  TOOL_RESULT="unique result ${MOCK_LONG_TURNS}"
+  TOOL_RESULT_OK=1
+  return 0
+}
+AGENT_CONTEXT_DISCOVERY_PENDING=0
+agent_reset
+agent_user_turn "continue while progress is being made" >/dev/null 2>&1
+assert_success "agent runs have no fixed model-turn ceiling" $?
+assert_eq "106" "$MOCK_LONG_TURNS" "progressing work continues beyond one hundred model turns"
 
 AGENT_LOOP_REPEAT_LIMIT=2
 AGENT_LOOP_MAX_CYCLE=2

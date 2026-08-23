@@ -3,6 +3,7 @@
 typeset -g JSON_SOURCE=""
 typeset -gi JSON_POS=1
 typeset -gi JSON_LEN=0
+typeset -gi JSON_TOKEN_START=1
 typeset -g JSON_TOKEN_TYPE=""
 typeset -g JSON_TOKEN_VALUE=""
 typeset -g JSON_ERROR=""
@@ -66,6 +67,7 @@ json_next() {
     [[ "$ch" == [[:space:]] ]] || break
     (( JSON_POS++ ))
   done
+  JSON_TOKEN_START=$JSON_POS
   if (( JSON_POS > JSON_LEN )); then
     JSON_TOKEN_TYPE="eof"
     JSON_TOKEN_VALUE=""
@@ -160,6 +162,61 @@ json_next() {
       ;;
     *) JSON_ERROR="unexpected JSON character at character $JSON_POS"; return 1 ;;
   esac
+}
+
+# Advance over a complete JSON value without rebuilding it. This is useful for
+# large protocol envelopes where the caller only needs one top-level member.
+json_discard_value() {
+  case "$JSON_TOKEN_TYPE" in
+    string|number|true|false|null)
+      json_next || return 1
+      ;;
+    '[')
+      json_next || return 1
+      while [[ "$JSON_TOKEN_TYPE" != ']' ]]; do
+        json_discard_value || return 1
+        if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
+          json_next || return 1
+        elif [[ "$JSON_TOKEN_TYPE" != ']' ]]; then
+          JSON_ERROR="expected comma or closing bracket"
+          return 1
+        fi
+      done
+      json_next || return 1
+      ;;
+    '{')
+      json_next || return 1
+      while [[ "$JSON_TOKEN_TYPE" != '}' ]]; do
+        [[ "$JSON_TOKEN_TYPE" == string ]] || { JSON_ERROR="expected object key"; return 1; }
+        json_next || return 1
+        [[ "$JSON_TOKEN_TYPE" == ':' ]] || { JSON_ERROR="expected colon"; return 1; }
+        json_next || return 1
+        json_discard_value || return 1
+        if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
+          json_next || return 1
+        elif [[ "$JSON_TOKEN_TYPE" != '}' ]]; then
+          JSON_ERROR="expected comma or closing brace"
+          return 1
+        fi
+      done
+      json_next || return 1
+      ;;
+    *)
+      JSON_ERROR="expected JSON value"
+      return 1
+      ;;
+  esac
+}
+
+# Preserve the exact source slice for a value while using the tokenizer only
+# to locate its boundary. Unlike json_capture_value this performs no repeated
+# string concatenation or JSON re-encoding.
+json_capture_raw_value() {
+  local -i start=$JSON_TOKEN_START end=0
+  json_discard_value || return 1
+  end=$(( JSON_TOKEN_START - 1 ))
+  while (( end >= start )) && [[ "${JSON_SOURCE[end]}" == [[:space:]] ]]; do (( end-- )); done
+  (( end >= start )) && REPLY="${JSON_SOURCE[start,end]}" || REPLY=""
 }
 
 # Serialize and consume the value at the current token. This lets us preserve

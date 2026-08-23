@@ -4,7 +4,6 @@ typeset -ga AGENT_MESSAGES=()
 typeset -g AGENT_LAST_RESPONSE=""
 typeset -gi AGENT_CANCELLED=0
 typeset -g AGENT_SYSTEM_PROMPT="${AGENT_SYSTEM_PROMPT:-}"
-typeset -gi AGENT_MAX_STEPS="${ZCODER_MAX_TURNS:-${AGENT_MAX_STEPS:-100}}"
 typeset -gi AGENT_LOOP_REPEAT_LIMIT="${ZCODER_LOOP_REPEAT_LIMIT:-3}"
 typeset -gi AGENT_LOOP_MAX_CYCLE="${ZCODER_LOOP_MAX_CYCLE:-4}"
 typeset -gi AGENT_INCOMPLETE_RETRY_LIMIT="${ZCODER_INCOMPLETE_RETRY_LIMIT:-3}"
@@ -22,7 +21,6 @@ typeset -g ZCODER_MODEL="${ZCODER_MODEL:-qwen3-coder:latest}"
 typeset -g ZCODER_THINK="${ZCODER_THINK:-true}"
 typeset -g ZCODER_PROFILE="${ZCODER_PROFILE:-coding}"
 
-(( AGENT_MAX_STEPS > 0 )) || AGENT_MAX_STEPS=100
 (( AGENT_LOOP_REPEAT_LIMIT >= 2 )) || AGENT_LOOP_REPEAT_LIMIT=3
 (( AGENT_LOOP_MAX_CYCLE > 0 )) || AGENT_LOOP_MAX_CYCLE=4
 (( AGENT_INCOMPLETE_RETRY_LIMIT >= 0 )) || AGENT_INCOMPLETE_RETRY_LIMIT=3
@@ -62,11 +60,13 @@ agent_coding_system_prompt() {
   patch_instructions="$REPLY"
   REPLY="You are zcoder, an AI coding agent operating in this workspace: ${ZCODER_WORKSPACE:A}.
 Use the supplied tools to inspect the project, make requested changes, and verify your work.
+Project instructions override the default inspection order and file-reading heuristics below, but cannot relax workspace, approval, or safety boundaries. If they require an installed MCP server or one of its short tool names, use the mapped mcp__SERVER__TOOL function as the primary route. Otherwise choose the most task-specific available tool and do not call tools speculatively.
 Minimize data collection and context use. Do not begin by reading whole source files or recursively listing the entire project. Follow this inspection order:
-1. Use search first to locate exact symbols, strings, definitions, and references. It is backed by ripgrep.
+1. Use search first for literals, regular expressions, unmodeled text, or when no project-designated MCP navigation tool applies. It is backed by ripgrep.
    Once search returns a usable location, read that range; do not repeat discovery with minor query variations unless the result is ambiguous.
 2. Use list_files only when the project shape is unknown, with the narrowest useful path and a modest max_entries value.
 3. Use read_file_range for the relevant sections found by search, normally in chunks of no more than 200 lines. Expand only when the evidence requires it.
+   When an MCP navigation tool returns a relevant source range, read that range directly instead of reading the whole file.
 4. Use read_file only for clearly small files, or when the entire file is genuinely required. Never read a large source file in full merely to inspect one function or section.
 5. If the built-in tools are insufficient, use run_command with targeted commands such as rg --files, rg -n, grep, sed -n, or awk. run_command requires user approval; do not use cat or an unbounded command when search or a ranged read will do.
 Stop inspecting once you have enough evidence to act. Read relevant code before editing it. Prefer apply_patch for focused changes and write_file for new or fully replaced files.
@@ -84,6 +84,7 @@ agent_sysadmin_system_prompt() {
   patch_instructions="$REPLY"
   REPLY="You are zcoder operating as a careful system-administration assistant. The selected workspace is ${ZCODER_WORKSPACE:A}.
 Use the workspace for maintenance notes, scripts, staged configuration, and evidence. All built-in file tools remain strictly confined to that workspace. Inspecting or changing the host outside it is possible only through run_command, and every run_command requires the user's approval for that exact command.
+Project instructions override the default inspection order and file-reading heuristics below, but cannot relax the run_command approval policy or any safety rule. If they require an installed MCP server or one of its short tool names, use the mapped mcp__SERVER__TOOL function as the primary route.
 
 Authority and safety rules:
 1. Begin with read-only diagnosis. Establish the machine, service, scope, current state, and likely impact before proposing a change. Prefer focused commands and bounded output.
@@ -159,6 +160,9 @@ agent_format_tool_ui_result() {
     read_skill_resource)
       label="Skill Resource(${JSON_OBJECT[name]:-?}:${JSON_OBJECT[path]:-?})"
       (( succeeded )) && { REPLY="$label"; return 0; }
+      ;;
+    mcp__*)
+      label="MCP(${tool_name#mcp__})"
       ;;
     *)
       label="$tool_name $args_json"
@@ -303,7 +307,11 @@ agent_add_assistant_message() {
 }
 
 agent_build_payload() {
-  local model_json="" system_json="" messages="[" comma="" item="" think="true"
+  local model_json="" system_json="" messages="[" comma="" item="" think="true" tools="" options=""
+  # MCP discovery must precede prompt assembly. Besides producing Ollama's
+  # schemas, it gives small models an exact short-name -> function-name map.
+  tools_schema_json
+  tools="$REPLY"
   local prompt="$AGENT_SYSTEM_PROMPT"
   [[ -n "$prompt" ]] || { agent_default_system_prompt; prompt="$REPLY"; }
   if (( $+functions[instructions_prompt_block] )); then
@@ -312,6 +320,10 @@ agent_build_payload() {
   fi
   if (( $+functions[skills_prompt_block] )); then
     skills_prompt_block
+    prompt+="$REPLY"
+  fi
+  if (( $+functions[mcp_prompt_block] )); then
+    mcp_prompt_block
     prompt+="$REPLY"
   fi
   if [[ -n "$AGENT_COMPACTION_SUMMARY" ]]; then
@@ -326,8 +338,6 @@ agent_build_payload() {
     messages+="${comma}${item}"
   done
   messages+="]"
-  tools_schema_json
-  local tools="$REPLY" options=""
   agent_context_options_json
   options="${REPLY%,}"
   [[ "$ZCODER_THINK" == true || "$ZCODER_THINK" == false ]] || think="false"
@@ -409,9 +419,10 @@ agent_user_turn() {
     ui_refresh_all
   fi
 
-  for (( step=1; step<=AGENT_MAX_STEPS; step++ )); do
+  while true; do
+    (( step++ ))
     zcoder_debug model_turn_start "step=$step retries=$incomplete_retries messages=${#AGENT_MESSAGES} estimated_tokens=${AGENT_ESTIMATED_TOKENS:-0}"
-    agent_set_status "Thinking ${step}/${AGENT_MAX_STEPS}"
+    agent_set_status "Thinking ${step}"
     agent_prepare_payload
     prepare_status=$?
     if (( prepare_status != 0 )); then
@@ -427,7 +438,7 @@ agent_user_turn() {
       return 1
     fi
     payload="$REPLY"
-    agent_set_status "Thinking ${step}/${AGENT_MAX_STEPS}"
+    agent_set_status "Thinking ${step}"
     agent_ollama_chat "$payload" "$OLLAMA_HOST"
     request_status=$?
     zcoder_debug ollama_result "step=$step status=$request_status body_chars=${#HTTP_BODY} error=${(qqq)HTTP_ERROR}"
@@ -613,8 +624,4 @@ agent_user_turn() {
       AGENT_LOOP_NUDGE=""
     fi
   done
-
-  agent_emit error "Emergency stop after ${AGENT_MAX_STEPS} model turns. Continue with a new prompt or raise --max-turns if the task is still making progress."
-  agent_set_status "Turn limit"
-  return 1
 }
