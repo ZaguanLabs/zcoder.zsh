@@ -564,3 +564,13 @@ tool_dispatch() {
     *) _tool_fail "unknown tool: $name" ;;
   esac
 }
+
+# Multiple calls in one assistant response are safe only when every call is a
+# known read-only built-in. MCP calls remain conservative until their schemas
+# carry trustworthy side-effect metadata.
+tool_is_batch_safe() {
+  case "$1" in
+    list_files|read_file|read_file_range|search|read_skill_resource) return 0 ;;
+    *) return 1 ;;
+  esac
+}

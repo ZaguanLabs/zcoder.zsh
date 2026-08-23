@@ -66,7 +66,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..387"
+print -r -- "1..434"
 
 input_reset
 input_layout 20 4
@@ -356,6 +356,10 @@ json_parse_ollama_response '{"message":{"tool_calls":[{"function":{"name":"list_
 assert_success "parallel tool-call JSON parses" $?
 assert_eq "2" "${#JSON_TOOL_NAMES}" "parallel tool calls are all retained"
 
+json_parse_ollama_response '{"message":{"content":"","thinking":"<tool_call>run_command {\"command\":\"print unsafe\"}</tool_call>"}}'
+assert_success "tool-like reasoning text remains valid reasoning" $?
+assert_eq "0" "${#JSON_TOOL_NAMES}" "tool-like reasoning text is never promoted to a structured call"
+
 json_parse_running_model_context '{"models":[{"name":"other:latest","context_length":4096},{"name":"qwen:latest","model":"qwen:latest","context_length":65536}]}' "qwen:latest"
 assert_success "running Ollama model metadata parses" $?
 assert_eq "65536" "$JSON_RUNNING_MODEL_CONTEXT" "allocated model context is selected by name"
@@ -593,11 +597,11 @@ assert_success "new sessions receive traversal-safe identifiers" $?
 state_note_user $'Repair the deployment\nwithout losing context'
 AGENT_MESSAGES=('{"role":"user","content":"Repair the deployment"}' '{"role":"assistant","content":"Working"}')
 AGENT_USER_MESSAGES=("Repair the deployment")
-UI_ROLES=(user assistant)
-UI_CONTENTS=("Repair the deployment" "Work completed")
-UI_THINKINGS=("" "private reasoning")
-UI_TIMES=("12:00" "12:01")
-UI_REASONING_OPEN=(0 0)
+UI_ROLES=(user assistant assistant)
+UI_CONTENTS=("Repair the deployment" "Work completed" "")
+UI_THINKINGS=("" "private reasoning" "reasoning-only tool turn")
+UI_TIMES=("12:00" "12:01" "12:02")
+UI_REASONING_OPEN=(0 0 0)
 AGENT_COMPACTION_SUMMARY="durable resumed checkpoint"
 AGENT_COMPACTION_COUNT=2
 AGENT_COMPACTION_REARM_TOKENS=1234
@@ -637,6 +641,8 @@ assert_eq "2" "${#AGENT_MESSAGES}" "resuming restores complete model/tool histor
 assert_contains "${AGENT_MESSAGES[2]}" "Working" "resumed model history remains exact JSON"
 assert_eq "Work completed" "${UI_CONTENTS[2]}" "resuming restores the visible transcript"
 assert_eq "private reasoning" "${UI_THINKINGS[2]}" "resuming restores reasoning text"
+assert_eq "" "${UI_CONTENTS[3]}" "resuming preserves an empty reasoning-only content field"
+assert_eq "reasoning-only tool turn" "${UI_THINKINGS[3]}" "resuming restores reasoning-only tool turns"
 assert_eq "durable resumed checkpoint" "$AGENT_COMPACTION_SUMMARY" "resuming restores compacted context"
 assert_eq "2" "$AGENT_COMPACTION_COUNT" "resuming restores compaction metadata"
 assert_eq "Repair the deployment" "${AGENT_USER_MESSAGES[1]}" "resuming restores the exact-user ledger"
@@ -653,6 +659,9 @@ assert_not_contains "$REPLY" "private reasoning" "copy view omits collapsed reas
 UI_REASONING_OPEN[2]=1
 ui_plain_transcript
 assert_contains "$REPLY" "private reasoning" "copy view includes expanded reasoning"
+UI_REASONING_OPEN[3]=1
+ui_plain_transcript
+assert_contains "$REPLY" "reasoning-only tool turn" "copy view includes an expanded reasoning-only turn"
 
 previous_session_id="$CURRENT_SESSION_ID"
 ZCODER_MODEL_OVERRIDE=0
@@ -688,6 +697,11 @@ assert_contains "$REPLY" "Use mktemp for temporary files" "sysadmin prompt rejec
 assert_contains "$REPLY" "replace the entire stored state" "sysadmin prompt identifies replacement-style command risk"
 assert_contains "$REPLY" "crontab -l > /tmp/file; append content; crontab /tmp/file" "sysadmin prompt names the unsafe crontab pattern"
 assert_contains "$REPLY" "Good example:" "sysadmin prompt also teaches the workspace patch protocol"
+assert_contains "$REPLY" "OBSERVE → DECIDE → ACT → CHECK" "sysadmin prompt includes the shared operating loop"
+assert_contains "$REPLY" "Make at most one state-changing tool call per reasoning cycle" "sysadmin prompt serializes host mutations"
+assert_contains "$REPLY" "Never claim verification that was not actually observed" "sysadmin prompt requires observed verification"
+assert_contains "$REPLY" "Never bypass built-in tool workspace confinement or run_command approval" "sysadmin prompt preserves its approved host-operation boundary"
+assert_not_contains "$REPLY" "Never operate outside the permitted workspace" "sysadmin prompt does not contradict approved host operations"
 agent_select_profile unknown
 assert_failure "unknown prompt profiles are rejected" $?
 assert_eq "sysadmin" "$ZCODER_PROFILE" "invalid profile selection preserves the active profile"
@@ -699,7 +713,17 @@ assert_contains "$REPLY" "MCP navigation tool returns a relevant source range" "
 assert_contains "$REPLY" "Use search first" "system prompt prefers indexed search before broad reads"
 assert_contains "$REPLY" "Use read_file_range" "system prompt directs large-file inspection to ranges"
 assert_contains "$REPLY" "rg --files, rg -n, grep, sed -n, or awk" "system prompt names shell text-processing fallbacks"
-assert_contains "$REPLY" "if more work remains, call the appropriate work tool" "system prompt requires action instead of a preamble"
+assert_contains "$REPLY" "OBSERVE → DECIDE → ACT → CHECK" "system prompt supplies a deterministic operating loop"
+assert_contains "$REPLY" "reason privately" "system prompt assigns planning to private reasoning"
+assert_contains "$REPLY" "Do not emit this private plan as a tool-free preamble" "system prompt prevents visible plan-only turns"
+assert_contains "$REPLY" "analyze the exact error" "system prompt requires evidence-based failure recovery"
+assert_contains "$REPLY" "Never repeat an unchanged failed call" "system prompt prevents unchanged retries"
+assert_contains "$REPLY" "Batch only independent read-only calls" "system prompt restricts multi-call batches"
+assert_contains "$REPLY" "Make at most one state-changing tool call per reasoning cycle" "system prompt serializes mutations"
+assert_contains "$REPLY" "smallest meaningful syntax, test, build, or read-back verification" "system prompt requires proportionate verification"
+assert_contains "$REPLY" "Never claim verification that was not actually observed" "system prompt prohibits invented checks"
+assert_contains "$REPLY" "If work remains, call the next appropriate work tool" "system prompt requires action instead of a preamble"
+assert_contains "$REPLY" "Complete only after checking the requested outcome and verification evidence" "system prompt places a completion check near its footer"
 assert_contains "$REPLY" "Do not begin by reading whole source files" "system prompt forbids full-file-first exploration"
 assert_contains "$REPLY" "chunks of no more than 200 lines" "system prompt gives ranged-read budget guidance"
 assert_contains "$REPLY" "Stop inspecting once you have enough evidence" "system prompt prevents unnecessary follow-up reads"
@@ -713,6 +737,16 @@ assert_contains "$REPLY" "Never bypass a focused patch failure with write_file" 
 tools_schema_json
 assert_contains "$REPLY" "defaults to 100" "list_files schema advertises its conservative default"
 assert_contains "$REPLY" "defaults to 50" "search schema advertises its conservative default"
+tool_is_batch_safe read_file
+assert_success "read_file is safe in a read-only batch" $?
+tool_is_batch_safe read_skill_resource
+assert_success "skill resource reads are safe in a read-only batch" $?
+tool_is_batch_safe apply_patch
+assert_failure "apply_patch is not batch-safe" $?
+tool_is_batch_safe run_command
+assert_failure "run_command is not batch-safe" $?
+tool_is_batch_safe mcp__example__inspect
+assert_failure "MCP tools default to non-batchable" $?
 
 agent_format_tool_ui_result read_file '{"path":"src/note.txt"}' $'one\ntwo\nthree' 1
 assert_eq "Read(src/note.txt)" "$REPLY" "UI summarizes a complete file read"
@@ -836,6 +870,116 @@ assert_success "large-history compaction completes" "$large_compact_status"
 assert_success "large-history compaction uses a logarithmic cutoff search" $(( MOCK_COMPACTION_BUILDS <= 9 ? 0 : 1 ))
 functions[agent_build_compaction_payload]="${functions[_test_real_compaction_builder]}"
 unfunction _test_real_compaction_builder
+
+# Reasoning and structured calls must survive as one assistant turn across the
+# complete tool loop, including the common empty-content response shape.
+functions[_test_real_agent_ollama_chat]="${functions[agent_ollama_chat]}"
+functions[_test_real_tool_dispatch]="${functions[tool_dispatch]}"
+functions[_test_real_agent_set_status]="${functions[agent_set_status]}"
+functions[_test_real_ui_refresh_all]="${functions[ui_refresh_all]}"
+agent_set_status() { return 0; }
+ui_refresh_all() { return 0; }
+
+typeset -gi MOCK_REASONING_TURNS=0 MOCK_REASONING_DISPATCHES=0
+typeset -g MOCK_REASONING_SECOND_PAYLOAD=""
+agent_ollama_chat() {
+  (( MOCK_REASONING_TURNS++ ))
+  if (( MOCK_REASONING_TURNS == 1 )); then
+    HTTP_BODY='{"message":{"content":"","thinking":"inspect privately","tool_calls":[{"type":"function","function":{"name":"read_file","arguments":{"path":"reasoning.txt"}}}]},"prompt_eval_count":100,"eval_count":12}'
+  else
+    MOCK_REASONING_SECOND_PAYLOAD="$1"
+    HTTP_BODY='{"message":{"content":"","thinking":"verification complete","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"complete","response":"Reasoning tool turn completed."}}}]},"prompt_eval_count":130,"eval_count":10}'
+  fi
+  HTTP_ERROR=""
+  return 0
+}
+tool_dispatch() {
+  (( MOCK_REASONING_DISPATCHES++ ))
+  TOOL_RESULT="reasoning fixture contents"
+  TOOL_RESULT_OK=1
+  return 0
+}
+ZCODER_CONTEXT_WINDOW=16384
+AGENT_CONTEXT_MODEL=""
+agent_reset
+UI_ACTIVE=1
+UI_ROLES=(); UI_CONTENTS=(); UI_THINKINGS=(); UI_TIMES=(); UI_REASONING_OPEN=()
+agent_user_turn "inspect the reasoning fixture" >/dev/null 2>&1
+reasoning_turn_status=$?
+assert_success "reasoning and tool-call lifecycle completes" "$reasoning_turn_status"
+assert_eq "2" "$MOCK_REASONING_TURNS" "tool result triggers a new reasoning turn"
+assert_eq "1" "$MOCK_REASONING_DISPATCHES" "structured reasoning tool call dispatches once"
+assert_contains "$MOCK_REASONING_SECOND_PAYLOAD" '"thinking":"inspect privately"' "follow-up payload preserves prior reasoning"
+assert_contains "$MOCK_REASONING_SECOND_PAYLOAD" '"name":"read_file"' "follow-up payload preserves the structured tool call"
+assert_contains "$MOCK_REASONING_SECOND_PAYLOAD" "reasoning fixture contents" "follow-up payload preserves the tool result"
+assert_eq "assistant" "${UI_ROLES[2]}" "reasoning-only tool turn enters the UI transcript"
+assert_eq "" "${UI_CONTENTS[2]}" "reasoning-only UI turn keeps empty assistant content"
+assert_eq "inspect privately" "${UI_THINKINGS[2]}" "reasoning-only UI turn keeps private reasoning"
+
+# Known read-only batches are accepted but remain deterministically sequential.
+typeset -gi MOCK_BATCH_TURNS=0 MOCK_BATCH_DISPATCHES=0
+typeset -ga MOCK_BATCH_NAMES=()
+typeset -g MOCK_BATCH_SECOND_PAYLOAD=""
+agent_ollama_chat() {
+  (( MOCK_BATCH_TURNS++ ))
+  if (( MOCK_BATCH_TURNS == 1 )); then
+    HTTP_BODY='{"message":{"content":"","thinking":"collect independent evidence","tool_calls":[{"type":"function","function":{"name":"list_files","arguments":{"path":"."}}},{"type":"function","function":{"name":"search","arguments":{"query":"TODO"}}}]}}'
+  else
+    MOCK_BATCH_SECOND_PAYLOAD="$1"
+    HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"complete","response":"Read-only batch completed."}}}]}}'
+  fi
+  HTTP_ERROR=""
+  return 0
+}
+tool_dispatch() {
+  (( MOCK_BATCH_DISPATCHES++ ))
+  MOCK_BATCH_NAMES+=("$1")
+  TOOL_RESULT="batch result ${MOCK_BATCH_DISPATCHES}"
+  TOOL_RESULT_OK=1
+  return 0
+}
+agent_reset
+UI_ACTIVE=0
+agent_user_turn "collect independent evidence" >/dev/null 2>&1
+safe_batch_status=$?
+assert_success "independent read-only batch completes" "$safe_batch_status"
+assert_eq "2" "$MOCK_BATCH_DISPATCHES" "every safe batched call is dispatched"
+assert_eq "list_files,search" "${(j:,:)MOCK_BATCH_NAMES}" "safe batch execution preserves emitted order"
+assert_contains "$MOCK_BATCH_SECOND_PAYLOAD" "batch result 1" "first safe batch result returns to the model"
+assert_contains "$MOCK_BATCH_SECOND_PAYLOAD" "batch result 2" "second safe batch result returns to the model"
+
+# A batch containing an approval-requiring or state-changing call fails before
+# dispatch, so it cannot partially execute or open an approval prompt.
+MOCK_BATCH_TURNS=0
+MOCK_BATCH_DISPATCHES=0
+MOCK_BATCH_NAMES=()
+MOCK_BATCH_SECOND_PAYLOAD=""
+agent_ollama_chat() {
+  (( MOCK_BATCH_TURNS++ ))
+  if (( MOCK_BATCH_TURNS == 1 )); then
+    HTTP_BODY='{"message":{"content":"","thinking":"attempt mixed batch","tool_calls":[{"type":"function","function":{"name":"read_file","arguments":{"path":"reasoning.txt"}}},{"type":"function","function":{"name":"run_command","arguments":{"command":"print should-not-run"}}}]}}'
+  else
+    MOCK_BATCH_SECOND_PAYLOAD="$1"
+    HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"blocked","response":"Unsafe batch was rejected."}}}]}}'
+  fi
+  HTTP_ERROR=""
+  return 0
+}
+agent_reset
+agent_user_turn "attempt an unsafe batch" >/dev/null 2>&1
+unsafe_batch_status=$?
+assert_success "rejected unsafe batch returns control to the model" "$unsafe_batch_status"
+assert_eq "0" "$MOCK_BATCH_DISPATCHES" "unsafe batch dispatches no calls"
+assert_contains "$MOCK_BATCH_SECOND_PAYLOAD" "Unsafe tool batch" "unsafe batch error returns to the model"
+assert_contains "$MOCK_BATCH_SECOND_PAYLOAD" "run_command" "unsafe batch error identifies the non-batchable call"
+assert_contains "${mapfile[$ZCODER_DEBUG_LOG]}" "tool_batch_rejected" "debug log records rejected batches"
+
+functions[agent_ollama_chat]="${functions[_test_real_agent_ollama_chat]}"
+functions[tool_dispatch]="${functions[_test_real_tool_dispatch]}"
+functions[agent_set_status]="${functions[_test_real_agent_set_status]}"
+functions[ui_refresh_all]="${functions[_test_real_ui_refresh_all]}"
+unfunction _test_real_agent_ollama_chat _test_real_tool_dispatch _test_real_agent_set_status _test_real_ui_refresh_all
+UI_ACTIVE=0
 
 typeset -gi MOCK_INCOMPLETE_TURNS=0
 agent_ollama_chat() {
@@ -1122,6 +1266,23 @@ for (( render_index=1; render_index<=${#UI_LINES}; render_index++ )); do
   [[ "${UI_LINES[render_index]}" == *'Read(src/example.ts)'* ]] && read_summary_attr="${UI_ATTRS[render_index]}"
 done
 assert_eq "white/black" "$read_summary_attr" "ordinary tool output no longer uses yellow body text"
+
+UI_ROLES=(assistant)
+UI_CONTENTS=("")
+UI_THINKINGS=("reasoning without assistant content")
+UI_TIMES=("12:01")
+UI_REASONING_OPEN=(0)
+ui_render_messages 80
+reasoning_render="${(j:\n:)UI_LINES}"
+assert_contains "$reasoning_render" "Reasoning (1 lines)" "reasoning-only turn renders a collapsible control"
+reasoning_empty_body=0
+for rendered_line in "${UI_LINES[@]}"; do
+  [[ "$rendered_line" == "  " ]] && reasoning_empty_body=1
+done
+assert_eq "0" "$reasoning_empty_body" "reasoning-only turn omits an empty assistant body"
+UI_REASONING_OPEN=(1)
+ui_render_messages 80
+assert_contains "${(j:\n:)UI_LINES}" "reasoning without assistant content" "expanded reasoning-only turn renders its reasoning"
 
 typeset -ga MOCK_ZCURSES_CALLS=()
 zcurses() {

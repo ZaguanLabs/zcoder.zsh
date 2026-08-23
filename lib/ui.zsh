@@ -252,7 +252,7 @@ ui_plain_transcript() {
     if [[ -n "$thinking" ]] && (( ${UI_REASONING_OPEN[i]:-0} )); then
       output+=$'Reasoning:\n'"$thinking"$'\n\n'
     fi
-    output+="$content"$'\n'
+    [[ -n "$content" ]] && output+="$content"$'\n'
   done
   [[ -n "$output" ]] || output="(No transcript events yet.)"$'\n'
   REPLY="$output"
@@ -553,6 +553,7 @@ _ui_add_wrapped() {
 ui_render_messages() {
   local -i width=$1 count=${#UI_ROLES} i think_lines
   local role content thinking time attr title
+  local -a thinking_lines=()
   UI_LINES=(); UI_ATTRS=()
   UI_LINE_SEGMENT_STARTS=(); UI_LINE_SEGMENT_COUNTS=()
   UI_SEGMENT_TEXTS=(); UI_SEGMENT_ATTRS=()
@@ -582,7 +583,8 @@ ui_render_messages() {
     esac
     [[ "$role" == tool ]] && _ui_add_line "$title" "bold yellow/black" || _ui_add_line "$title" "bold $attr"
     if [[ -n "$thinking" ]]; then
-      think_lines=${#${(f)thinking}}
+      thinking_lines=("${(@f)thinking}")
+      think_lines=${#thinking_lines}
       if (( ${UI_REASONING_OPEN[i]:-0} )); then
         _ui_add_line "  ▼ Reasoning (${think_lines} lines)" "bold magenta/black"
         _ui_add_wrapped "$thinking" "$width" "    " "dim magenta/black"
@@ -592,7 +594,7 @@ ui_render_messages() {
     fi
     if [[ "$role" == tool ]]; then
       _ui_add_tool_content "$content" "$width"
-    else
+    elif [[ -n "$content" ]]; then
       _ui_add_wrapped "$content" "$width" "  " "$attr"
     fi
     _ui_add_line "" default/default

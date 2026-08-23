@@ -48,18 +48,25 @@ agent_completion_instructions() {
   fi
 }
 
+agent_operating_loop_instructions() {
+  REPLY=$'Reasoning and execution protocol:\nFor each user request, follow this cycle: OBSERVE → DECIDE → ACT → CHECK.\nBefore the first action, reason privately:\n- Define the requested outcome and applicable constraints.\n- Identify the evidence needed before modifying anything.\n- Choose the smallest useful next action and how its result will be verified.\nDo not emit this private plan as a tool-free preamble.\nExecution rules:\n- Inspect only until enough evidence exists, then act.\n- After each tool result, update the plan from the observed evidence. Re-plan only when a result is unexpected, incomplete, or unsuccessful.\n- On failure, analyze the exact error before choosing the next action. Never repeat an unchanged failed call or bypass a failed focused operation with a broader operation.\n- Batch only independent read-only calls. Wait for results before dependent calls, edits, commands, approvals, or other state-changing operations.\n- Make at most one state-changing tool call per reasoning cycle.\n- After changing code or configuration, run the smallest meaningful syntax, test, build, or read-back verification. Broaden verification when the change carries wider risk.\n- Never claim verification that was not actually observed.\n- Before completing, confirm that the requested outcome was addressed, relevant verification passed, and any remaining limitation is stated.'
+}
+
 agent_patch_instructions() {
   REPLY=$'Patch protocol for focused edits:\n- apply_patch accepts raw standard unified diff text only. Copy unchanged context and removed lines exactly from the latest file read. Every hunk needs a real line-range header; never use a bare @@.\n- Good example:\n--- a/lib/example.zsh\n+++ b/lib/example.zsh\n@@ -10,3 +10,3 @@\n context before\n-old value\n+new value\n context after\n- Bad example (unsupported envelope and missing line ranges):\n*** Begin Patch\n*** Update File: lib/example.zsh\n@@\n-old value\n+new value\n*** End Patch\n- Put only the diff in the patch argument, with no Markdown fence or explanation. If rejected, read the reported error, re-read the exact target range, correct the diff, and call apply_patch again. Never bypass a focused patch failure with write_file.'
 }
 
 agent_coding_system_prompt() {
-  local completion_instructions="" patch_instructions=""
+  local completion_instructions="" operating_instructions="" patch_instructions=""
   agent_completion_instructions
   completion_instructions="$REPLY"
+  agent_operating_loop_instructions
+  operating_instructions="$REPLY"
   agent_patch_instructions
   patch_instructions="$REPLY"
   REPLY="You are zcoder, an AI coding agent operating in this workspace: ${ZCODER_WORKSPACE:A}.
 Use the supplied tools to inspect the project, make requested changes, and verify your work.
+${operating_instructions}
 Project instructions override the default inspection order and file-reading heuristics below, but cannot relax workspace, approval, or safety boundaries. If they require an installed MCP server or one of its short tool names, use the mapped mcp__SERVER__TOOL function as the primary route. Otherwise choose the most task-specific available tool and do not call tools speculatively.
 Minimize data collection and context use. Do not begin by reading whole source files or recursively listing the entire project. Follow this inspection order:
 1. Use search first for literals, regular expressions, unmodeled text, or when no project-designated MCP navigation tool applies. It is backed by ripgrep.
@@ -71,19 +78,23 @@ Minimize data collection and context use. Do not begin by reading whole source f
 5. If the built-in tools are insufficient, use run_command with targeted commands such as rg --files, rg -n, grep, sed -n, or awk. run_command requires user approval; do not use cat or an unbounded command when search or a ranged read will do.
 Stop inspecting once you have enough evidence to act. Read relevant code before editing it. Prefer apply_patch for focused changes and write_file for new or fully replaced files.
 ${patch_instructions}
-Act instead of only narrating: if more work remains, call the appropriate work tool in that response.
 ${completion_instructions}
-Never invent tool results. Keep changes inside the workspace."
+If work remains, call the next appropriate work tool in this response. Do not emit a plan-only preamble.
+Complete only after checking the requested outcome and verification evidence.
+Never invent tool results. Never operate outside the permitted workspace or bypass command approval."
 }
 
 agent_sysadmin_system_prompt() {
-  local completion_instructions="" patch_instructions=""
+  local completion_instructions="" operating_instructions="" patch_instructions=""
   agent_completion_instructions
   completion_instructions="$REPLY"
+  agent_operating_loop_instructions
+  operating_instructions="$REPLY"
   agent_patch_instructions
   patch_instructions="$REPLY"
   REPLY="You are zcoder operating as a careful system-administration assistant. The selected workspace is ${ZCODER_WORKSPACE:A}.
 Use the workspace for maintenance notes, scripts, staged configuration, and evidence. All built-in file tools remain strictly confined to that workspace. Inspecting or changing the host outside it is possible only through run_command, and every run_command requires the user's approval for that exact command.
+${operating_instructions}
 Project instructions override the default inspection order and file-reading heuristics below, but cannot relax the run_command approval policy or any safety rule. If they require an installed MCP server or one of its short tool names, use the mapped mcp__SERVER__TOOL function as the primary route.
 
 Authority and safety rules:
@@ -109,7 +120,10 @@ Fail-closed command construction:
 
 For each proposed host change, state the observed problem, exact intended effect, risk, rollback, and verification. Use run_command only after enough evidence exists to justify the exact command. Workspace-confined write_file and apply_patch may prepare files, but they do not authorize copying those files onto the host.
 ${patch_instructions}
-Act instead of only narrating when a safe next tool call exists. ${completion_instructions} Never invent tool results."
+${completion_instructions}
+If work remains, call the next appropriate work tool in this response. Do not emit a plan-only preamble.
+Complete only after checking the requested outcome and verification evidence.
+Never invent tool results. Never bypass built-in tool workspace confinement or run_command approval."
 }
 
 agent_default_system_prompt() {
@@ -352,7 +366,11 @@ agent_emit() {
     ui_refresh_all
   else
     case "$role" in
-      assistant) print -r -- "$content" ;;
+      assistant)
+        if [[ -n "$content" ]]; then
+          print -r -- "$content"
+        fi
+        ;;
       tool) print -r -- "[tool] $content" ;;
       system) print -r -- "$content" ;;
       error) print -r -- "Error: $content" >&2 ;;
@@ -399,7 +417,7 @@ agent_ollama_chat() {
 agent_user_turn() {
   local user_content="$1" payload="" response="" content="" thinking="" calls_json="[]"
   local tool_name="" tool_args="" result="" summary="" display_result=""
-  local request_signature="" outcome_signature="" loop_notice="" continuation_notice=""
+  local request_signature="" outcome_signature="" loop_notice="" continuation_notice="" batch_error=""
   local -a call_names=() call_args=()
   local -i step i request_status prepare_status incomplete_retries=0 needs_continuation=0
 
@@ -557,8 +575,10 @@ agent_user_turn() {
       continue
     fi
 
-    if [[ -n "$content" ]]; then
+    if [[ -n "$content" || -n "$thinking" ]]; then
       agent_emit assistant "$content" "$thinking"
+    fi
+    if [[ -n "$content" ]]; then
       AGENT_LAST_RESPONSE="$content"
     fi
     if (( ${#call_names} == 0 )); then
@@ -575,6 +595,16 @@ agent_user_turn() {
       zcoder_debug tool_call "step=$step index=$i name=${(qqq)tool_name} args=${(qqq)tool_args}"
       request_signature+="${#tool_name}:$tool_name${#tool_args}:$tool_args"
     done
+    batch_error=""
+    if (( ${#call_names} > 1 )); then
+      for tool_name in "${call_names[@]}"; do
+        if ! tool_is_batch_safe "$tool_name"; then
+          batch_error="Unsafe tool batch: multiple calls are allowed only for independent read-only built-ins. Resend dependent or state-changing calls one at a time; '${tool_name}' is not batch-safe."
+          zcoder_debug tool_batch_rejected "step=$step calls=${(j:,:)call_names} reason=${(qqq)batch_error}"
+          break
+        fi
+      done
+    fi
     outcome_signature="$request_signature"
     for (( i=1; i<=${#call_names}; i++ )); do
       tool_name="${call_names[i]}"
@@ -585,7 +615,10 @@ agent_user_turn() {
         agent_emit tool "→ $summary"
       fi
       agent_set_status "Tool: $tool_name"
-      if [[ "$tool_name" == finish ]]; then
+      if [[ -n "$batch_error" ]]; then
+        TOOL_RESULT_OK=0
+        TOOL_RESULT="Error: $batch_error"
+      elif [[ "$tool_name" == finish ]]; then
         TOOL_RESULT_OK=0
         TOOL_RESULT="Error: finish must be the only tool call in its response"
       else

@@ -84,9 +84,11 @@ Larger contexts consume more memory. `/context` shows the allocation and current
 
 The two read tools intentionally coexist: `read_file` is convenient for small files, while `read_file_range` lets the model keep context bounded when files are large.
 
-The system prompt asks the model to search first—using the `search` tool backed by ripgrep—then read only relevant ranges. Whole-file reads are reserved for small files or cases where complete context is genuinely necessary. Rephrased discovery searches are discouraged once a usable location is known. Both `list_files` and `search` honor workspace and nested `.gitignore` files even when no Git repository exists and skip common dependency/build trees. `list_files` defaults to 100 entries and `search` to 50 matches. For text processing that does not fit `search`, the model may request `run_command` with `rg`, `grep`, `sed`, or `awk`; the normal command-approval gate still applies.
+Both prompt profiles give local reasoning models an explicit `OBSERVE → DECIDE → ACT → CHECK` operating loop. The model is told to plan privately, inspect only until it has enough evidence, act instead of returning a plan-only preamble, re-plan from exact errors, and verify changes before completion. Verification is proportional: begin with the smallest meaningful syntax, test, build, or read-back check and broaden it when the change carries wider risk.
 
-Successful reads are compact in the TUI: `Read(path)` and `Read File Range(path:start-end)`. The actual contents remain in model history. `write_file` and `apply_patch` continue to display their proposed content so edits stay reviewable.
+The coding prompt asks the model to search first—using the `search` tool backed by ripgrep—then read only relevant ranges. Whole-file reads are reserved for small files or cases where complete context is genuinely necessary. Rephrased discovery searches are discouraged once a usable location is known. Both `list_files` and `search` honor workspace and nested `.gitignore` files even when no Git repository exists and skip common dependency/build trees. `list_files` defaults to 100 entries and `search` to 50 matches. For text processing that does not fit `search`, the model may request `run_command` with `rg`, `grep`, `sed`, or `awk`; the normal command-approval gate still applies.
+
+Successful reads are compact in the TUI: `Read(path)` and `Read File Range(path:start-end)`. The actual contents remain in model history. Reasoning-only assistant turns are retained as collapsible transcript entries even when the model emits no ordinary content before a tool call. `write_file` and `apply_patch` continue to display their proposed content so edits stay reviewable.
 
 `apply_patch` does not require the workspace to be a Git repository. It first validates with `git apply --check`; if Git rejects an otherwise usable diff, it tries a workspace-confined `patch --dry-run` before applying. Both system-prompt profiles include valid and invalid patch examples. After a rejected patch, `write_file` is removed from the tool schema and rejected for the rest of that user turn until a corrected patch succeeds, preventing it from becoming an accidental focused-edit fallback.
 
@@ -262,7 +264,9 @@ lib/
 tests/run.zsh           shell-level unit and integration tests
 ```
 
-Agent turns currently use `stream: false`. The HTTP request runs in a background Zsh worker so the curses loop can accept Escape; stopping the worker closes its TCP connection and cancels Ollama's request. This keeps parallel tool calls and their history deterministic.
+Agent turns currently use `stream: false`. The HTTP request runs in a background Zsh worker so the curses loop can accept Escape; stopping the worker closes its TCP connection and cancels Ollama's request. Non-streaming affects live display, not interleaved reasoning: zcoder stores an assistant's `thinking`, content, and structured calls together, appends the tool results, and returns that complete history for the next reasoning step.
+
+One assistant response may batch multiple independent read-only built-ins: `list_files`, `read_file`, `read_file_range`, `search`, and `read_skill_resource`. zcoder executes an accepted batch sequentially in the order emitted so result history remains deterministic. A batch containing an edit, command, approval, activation, `finish`, unknown tool, or MCP tool without explicit read-only metadata is rejected before anything runs. Dependent calls and all state-changing operations therefore require separate reasoning cycles. This is batched tool selection, not concurrent execution.
 
 The agent separately watches recent tool rounds for real repetition. Three identical request-and-result cycles trigger a recovery warning; request cycles whose output changes get four repetitions. Cycles up to four rounds long are recognized, so alternating A/B behavior is covered. The warning is injected into the next system prompt and gives the model one chance to choose a materially different approach before the run is stopped. Tune the guard with `ZCODER_LOOP_REPEAT_LIMIT` and `ZCODER_LOOP_MAX_CYCLE`.
 
@@ -297,4 +301,14 @@ Use `/compact` to create a checkpoint manually and `/context` to inspect the cur
 make test
 ```
 
-The tests cover native JSON decoding, both MCP protocol generations, paginated MCP tools and nested calls, token accounting and compaction, path confinement, file reads and writes, search, patch application, loop detection, cancellation, and both denied and allowed command execution.
+The tests cover native JSON decoding, both MCP protocol generations, paginated MCP tools and nested calls, reasoning/tool history, safe read-only batching, token accounting and compaction, path confinement, file reads and writes, search, patch application, loop detection, cancellation, and both denied and allowed command execution.
+
+Real-model prompt evaluation is opt-in and is not part of `make test`. It creates isolated temporary workspaces, denies shell commands, and reports tab-separated behavioral results for repeated read, dependent-search, edit-and-verify, failure-recovery, and conversational scenarios:
+
+```sh
+ZCODER_EVAL_MODELS='ornith-1.5:9b,laguna-xs-2.1' \
+ZCODER_EVAL_REPEATS=3 \
+make model-eval
+```
+
+Set `ZCODER_EVAL_BASELINE_PROMPT_FILE` to a complete previous system prompt to run the same scenarios against `current` and `baseline` variants. The placeholder `{{WORKSPACE}}` in that file is replaced with each temporary fixture path. Because this target performs real inference, model availability, quantization, sampling defaults, and Ollama configuration remain the operator's responsibility.
