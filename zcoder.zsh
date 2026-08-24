@@ -8,26 +8,40 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.5.0"
+typeset -gr ZCODER_VERSION="0.6.0"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
 typeset -gr ZCODER_DIR="${0:A:h}"
 
-source "${ZCODER_DIR}/lib/util.zsh"
-source "${ZCODER_DIR}/lib/json.zsh"
-source "${ZCODER_DIR}/lib/mcp.zsh"
-source "${ZCODER_DIR}/lib/http.zsh"
-source "${ZCODER_DIR}/lib/instructions.zsh"
-source "${ZCODER_DIR}/lib/skills.zsh"
-source "${ZCODER_DIR}/lib/input.zsh"
-source "${ZCODER_DIR}/lib/ui.zsh"
-source "${ZCODER_DIR}/lib/tools.zsh"
-source "${ZCODER_DIR}/lib/compact.zsh"
-source "${ZCODER_DIR}/lib/agent.zsh"
-source "${ZCODER_DIR}/lib/state.zsh"
-source "${ZCODER_DIR}/lib/delegate.zsh"
-source "${ZCODER_DIR}/lib/remote.zsh"
+# Load each library once, on demand. Mode-gated libraries — the remote
+# transport and the external-delegate harnesses — stay unloaded until their
+# feature is actually used, trimming launch time and the resident footprint.
+typeset -gA ZCODER_LOADED_LIBS=()
+zcoder_require() {
+  local lib=""
+  for lib in "$@"; do
+    (( ${+ZCODER_LOADED_LIBS[$lib]} )) && continue
+    ZCODER_LOADED_LIBS[$lib]=1
+    source "${ZCODER_DIR}/lib/${lib}.zsh"
+  done
+}
+
+# The mcp maintenance CLI needs only the configuration and protocol
+# libraries; scripts running `zcoder.zsh mcp list` should not pay for the
+# full agent runtime.
+if [[ "${1:-}" == mcp ]]; then
+  shift
+  zcoder_require util json instructions mcp
+  mcp_cli "$@"
+  exit $?
+fi
+
+zcoder_require util json mcp http instructions skills input ui tools compact agent state
+
+# The remote-mode default participates in option parsing before lib/remote.zsh
+# loads; that library preserves any value already set here.
+typeset -g REMOTE_MODE="${REMOTE_MODE:-local}"
 
 typeset -g ONE_SHOT_PROMPT=""
 typeset -gi RUNNING=1
@@ -61,12 +75,6 @@ usage() {
   print -r -- "  -V, --version          Show version"
   print -r -- "      --help             Show this help"
 }
-
-if [[ "${1:-}" == mcp ]]; then
-  shift
-  mcp_cli "$@"
-  exit $?
-fi
 
 require_option_value() {
   [[ -n "${2:-}" ]] || { print -u2 -- "Error: $1 requires a value"; exit 2; }
@@ -130,6 +138,8 @@ while (( $# > 0 )); do
   esac
   shift
 done
+
+[[ "$REMOTE_MODE" == local ]] || zcoder_require remote
 
 if [[ "$REMOTE_MODE" != server ]]; then
   zmodload zsh/curses zsh/terminfo || {
@@ -203,9 +213,9 @@ cleanup() {
   zcoder_debug session_end "status=$exit_status running=$RUNNING async_pid=${HTTP_ASYNC_PID:-none} delegate_pid=${DELEGATE_PID:-none}"
   RUNNING=0
   [[ "$REMOTE_MODE" != server ]] && (( $+functions[state_save_session] )) && state_save_session
-  delegate_async_cancel
+  (( $+functions[delegate_async_cancel] )) && delegate_async_cancel
   http_async_cancel
-  remote_server_stop
+  (( $+functions[remote_server_stop] )) && remote_server_stop
   mcp_shutdown_all
   ui_end
 }
@@ -214,6 +224,11 @@ trap cleanup EXIT INT TERM HUP
 handle_slash_command() {
   local text="$1" value="" provider=""
   local -i delegate_status=0
+  case "$text" in
+    /claude|/claude\ *|/codex|/codex\ *|/agy|/agy\ *|/opencode*)
+      zcoder_require delegate
+      ;;
+  esac
   case "$text" in
     /new|/clear)
       if [[ "$REMOTE_MODE" == client ]]; then
@@ -486,10 +501,8 @@ main_tui() {
     elif [[ "$key" == NPAGE ]]; then
       (( UI_SCROLL += 6 )); ui_draw_chat
     elif [[ "$UI_FOCUS" == sidebar ]]; then
-      current_index=1
-      for (( i=1; i<=${#SESSION_IDS}; i++ )); do
-        [[ "${SESSION_IDS[i]}" == "$CURRENT_SESSION_ID" ]] && { current_index=$i; break; }
-      done
+      current_index=${SESSION_IDS[(Ie)$CURRENT_SESSION_ID]}
+      (( current_index > 0 )) || current_index=1
       if [[ "$key" == UP || "$ch" == k ]]; then
         if (( current_index > 1 )); then
           state_load_session "${SESSION_IDS[current_index-1]}"

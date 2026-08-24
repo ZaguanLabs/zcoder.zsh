@@ -30,6 +30,7 @@ zcoder.zsh. If you are new to the project, begin with
 
 ## Releases
 
+- [v0.6.0 — Performance and hardening](releases/v0.6.0.md)
 - [v0.5.0 — Remote-agent architecture](releases/v0.5.0.md)
 
 [Back to the project README](../README.md)
