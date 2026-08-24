@@ -120,14 +120,9 @@ agent_context_options_json() {
 }
 
 agent_build_compaction_payload() {
-  local -i start="${1:-1}" i
-  local records="[" comma="" item="" source_text="" system_json="" user_json="" model_json="" options=""
-  for (( i=start; i<=${#AGENT_MESSAGES}; i++ )); do
-    item="${AGENT_MESSAGES[i]}"
-    records+="${comma}${item}"
-    comma=","
-  done
-  records+="]"
+  local -i start="${1:-1}"
+  local records="" source_text="" system_json="" user_json="" model_json="" options=""
+  records="[${(j:,:)AGENT_MESSAGES[start,-1]}]"
   if [[ -n "$AGENT_COMPACTION_SUMMARY" ]]; then
     source_text=$'Previous checkpoint:\n'"$AGENT_COMPACTION_SUMMARY"$'\n\n'
   fi

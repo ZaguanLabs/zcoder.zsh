@@ -9,6 +9,16 @@ typeset -ga SESSION_IDS=()
 typeset -ga SESSION_TITLES=()
 typeset -ga SESSION_MODELS=()
 
+# What the last state_save_session wrote, so routine saves append only the new
+# records instead of rewriting every file of a long session. Any signal that
+# existing records changed — another session, a compaction checkpoint, a
+# shrunken array, a toggled reasoning flag — forces a full rewrite.
+typeset -g STATE_SAVED_SESSION_ID=""
+typeset -g STATE_SAVED_REASONING=""
+typeset -gi STATE_SAVED_AGENT_COUNT=0 STATE_SAVED_UI_COUNT=0
+typeset -gi STATE_SAVED_USER_COUNT=0 STATE_SAVED_SKILL_COUNT=0
+typeset -gi STATE_SAVED_COMPACTIONS=-1
+
 _state_valid_id() {
   [[ "$1" == <1->'_'<1-> ]]
 }
@@ -69,11 +79,24 @@ state_save_session() {
   local agent_dir="$session_dir/agent_messages" ui_dir="$session_dir/ui_events"
   local users_dir="$session_dir/context_users" skills_dir="$session_dir/active_skills"
   local seq="" old_umask="$(umask)"
-  local -i i
+  local -i i agent_start=1 ui_start=1 users_start=1 skills_start=1
   umask 077
   if ! zf_mkdir -p "$agent_dir" "$ui_dir" "$users_dir" "$skills_dir" 2>/dev/null; then
     umask "$old_umask"
     return 1
+  fi
+
+  if [[ "$CURRENT_SESSION_ID" == "$STATE_SAVED_SESSION_ID" ]] && \
+     (( AGENT_COMPACTION_COUNT == STATE_SAVED_COMPACTIONS )) && \
+     (( ${#AGENT_MESSAGES} >= STATE_SAVED_AGENT_COUNT )) && \
+     (( ${#UI_ROLES} >= STATE_SAVED_UI_COUNT )) && \
+     (( ${#AGENT_USER_MESSAGES} >= STATE_SAVED_USER_COUNT )) && \
+     (( ${#SKILL_ACTIVE_NAMES} >= STATE_SAVED_SKILL_COUNT )) && \
+     [[ "${(j::)UI_REASONING_OPEN[1,STATE_SAVED_UI_COUNT]}" == "$STATE_SAVED_REASONING" ]]; then
+    agent_start=$(( STATE_SAVED_AGENT_COUNT + 1 ))
+    ui_start=$(( STATE_SAVED_UI_COUNT + 1 ))
+    users_start=$(( STATE_SAVED_USER_COUNT + 1 ))
+    skills_start=$(( STATE_SAVED_SKILL_COUNT + 1 ))
   fi
 
   mapfile[$session_dir/id]="$CURRENT_SESSION_ID"
@@ -93,11 +116,11 @@ state_save_session() {
   mapfile[$session_dir/last_output_tokens]="$AGENT_LAST_OUTPUT_TOKENS"
   mapfile[$session_dir/last_payload_bytes]="$AGENT_LAST_PAYLOAD_BYTES"
 
-  for (( i=1; i<=${#AGENT_MESSAGES}; i++ )); do
+  for (( i=agent_start; i<=${#AGENT_MESSAGES}; i++ )); do
     printf -v seq '%06d' "$i"
     mapfile[$agent_dir/$seq]="${AGENT_MESSAGES[i]}"
   done
-  for (( i=1; i<=${#UI_ROLES}; i++ )); do
+  for (( i=ui_start; i<=${#UI_ROLES}; i++ )); do
     printf -v seq '%06d' "$i"
     mapfile[$ui_dir/$seq.role]="${UI_ROLES[i]}"
     mapfile[$ui_dir/$seq.content]="${UI_CONTENTS[i]}"
@@ -105,15 +128,23 @@ state_save_session() {
     mapfile[$ui_dir/$seq.time]="${UI_TIMES[i]}"
     mapfile[$ui_dir/$seq.reasoning_open]="${UI_REASONING_OPEN[i]:-0}"
   done
-  for (( i=1; i<=${#AGENT_USER_MESSAGES}; i++ )); do
+  for (( i=users_start; i<=${#AGENT_USER_MESSAGES}; i++ )); do
     printf -v seq '%06d' "$i"
     mapfile[$users_dir/$seq]="${AGENT_USER_MESSAGES[i]}"
   done
-  for (( i=1; i<=${#SKILL_ACTIVE_NAMES}; i++ )); do
+  for (( i=skills_start; i<=${#SKILL_ACTIVE_NAMES}; i++ )); do
     printf -v seq '%06d' "$i"
     mapfile[$skills_dir/$seq]="${SKILL_ACTIVE_NAMES[i]}"
   done
   umask "$old_umask"
+
+  STATE_SAVED_SESSION_ID="$CURRENT_SESSION_ID"
+  STATE_SAVED_COMPACTIONS=$AGENT_COMPACTION_COUNT
+  STATE_SAVED_AGENT_COUNT=${#AGENT_MESSAGES}
+  STATE_SAVED_UI_COUNT=${#UI_ROLES}
+  STATE_SAVED_USER_COUNT=${#AGENT_USER_MESSAGES}
+  STATE_SAVED_SKILL_COUNT=${#SKILL_ACTIVE_NAMES}
+  STATE_SAVED_REASONING="${(j::)UI_REASONING_OPEN}"
 }
 
 state_save_and_refresh() {
@@ -131,6 +162,7 @@ state_new_session() {
   UI_THINKINGS=()
   UI_TIMES=()
   UI_REASONING_OPEN=()
+  (( UI_TRANSCRIPT_GENERATION++ ))
   UI_SCROLL=0
   UI_AUTO_SCROLL=1
   state_save_and_refresh
@@ -161,9 +193,12 @@ state_load_session() {
   UI_THINKINGS=()
   UI_TIMES=()
   UI_REASONING_OPEN=()
+  (( UI_TRANSCRIPT_GENERATION++ ))
 
+  local -i disk_agent_count=0 disk_ui_count=0 disk_user_count=0 disk_skill_count=0
   agent_dir="$session_dir/agent_messages"
   _state_nonnegative "${mapfile[$session_dir/agent_message_count]:-0}"; count=$REPLY
+  disk_agent_count=$count
   for (( i=1; i<=count; i++ )); do
     printf -v seq '%06d' "$i"
     [[ -f "$agent_dir/$seq" ]] && AGENT_MESSAGES+=("${mapfile[$agent_dir/$seq]}")
@@ -171,6 +206,7 @@ state_load_session() {
 
   ui_dir="$session_dir/ui_events"
   _state_nonnegative "${mapfile[$session_dir/ui_event_count]:-0}"; count=$REPLY
+  disk_ui_count=$count
   for (( i=1; i<=count; i++ )); do
     printf -v seq '%06d' "$i"
     [[ -f "$ui_dir/$seq.role" ]] || continue
@@ -191,6 +227,7 @@ state_load_session() {
 
   users_dir="$session_dir/context_users"
   _state_nonnegative "${mapfile[$session_dir/context_user_count]:-0}"; count=$REPLY
+  disk_user_count=$count
   for (( i=1; i<=count; i++ )); do
     printf -v seq '%06d' "$i"
     [[ -f "$users_dir/$seq" ]] && AGENT_USER_MESSAGES+=("${mapfile[$users_dir/$seq]}")
@@ -198,6 +235,7 @@ state_load_session() {
 
   skills_dir="$session_dir/active_skills"
   _state_nonnegative "${mapfile[$session_dir/active_skill_count]:-0}"; count=$REPLY
+  disk_skill_count=$count
   for (( i=1; i<=count; i++ )); do
     printf -v seq '%06d' "$i"
     skill_name="${mapfile[$skills_dir/$seq]}"
@@ -208,6 +246,22 @@ state_load_session() {
   UI_SCROLL=0
   UI_AUTO_SCROLL=1
   STATE_LOADING=0
+  # When every on-disk record loaded, the arrays mirror the session directory
+  # exactly and the next save can append from these counts. A lossy load
+  # (missing files, failed skill activation) forces that save to rewrite all
+  # records instead.
+  if (( ${#AGENT_MESSAGES} == disk_agent_count && ${#UI_ROLES} == disk_ui_count && \
+        ${#AGENT_USER_MESSAGES} == disk_user_count && ${#SKILL_ACTIVE_NAMES} == disk_skill_count )); then
+    STATE_SAVED_SESSION_ID="$CURRENT_SESSION_ID"
+    STATE_SAVED_COMPACTIONS=$AGENT_COMPACTION_COUNT
+    STATE_SAVED_AGENT_COUNT=${#AGENT_MESSAGES}
+    STATE_SAVED_UI_COUNT=${#UI_ROLES}
+    STATE_SAVED_USER_COUNT=${#AGENT_USER_MESSAGES}
+    STATE_SAVED_SKILL_COUNT=${#SKILL_ACTIVE_NAMES}
+    STATE_SAVED_REASONING="${(j::)UI_REASONING_OPEN}"
+  else
+    STATE_SAVED_SESSION_ID=""
+  fi
   zcoder_debug session_loaded "id=$id title=${(qqq)SESSION_TITLE} events=${#UI_ROLES} messages=${#AGENT_MESSAGES}"
   return 0
 }

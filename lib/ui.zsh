@@ -10,6 +10,14 @@ typeset -g UI_STATUS="Ready"
 typeset -gi UI_SCROLL=0 UI_AUTO_SCROLL=1
 typeset -g UI_FOCUS="input"
 typeset -ga UI_ROLES=() UI_CONTENTS=() UI_THINKINGS=() UI_TIMES=() UI_REASONING_OPEN=()
+# Rendering the whole transcript is linear in its size, so scrolling and tool
+# events must not re-render unchanged content. Non-append mutations of the
+# transcript arrays (toggles, session switches) bump the generation and force
+# a full render; plain appends render only the new messages, and a matching
+# generation, width, model label, and count reuses the cached render as is.
+typeset -gi UI_TRANSCRIPT_GENERATION=0
+typeset -g UI_RENDER_CACHE_KEY=""
+typeset -gi UI_RENDER_COUNT=0
 typeset -ga UI_LINES=() UI_ATTRS=()
 typeset -ga UI_LINE_SEGMENT_STARTS=() UI_LINE_SEGMENT_COUNTS=()
 typeset -ga UI_SEGMENT_TEXTS=() UI_SEGMENT_ATTRS=()
@@ -169,9 +177,8 @@ ui_draw_sidebar() {
   divider_row=$(( inner_h - bottom_needed + 1 ))
   (( divider_row < 2 )) && divider_row=2
   session_rows=$(( divider_row - 1 ))
-  for (( i=1; i<=${#SESSION_IDS}; i++ )); do
-    [[ "${SESSION_IDS[i]}" == "$CURRENT_SESSION_ID" ]] && { current_index=$i; break; }
-  done
+  current_index=${SESSION_IDS[(Ie)$CURRENT_SESSION_ID]}
+  (( current_index > 0 )) || current_index=1
   if (( current_index > session_rows )); then
     session_start=$(( current_index - session_rows + 1 ))
   fi
@@ -200,8 +207,7 @@ ui_draw_sidebar() {
     (( row++ ))
   done
 
-  divider=""
-  for (( i=1; i<=inner_w; i++ )); do divider+="─"; done
+  divider="${(pl:inner_w::─:)}"
   if (( divider_row <= inner_h )); then
     zcurses move side_win $divider_row 1
     zcurses attr side_win dim cyan/black
@@ -469,28 +475,36 @@ _ui_add_syntax_line() {
   done
 }
 
+# Both hard wrappers chunk via a character array and index arithmetic;
+# repeatedly re-slicing the shrinking remainder is quadratic in Zsh.
 _ui_add_hard_wrapped() {
   local content="$1" width="$2" prefix="${3:-  }" attr="${4:-white/black}"
-  local -i available=$(( width - ${#prefix} ))
+  local -a content_chars=()
+  local -i available=$(( width - ${#prefix} )) pos=1 total
   (( available < 1 )) && available=1
   if [[ -z "$content" ]]; then _ui_add_line "$prefix" "$attr"; return 0; fi
-  while (( ${#content} > available )); do
-    _ui_add_line "${prefix}${content[1,$available]}" "$attr"
-    content="${content[$(( available + 1 )),-1]}"
+  content_chars=("${(@s::)content}")
+  total=${#content_chars}
+  while (( total - pos + 1 > available )); do
+    _ui_add_line "${prefix}${(j::)content_chars[pos,pos+available-1]}" "$attr"
+    (( pos += available ))
   done
-  _ui_add_line "${prefix}${content}" "$attr"
+  _ui_add_line "${prefix}${(j::)content_chars[pos,total]}" "$attr"
 }
 
 _ui_add_syntax_wrapped() {
   local content="$1" width="$2" prefix="${3:-  }" language="${4:-plain}"
-  local -i available=$(( width - ${#prefix} ))
+  local -a content_chars=()
+  local -i available=$(( width - ${#prefix} )) pos=1 total
   (( available < 1 )) && available=1
   if [[ -z "$content" ]]; then _ui_add_line "$prefix" "white/black"; return 0; fi
-  while (( ${#content} > available )); do
-    _ui_add_syntax_line "${content[1,$available]}" "$language" "$prefix"
-    content="${content[$(( available + 1 )),-1]}"
+  content_chars=("${(@s::)content}")
+  total=${#content_chars}
+  while (( total - pos + 1 > available )); do
+    _ui_add_syntax_line "${(j::)content_chars[pos,pos+available-1]}" "$language" "$prefix"
+    (( pos += available ))
   done
-  _ui_add_syntax_line "$content" "$language" "$prefix"
+  _ui_add_syntax_line "${(j::)content_chars[pos,total]}" "$language" "$prefix"
 }
 
 _ui_diff_attr() {
@@ -551,10 +565,43 @@ _ui_add_wrapped() {
   done
 }
 
-ui_render_messages() {
-  local -i width=$1 count=${#UI_ROLES} i think_lines
+_ui_render_one_message() {
+  local -i i=$1 width=$2 think_lines
   local role content thinking time attr title
   local -a thinking_lines=()
+  role="${UI_ROLES[i]}"; content="${UI_CONTENTS[i]}"; thinking="${UI_THINKINGS[i]}"; time="${UI_TIMES[i]}"
+  case "$role" in
+    user) title="🧑 You  ${time}"; attr="green/black" ;;
+    assistant) title="🤖 Assistant (${ZCODER_MODEL})  ${time}"; attr="white/black" ;;
+    tool) title="⚙ Tool activity  ${time}"; attr="white/black" ;;
+    claude) title="◇ Claude consultant  ${time}"; attr="cyan/black" ;;
+    codex) title="◇ Codex consultant  ${time}"; attr="cyan/black" ;;
+    agy) title="◇ Antigravity consultant  ${time}"; attr="cyan/black" ;;
+    opencode) title="◇ OpenCode consultant  ${time}"; attr="cyan/black" ;;
+    error) title="⚠ Error  ${time}"; attr="red/black" ;;
+    *) title="ℹ ${role}  ${time}"; attr="magenta/black" ;;
+  esac
+  [[ "$role" == tool ]] && _ui_add_line "$title" "bold yellow/black" || _ui_add_line "$title" "bold $attr"
+  if [[ -n "$thinking" ]]; then
+    thinking_lines=("${(@f)thinking}")
+    think_lines=${#thinking_lines}
+    if (( ${UI_REASONING_OPEN[i]:-0} )); then
+      _ui_add_line "  ▼ Reasoning (${think_lines} lines)" "bold magenta/black"
+      _ui_add_wrapped "$thinking" "$width" "    " "dim magenta/black"
+    else
+      _ui_add_line "  ▶ Reasoning (${think_lines} lines) [^R to expand]" "dim magenta/black"
+    fi
+  fi
+  if [[ "$role" == tool ]]; then
+    _ui_add_tool_content "$content" "$width"
+  elif [[ -n "$content" ]]; then
+    _ui_add_wrapped "$content" "$width" "  " "$attr"
+  fi
+  _ui_add_line "" default/default
+}
+
+ui_render_messages() {
+  local -i width=$1 count=${#UI_ROLES} i
   UI_LINES=(); UI_ATTRS=()
   UI_LINE_SEGMENT_STARTS=(); UI_LINE_SEGMENT_COUNTS=()
   UI_SEGMENT_TEXTS=(); UI_SEGMENT_ATTRS=()
@@ -570,36 +617,10 @@ ui_render_messages() {
     return 0
   fi
   for (( i=1; i<=count; i++ )); do
-    role="${UI_ROLES[i]}"; content="${UI_CONTENTS[i]}"; thinking="${UI_THINKINGS[i]}"; time="${UI_TIMES[i]}"
-    case "$role" in
-      user) title="🧑 You  ${time}"; attr="green/black" ;;
-      assistant) title="🤖 Assistant (${ZCODER_MODEL})  ${time}"; attr="white/black" ;;
-      tool) title="⚙ Tool activity  ${time}"; attr="white/black" ;;
-      claude) title="◇ Claude consultant  ${time}"; attr="cyan/black" ;;
-      codex) title="◇ Codex consultant  ${time}"; attr="cyan/black" ;;
-      agy) title="◇ Antigravity consultant  ${time}"; attr="cyan/black" ;;
-      opencode) title="◇ OpenCode consultant  ${time}"; attr="cyan/black" ;;
-      error) title="⚠ Error  ${time}"; attr="red/black" ;;
-      *) title="ℹ ${role}  ${time}"; attr="magenta/black" ;;
-    esac
-    [[ "$role" == tool ]] && _ui_add_line "$title" "bold yellow/black" || _ui_add_line "$title" "bold $attr"
-    if [[ -n "$thinking" ]]; then
-      thinking_lines=("${(@f)thinking}")
-      think_lines=${#thinking_lines}
-      if (( ${UI_REASONING_OPEN[i]:-0} )); then
-        _ui_add_line "  ▼ Reasoning (${think_lines} lines)" "bold magenta/black"
-        _ui_add_wrapped "$thinking" "$width" "    " "dim magenta/black"
-      else
-        _ui_add_line "  ▶ Reasoning (${think_lines} lines) [^R to expand]" "dim magenta/black"
-      fi
-    fi
-    if [[ "$role" == tool ]]; then
-      _ui_add_tool_content "$content" "$width"
-    elif [[ -n "$content" ]]; then
-      _ui_add_wrapped "$content" "$width" "  " "$attr"
-    fi
-    _ui_add_line "" default/default
+    _ui_render_one_message "$i" "$width"
   done
+  UI_RENDER_CACHE_KEY="${UI_TRANSCRIPT_GENERATION}:${width}:${ZCODER_MODEL}"
+  UI_RENDER_COUNT=$count
 }
 
 ui_draw_chat() {
@@ -607,8 +628,17 @@ ui_draw_chat() {
   local -i defer_refresh="${1:-0}"
   local -i inner_w=$(( SCREEN_W - SIDE_W - 2 )) inner_h=$(( SCREEN_H - TOP_H - INPUT_H - FOOT_H - 2 ))
   local -i total row idx max_scroll segment_start segment_count segment_index remaining
-  local attr="" segment=""
-  ui_render_messages "$inner_w"
+  local attr="" segment="" cache_key="${UI_TRANSCRIPT_GENERATION}:${inner_w}:${ZCODER_MODEL}"
+  local -i message_count=${#UI_ROLES} render_index
+  if [[ "$cache_key" != "$UI_RENDER_CACHE_KEY" ]] || \
+     (( message_count < UI_RENDER_COUNT )) || (( UI_RENDER_COUNT == 0 && message_count > 0 )); then
+    ui_render_messages "$inner_w"
+  elif (( message_count > UI_RENDER_COUNT )); then
+    for (( render_index=UI_RENDER_COUNT+1; render_index<=message_count; render_index++ )); do
+      _ui_render_one_message "$render_index" "$inner_w"
+    done
+    UI_RENDER_COUNT=$message_count
+  fi
   total=${#UI_LINES}; max_scroll=$(( total - inner_h )); (( max_scroll < 0 )) && max_scroll=0
   (( UI_AUTO_SCROLL )) && UI_SCROLL=$max_scroll
   (( UI_SCROLL > max_scroll )) && UI_SCROLL=$max_scroll
@@ -811,6 +841,7 @@ ui_toggle_reasoning() {
   for (( i=${#UI_ROLES}; i>=1; i-- )); do
     if [[ "${UI_ROLES[i]}" == assistant && -n "${UI_THINKINGS[i]}" ]]; then
       UI_REASONING_OPEN[i]=$(( ! ${UI_REASONING_OPEN[i]:-0} ))
+      (( UI_TRANSCRIPT_GENERATION++ ))
       break
     fi
   done

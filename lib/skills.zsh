@@ -247,11 +247,7 @@ skills_build_catalog() {
 }
 
 _skills_is_active() {
-  local wanted="$1" active=""
-  for active in "${SKILL_ACTIVE_NAMES[@]}"; do
-    [[ "$active" == "$wanted" ]] && return 0
-  done
-  return 1
+  (( ${SKILL_ACTIVE_NAMES[(Ie)$1]} ))
 }
 
 skills_activate() {

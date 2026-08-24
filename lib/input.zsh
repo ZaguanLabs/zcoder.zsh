@@ -89,56 +89,73 @@ input_layout() {
   (( width < 1 )) && width=1
   (( max_rows < 1 )) && max_rows=1
 
-  INPUT_VISUAL_LINES=("")
-  INPUT_VISUAL_STARTS=(0)
-  INPUT_VISUAL_LENGTHS=(0)
+  INPUT_VISUAL_LINES=()
+  INPUT_VISUAL_STARTS=()
+  INPUT_VISUAL_LENGTHS=()
   INPUT_CURSOR_ROW=1
   INPUT_CURSOR_COL=0
 
-  local -i row=1 col=0 processed=0 index length=${#INPUT_BUF}
-  local ch=""
-  for (( index=1; index<=length; index++ )); do
-    ch="${INPUT_BUF[index]}"
-    if [[ "$ch" == $'\n' ]]; then
-      (( processed++ ))
-      INPUT_VISUAL_LINES+=("")
-      INPUT_VISUAL_STARTS+=("$processed")
-      INPUT_VISUAL_LENGTHS+=(0)
+  # Lay out per logical line with arithmetic instead of walking the buffer one
+  # character at a time, which is quadratic per keystroke on pasted prompts.
+  # Quoted (@ps) splitting keeps the empty fields that represent blank lines.
+  local -a logical_lines=("${(@ps:\n:)INPUT_BUF}") line_chars=()
+  local line=""
+  local -i line_count=${#logical_lines} length=${#INPUT_BUF}
+  local -i row=0 offset=0 rows j i n k first_row segment_start segment_length
+
+  for (( j=1; j<=line_count; j++ )); do
+    line="${logical_lines[j]}"
+    n=${#line}
+    rows=1
+    (( n > width )) && rows=$(( (n + width - 1) / width ))
+    first_row=$(( row + 1 ))
+    if (( n <= width )); then
       (( row++ ))
-      col=0
-      if (( INPUT_POS == processed )); then
-        INPUT_CURSOR_ROW=$row
-        INPUT_CURSOR_COL=0
-      fi
-      continue
+      INPUT_VISUAL_LINES+=("$line")
+      INPUT_VISUAL_STARTS+=("$offset")
+      INPUT_VISUAL_LENGTHS+=("$n")
+    else
+      line_chars=("${(@s::)line}")
+      for (( i=1; i<=rows; i++ )); do
+        segment_start=$(( (i - 1) * width ))
+        segment_length=$(( n - segment_start ))
+        (( segment_length > width )) && segment_length=width
+        (( row++ ))
+        INPUT_VISUAL_LINES+=("${(j::)line_chars[segment_start+1,segment_start+segment_length]}")
+        INPUT_VISUAL_STARTS+=($(( offset + segment_start )))
+        INPUT_VISUAL_LENGTHS+=("$segment_length")
+      done
     fi
 
-    if (( col >= width )); then
-      INPUT_VISUAL_LINES+=("")
-      INPUT_VISUAL_STARTS+=("$processed")
-      INPUT_VISUAL_LENGTHS+=(0)
-      (( row++ ))
-      col=0
-      if (( INPUT_POS == processed )); then
-        INPUT_CURSOR_ROW=$row
+    if (( INPUT_POS >= offset && INPUT_POS <= offset + n )); then
+      k=$(( INPUT_POS - offset ))
+      if (( k == 0 )); then
+        # Only a row that begins a fresh logical line owns a cursor at its
+        # very start; the buffer start keeps the default position.
+        if (( j > 1 )); then
+          INPUT_CURSOR_ROW=$first_row
+          INPUT_CURSOR_COL=0
+        fi
+      elif (( k % width == 0 && k < n )); then
+        # A cursor on a wrapped-row boundary belongs at the start of the next
+        # visual row; before a newline it stays at the end of its own row.
+        INPUT_CURSOR_ROW=$(( first_row + k / width ))
         INPUT_CURSOR_COL=0
+      else
+        i=$(( (k - 1) / width + 1 ))
+        INPUT_CURSOR_ROW=$(( first_row + i - 1 ))
+        INPUT_CURSOR_COL=$(( k - (i - 1) * width ))
       fi
     fi
-
-    INPUT_VISUAL_LINES[row]+="$ch"
-    (( processed++, col++ ))
-    INPUT_VISUAL_LENGTHS[row]=$col
-    if (( INPUT_POS == processed )); then
-      INPUT_CURSOR_ROW=$row
-      INPUT_CURSOR_COL=$col
-    fi
+    offset=$(( offset + n + 1 ))
   done
 
-  # A cursor immediately after a full row belongs at the start of the next
+  # A cursor immediately after a full final row belongs at the start of a new
   # visual row; placing it on the border would make it disappear.
-  if (( length > 0 && INPUT_POS == length && col >= width )); then
+  n=${#logical_lines[line_count]}
+  if (( length > 0 && INPUT_POS == length && n > 0 && n % width == 0 )); then
     INPUT_VISUAL_LINES+=("")
-    INPUT_VISUAL_STARTS+=("$processed")
+    INPUT_VISUAL_STARTS+=("$length")
     INPUT_VISUAL_LENGTHS+=(0)
     (( row++ ))
     INPUT_CURSOR_ROW=$row

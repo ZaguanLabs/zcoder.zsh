@@ -51,10 +51,26 @@ remote_normalize_endpoint() {
 
 remote_load_token() {
   local path="$1" token=""
+  local -A token_stat=()
   REMOTE_ERROR=""
   [[ -n "$path" ]] || { REMOTE_ERROR="--token-file is required for remote mode"; return 1; }
   path="${path:A}"
   [[ -f "$path" && -r "$path" ]] || { REMOTE_ERROR="token file is not readable: $path"; return 1; }
+  # The token is a bearer credential. Refuse to launch unless the file is
+  # private: owned by the invoking user and with no group or other permission
+  # bits (0600, or stricter such as 0400).
+  if ! zmodload -F zsh/stat b:zstat 2>/dev/null || ! zstat -H token_stat -- "$path" 2>/dev/null; then
+    REMOTE_ERROR="could not inspect token file ownership and permissions: $path"
+    return 1
+  fi
+  if [[ "${token_stat[uid]}" != "$EUID" ]]; then
+    REMOTE_ERROR="token file must be owned by the current user: $path"
+    return 1
+  fi
+  if (( token_stat[mode] & 8#077 )); then
+    REMOTE_ERROR="token file is accessible to group or others; make it private with: chmod 600 $path"
+    return 1
+  fi
   token="${mapfile[$path]}"
   while [[ "$token" == *$'\n' || "$token" == *$'\r' ]]; do token="${token[1,-2]}"; done
   if (( ${#token} < 32 )) || [[ "$token" != [A-Za-z0-9._~-]## ]]; then

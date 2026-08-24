@@ -1,5 +1,7 @@
 # Atlas Scout local data
 .atlas/
+# Precompiled zsh wordcode from `make compile`
+*.zwc
 node_modules/
 .pnpm_store/
 *.log

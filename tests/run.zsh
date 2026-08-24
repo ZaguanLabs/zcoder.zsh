@@ -67,7 +67,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..462"
+print -r -- "1..472"
 
 input_reset
 input_layout 20 4
@@ -361,6 +361,16 @@ json_parse_ollama_response '{"message":{"content":"","thinking":"<tool_call>run_
 assert_success "tool-like reasoning text remains valid reasoning" $?
 assert_eq "0" "${#JSON_TOOL_NAMES}" "tool-like reasoning text is never promoted to a structured call"
 
+json_parse_ollama_response '{"message":{"content":"pair \ud83d\ude00 ok"}}'
+assert_success "surrogate-pair unicode escapes parse" $?
+assert_eq $'pair \U0001f600 ok' "$JSON_RESPONSE_CONTENT" "surrogate pairs decode to the astral character"
+json_parse_ollama_response '{"message":{"content":"pre \ud83d post"}}'
+assert_success "a lone UTF-16 surrogate escape does not abort parsing" $?
+assert_eq $'pre � post' "$JSON_RESPONSE_CONTENT" "a lone surrogate decodes to the replacement character"
+json_begin '"\udc00\uD800\uD800"'
+assert_success "adjacent unpairable surrogate escapes decode" $?
+assert_eq $'���' "$JSON_TOKEN_VALUE" "each unpairable surrogate becomes one replacement character"
+
 json_parse_running_model_context '{"models":[{"name":"other:latest","context_length":4096},{"name":"qwen:latest","model":"qwen:latest","context_length":65536}]}' "qwen:latest"
 assert_success "running Ollama model metadata parses" $?
 assert_eq "65536" "$JSON_RUNNING_MODEL_CONTEXT" "allocated model context is selected by name"
@@ -438,10 +448,22 @@ assert_contains "$REMOTE_ERROR" "HTTPS is not supported" "remote HTTPS rejection
 
 remote_token_file="$TEST_TMP/remote-token"
 mapfile[$remote_token_file]="short"
+zf_chmod 600 "$remote_token_file"
 remote_load_token "$remote_token_file"
 assert_failure "remote authentication rejects short tokens" $?
 remote_token_value="abcdefghijklmnopqrstuvwxyz0123456789ABCDEF"
 mapfile[$remote_token_file]="${remote_token_value}"$'\n'
+zf_chmod 644 "$remote_token_file"
+remote_load_token "$remote_token_file"
+assert_failure "remote authentication refuses a group- or world-accessible token file" $?
+assert_contains "$REMOTE_ERROR" "chmod 600" "token permission refusal explains the required fix"
+zf_chmod 640 "$remote_token_file"
+remote_load_token "$remote_token_file"
+assert_failure "remote authentication refuses a group-readable token file" $?
+zf_chmod 400 "$remote_token_file"
+remote_load_token "$remote_token_file"
+assert_success "remote authentication accepts a stricter read-only private token file" $?
+zf_chmod 600 "$remote_token_file"
 remote_load_token "$remote_token_file"
 assert_success "remote authentication loads a URL-safe token file" $?
 assert_eq "$remote_token_value" "$REMOTE_TOKEN" "remote authentication trims the token file newline"

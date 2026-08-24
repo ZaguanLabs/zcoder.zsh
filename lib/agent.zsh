@@ -321,7 +321,7 @@ agent_add_assistant_message() {
 }
 
 agent_build_payload() {
-  local model_json="" system_json="" messages="[" comma="" item="" think="true" tools="" options=""
+  local model_json="" system_json="" messages="[" think="true" tools="" options=""
   # MCP discovery must precede prompt assembly. Besides producing Ollama's
   # schemas, it gives small models an exact short-name -> function-name map.
   tools_schema_json
@@ -347,10 +347,9 @@ agent_build_payload() {
   json_quote "$ZCODER_MODEL"; model_json="$REPLY"
   json_quote "$prompt"; system_json="$REPLY"
   messages+="{\"role\":\"system\",\"content\":${system_json}}"
-  comma=","
-  for item in "${AGENT_MESSAGES[@]}"; do
-    messages+="${comma}${item}"
-  done
+  # Join at C speed; appending message by message re-copies the growing
+  # payload and is quadratic for long histories.
+  (( ${#AGENT_MESSAGES} > 0 )) && messages+=",${(j:,:)AGENT_MESSAGES}"
   messages+="]"
   agent_context_options_json
   options="${REPLY%,}"
@@ -488,7 +487,9 @@ agent_user_turn() {
       return 1
     fi
     response="$HTTP_BODY"
-    zcoder_debug ollama_response_raw "step=$step response=${(qqq)response}"
+    # The (qqq) quoting of a full response is expensive; skip building the
+    # debug record entirely unless the debug log is active.
+    (( ZCODER_DEBUG_ACTIVE )) && zcoder_debug ollama_response_raw "step=$step response=${(qqq)response}"
     if ! json_parse_ollama_response "$response"; then
       zcoder_debug response_parse_error "step=$step error=${(qqq)JSON_ERROR}"
       if (( incomplete_retries < AGENT_INCOMPLETE_RETRY_LIMIT )); then

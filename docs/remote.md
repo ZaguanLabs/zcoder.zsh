@@ -30,6 +30,11 @@ openssl rand -hex 16 > ~/.config/zcoder/remote.token
 For a 256-bit token, use `openssl rand -hex 32`. A 32-bit token is only eight
 hexadecimal characters and is both too short and rejected by zcoder.
 
+The token file must be private: owned by the user launching zcoder, with no
+group or other permission bits (`chmod 600`; a stricter read-only `400` also
+works). Both `--server` and `--connect` refuse to start otherwise. The
+`umask 077` in the example above creates the file with the required mode.
+
 ## Start the server
 
 Run this on the machine that owns the workspace and runs, or can reach, Ollama:

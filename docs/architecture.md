@@ -26,6 +26,17 @@ lib/
 tests/run.zsh           shell-level unit and integration tests
 ```
 
+## Library loading
+
+`zcoder_require` sources each library at most once. The core libraries load at
+startup; `remote.zsh` loads only when a remote mode is selected, and
+`delegate.zsh` loads on the first external-consultation command. The `mcp`
+maintenance CLI loads only the configuration and protocol libraries. Every
+cross-library call into an optionally loaded library is guarded with
+`$+functions`. `make compile` optionally precompiles the libraries to `.zwc`
+wordcode, roughly halving launch time; a stale `.zwc` is ignored by zsh, so
+recompiling is never required for correctness.
+
 ## Agent cycle
 
 Both profiles teach the model a small operating loop:

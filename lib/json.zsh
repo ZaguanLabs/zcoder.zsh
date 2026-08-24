@@ -1,6 +1,7 @@
 # Native JSON tokenizer and the small codecs zcoder needs for Ollama.
 
 typeset -g JSON_SOURCE=""
+typeset -ga JSON_CHARS=()
 typeset -gi JSON_POS=1
 typeset -gi JSON_LEN=0
 typeset -gi JSON_TOKEN_START=1
@@ -49,50 +50,190 @@ _json_quote_slow() {
 }
 
 json_quote() {
-  local input="$1" output="" control_check=""
+  local input="$1" output=""
 
   # Parameter substitution performs the common JSON string encoding in native
   # Zsh internals. Building the result one character at a time is quadratic
   # for large resumed histories and can pin a core during compaction.
-  control_check="${input//$'\b'/}"
-  control_check="${control_check//$'\f'/}"
-  control_check="${control_check//$'\n'/}"
-  control_check="${control_check//$'\r'/}"
-  control_check="${control_check//$'\t'/}"
-  if [[ "$control_check" == *[[:cntrl:]]* ]]; then
+  # ${//} pays a rebuild per match, so the frequent newline and tab escapes use
+  # a C-speed split+join instead; quoted (@s) splitting keeps empty fields, so
+  # the round trip is exact.
+  output="$input"
+  [[ "$output" == *'\'* ]] && output="${(pj:\\\\:)${(@ps:\\:)output}}"
+  [[ "$output" == *'"'* ]] && output="${(pj:\\\":)${(@ps:\":)output}}"
+  output="${output//$'\b'/\\b}"
+  output="${output//$'\f'/\\f}"
+  output="${output//$'\r'/\\r}"
+  [[ "$output" == *$'\n'* ]] && output="${(pj:\\n:)${(@ps:\n:)output}}"
+  [[ "$output" == *$'\t'* ]] && output="${(pj:\\t:)${(@ps:\t:)output}}"
+
+  # The escapes above cover every common control character; anything still
+  # unescaped needs the character-by-character \u encoder.
+  if [[ "$output" == *[[:cntrl:]]* ]]; then
     _json_quote_slow "$input"
     return
   fi
-
-  output="${input//\\/\\\\}"
-  output="${output//\"/\\\"}"
-  output="${output//$'\b'/\\b}"
-  output="${output//$'\f'/\\f}"
-  output="${output//$'\n'/\\n}"
-  output="${output//$'\r'/\\r}"
-  output="${output//$'\t'/\\t}"
   REPLY="\"${output}\""
 }
 
 json_begin() {
   JSON_SOURCE="$1"
+  # Tokenize over a character array: Zsh scalar subscripting walks the string
+  # from its start on every access, which makes per-character parsing of large
+  # responses quadratic. Array indexing is constant time and subscript-pattern
+  # searches over the array run at C speed.
+  if [[ -n "$1" ]]; then
+    JSON_CHARS=("${(@s::)1}")
+  else
+    JSON_CHARS=()
+  fi
   JSON_POS=1
-  JSON_LEN=${#JSON_SOURCE}
+  JSON_LEN=${#JSON_CHARS}
   JSON_TOKEN_TYPE=""
   JSON_TOKEN_VALUE=""
   JSON_ERROR=""
   json_next
 }
 
-json_next() {
-  local ch="" esc="" hex="" low_hex="" encoded="" decoded="" value=""
-  local -i cp low_cp
-
-  while (( JSON_POS <= JSON_LEN )); do
-    ch="${JSON_SOURCE[JSON_POS]}"
-    [[ "$ch" == [[:space:]] ]] || break
-    (( JSON_POS++ ))
+# Decode a string token whose opening quote has been consumed. Strings without
+# escapes copy in one slice; strings with only the simple two-character escapes
+# decode with C-speed split+join transforms. Anything else — \u escapes,
+# invalid escapes, unterminated input — falls back to the exact
+# character-by-character scanner so every error and edge case is unchanged.
+_json_scan_string() {
+  local raw="" part="" quote_char='"' backslash_char='\'
+  local -a parts=() decoded_parts=()
+  local -i quote backslash before
+  quote=${JSON_CHARS[(ib:JSON_POS:)$quote_char]}
+  if (( quote > JSON_LEN )); then
+    _json_scan_string_slow
+    return
+  fi
+  backslash=${JSON_CHARS[(ib:JSON_POS:)$backslash_char]}
+  if (( quote < backslash )); then
+    (( quote > JSON_POS )) && JSON_TOKEN_VALUE="${(j::)JSON_CHARS[JSON_POS,quote-1]}" || JSON_TOKEN_VALUE=""
+    JSON_TOKEN_TYPE="string"
+    JSON_POS=$(( quote + 1 ))
+    return 0
+  fi
+  # The closing quote is the next one preceded by an even run of backslashes.
+  while true; do
+    before=$(( quote - 1 ))
+    while (( before >= JSON_POS )) && [[ "${JSON_CHARS[before]}" == '\' ]]; do (( before-- )); done
+    (( (quote - 1 - before) % 2 == 0 )) && break
+    quote=${JSON_CHARS[(ib:quote+1:)$quote_char]}
+    if (( quote > JSON_LEN )); then
+      _json_scan_string_slow
+      return
+    fi
   done
+  raw="${(j::)JSON_CHARS[JSON_POS,quote-1]}"
+  if [[ "$raw" == *'\u'* ]]; then
+    _json_scan_string_slow
+    return
+  fi
+  parts=("${(@ps:\\\\:)raw}")
+  for part in "${parts[@]}"; do
+    if [[ "$part" == *'\'* ]]; then
+      part="${(pj:\n:)${(@ps:\\n:)part}}"
+      part="${(pj:\t:)${(@ps:\\t:)part}}"
+      part="${(pj:\r:)${(@ps:\\r:)part}}"
+      part="${(pj:\b:)${(@ps:\\b:)part}}"
+      part="${(pj:\f:)${(@ps:\\f:)part}}"
+      part="${(pj:\":)${(@ps:\\\":)part}}"
+      part="${(pj:/:)${(@ps:\\/:)part}}"
+      if [[ "$part" == *'\'* ]]; then
+        _json_scan_string_slow
+        return
+      fi
+    fi
+    decoded_parts+=("$part")
+  done
+  JSON_TOKEN_VALUE="${(pj:\\:)decoded_parts}"
+  JSON_TOKEN_TYPE="string"
+  JSON_POS=$(( quote + 1 ))
+  return 0
+}
+
+_json_scan_string_slow() {
+  local ch="" esc="" hex="" low_hex="" encoded="" decoded="" value=""
+  local -i cp low_cp boundary
+  while (( JSON_POS <= JSON_LEN )); do
+    # Copy the run up to the next quote or escape in one slice instead of
+    # appending character by character.
+    boundary=${JSON_CHARS[(ib:JSON_POS:)[\"\\\\]]}
+    (( boundary <= JSON_LEN )) || break
+    (( boundary > JSON_POS )) && value+="${(j::)JSON_CHARS[JSON_POS,boundary-1]}"
+    ch="${JSON_CHARS[boundary]}"
+    JSON_POS=$(( boundary + 1 ))
+    if [[ "$ch" == '"' ]]; then
+      JSON_TOKEN_TYPE="string"
+      JSON_TOKEN_VALUE="$value"
+      return 0
+    fi
+    (( JSON_POS <= JSON_LEN )) || { JSON_ERROR="unterminated JSON escape"; return 1; }
+    esc="${JSON_CHARS[JSON_POS]}"
+    (( JSON_POS++ ))
+    case "$esc" in
+      '"'|$'\\'|'/') value+="$esc" ;;
+      b) value+=$'\b' ;;
+      f) value+=$'\f' ;;
+      n) value+=$'\n' ;;
+      r) value+=$'\r' ;;
+      t) value+=$'\t' ;;
+      u)
+        hex="${(j::)JSON_CHARS[JSON_POS,JSON_POS+3]}"
+        [[ "$hex" == [[:xdigit:]]## ]] || { JSON_ERROR="invalid JSON unicode escape"; return 1; }
+        (( JSON_POS += 4 ))
+        cp=$(( 16#$hex ))
+        if (( cp >= 0xD800 && cp <= 0xDBFF )) && \
+           [[ "${(j::)JSON_CHARS[JSON_POS,JSON_POS+1]}" == $'\\u' ]]; then
+          low_hex="${(j::)JSON_CHARS[JSON_POS+2,JSON_POS+5]}"
+          if [[ "$low_hex" == [[:xdigit:]]## ]]; then
+            low_cp=$(( 16#$low_hex ))
+            if (( low_cp >= 0xDC00 && low_cp <= 0xDFFF )); then
+              cp=$(( 0x10000 + ((cp - 0xD800) << 10) + low_cp - 0xDC00 ))
+              (( JSON_POS += 6 ))
+            fi
+          fi
+        fi
+        if (( cp >= 0xD800 && cp <= 0xDFFF )); then
+          # An unpaired UTF-16 surrogate has no character encoding. Substitute
+          # the Unicode replacement character; handing the raw code point to
+          # printf %b is a fatal error that would abort the whole process.
+          decoded=$'\uFFFD'
+        else
+          if (( cp <= 0xFFFF )); then
+            printf -v encoded '\\u%04x' "$cp"
+          else
+            printf -v encoded '\\U%08x' "$cp"
+          fi
+          {
+            printf -v decoded '%b' "$encoded" 2>/dev/null
+          } always {
+            # A code point the current locale cannot encode is also fatal in
+            # printf; contain it and substitute the replacement character.
+            if (( TRY_BLOCK_ERROR )); then
+              TRY_BLOCK_ERROR=0
+              decoded=$'\uFFFD'
+            fi
+          }
+        fi
+        value+="$decoded"
+        ;;
+      *) JSON_ERROR="invalid JSON escape"; return 1 ;;
+    esac
+  done
+  JSON_ERROR="unterminated JSON string"
+  return 1
+}
+
+json_next() {
+  local ch="" value=""
+  local -i boundary
+
+  # First non-whitespace character at or after JSON_POS, located in C.
+  JSON_POS=${JSON_CHARS[(ib:JSON_POS:)[^[:space:]]]}
   JSON_TOKEN_START=$JSON_POS
   if (( JSON_POS > JSON_LEN )); then
     JSON_TOKEN_TYPE="eof"
@@ -100,7 +241,7 @@ json_next() {
     return 0
   fi
 
-  ch="${JSON_SOURCE[JSON_POS]}"
+  ch="${JSON_CHARS[JSON_POS]}"
   case "$ch" in
     '{'|'}'|'['|']'|':'|',')
       JSON_TOKEN_TYPE="$ch"
@@ -109,78 +250,19 @@ json_next() {
       ;;
     '"')
       (( JSON_POS++ ))
-      value=""
-      while (( JSON_POS <= JSON_LEN )); do
-        ch="${JSON_SOURCE[JSON_POS]}"
-        (( JSON_POS++ ))
-        if [[ "$ch" == '"' ]]; then
-          JSON_TOKEN_TYPE="string"
-          JSON_TOKEN_VALUE="$value"
-          return 0
-        fi
-        if [[ "$ch" != $'\\' ]]; then
-          value+="$ch"
-          continue
-        fi
-        (( JSON_POS <= JSON_LEN )) || { JSON_ERROR="unterminated JSON escape"; return 1; }
-        esc="${JSON_SOURCE[JSON_POS]}"
-        (( JSON_POS++ ))
-        case "$esc" in
-          '"'|$'\\'|'/') value+="$esc" ;;
-          b) value+=$'\b' ;;
-          f) value+=$'\f' ;;
-          n) value+=$'\n' ;;
-          r) value+=$'\r' ;;
-          t) value+=$'\t' ;;
-          u)
-            hex="${JSON_SOURCE[JSON_POS,$(( JSON_POS + 3 ))]}"
-            [[ "$hex" == [[:xdigit:]]## ]] || { JSON_ERROR="invalid JSON unicode escape"; return 1; }
-            (( JSON_POS += 4 ))
-            cp=$(( 16#$hex ))
-            if (( cp >= 0xD800 && cp <= 0xDBFF )) && \
-               [[ "${JSON_SOURCE[JSON_POS,$(( JSON_POS + 1 ))]}" == $'\\u' ]]; then
-              low_hex="${JSON_SOURCE[$(( JSON_POS + 2 )),$(( JSON_POS + 5 ))]}"
-              if [[ "$low_hex" == [[:xdigit:]]## ]]; then
-                low_cp=$(( 16#$low_hex ))
-                if (( low_cp >= 0xDC00 && low_cp <= 0xDFFF )); then
-                  cp=$(( 0x10000 + ((cp - 0xD800) << 10) + low_cp - 0xDC00 ))
-                  (( JSON_POS += 6 ))
-                fi
-              fi
-            fi
-            if (( cp <= 0xFFFF )); then
-              printf -v encoded '\\u%04x' "$cp"
-            else
-              printf -v encoded '\\U%08x' "$cp"
-            fi
-            printf -v decoded '%b' "$encoded"
-            value+="$decoded"
-            ;;
-          *) JSON_ERROR="invalid JSON escape"; return 1 ;;
-        esac
-      done
-      JSON_ERROR="unterminated JSON string"
-      return 1
+      _json_scan_string
       ;;
     -|[0-9])
-      value=""
-      while (( JSON_POS <= JSON_LEN )); do
-        ch="${JSON_SOURCE[JSON_POS]}"
-        [[ "$ch" == [0-9eE+.-] ]] || break
-        value+="$ch"
-        (( JSON_POS++ ))
-      done
+      boundary=${JSON_CHARS[(ib:JSON_POS:)[^0-9eE+.-]]}
+      value="${(j::)JSON_CHARS[JSON_POS,boundary-1]}"
+      JSON_POS=$boundary
       JSON_TOKEN_TYPE="number"
       JSON_TOKEN_VALUE="$value"
       ;;
     [tfn])
-      value=""
-      while (( JSON_POS <= JSON_LEN )); do
-        ch="${JSON_SOURCE[JSON_POS]}"
-        [[ "$ch" == [[:alpha:]] ]] || break
-        value+="$ch"
-        (( JSON_POS++ ))
-      done
+      boundary=${JSON_CHARS[(ib:JSON_POS:)[^[:alpha:]]]}
+      value="${(j::)JSON_CHARS[JSON_POS,boundary-1]}"
+      JSON_POS=$boundary
       case "$value" in
         true|false|null) JSON_TOKEN_TYPE="$value"; JSON_TOKEN_VALUE="$value" ;;
         *) JSON_ERROR="invalid JSON literal"; return 1 ;;
@@ -241,8 +323,8 @@ json_capture_raw_value() {
   local -i start=$JSON_TOKEN_START end=0
   json_discard_value || return 1
   end=$(( JSON_TOKEN_START - 1 ))
-  while (( end >= start )) && [[ "${JSON_SOURCE[end]}" == [[:space:]] ]]; do (( end-- )); done
-  (( end >= start )) && REPLY="${JSON_SOURCE[start,end]}" || REPLY=""
+  while (( end >= start )) && [[ "${JSON_CHARS[end]}" == [[:space:]] ]]; do (( end-- )); done
+  (( end >= start )) && REPLY="${(j::)JSON_CHARS[start,end]}" || REPLY=""
 }
 
 # Serialize and consume the value at the current token. This lets us preserve
@@ -305,8 +387,10 @@ json_capture_value() {
   REPLY="$output"
 }
 
+# Callers that skip a member only need the cursor advanced past it; rebuilding
+# the serialized value just to throw it away is pure waste for large payloads.
 json_skip_value() {
-  json_capture_value
+  json_discard_value
 }
 
 _json_parse_tool_function() {

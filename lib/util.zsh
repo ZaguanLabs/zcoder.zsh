@@ -33,32 +33,37 @@ zcoder_debug() {
   print -r -- "[${EPOCHREALTIME:-0}] pid=$$ ${event} ${detail}" >> "$ZCODER_DEBUG_LOG" 2>/dev/null || true
 }
 
+# Wrap using a character array and index arithmetic: re-slicing the remaining
+# text each round makes wrapping quadratic in Zsh, which stalls redraws of
+# transcripts containing long lines.
 zcoder_wrap() {
-  local rest="$1" width="${2:-1}" probe="" line="" prefix=""
-  local -i cut
+  local width="${2:-1}" probe="" prefix=""
+  local -a chars=()
+  local -i cut pos=1 total
   ZCODER_WRAPPED=()
   (( width < 1 )) && width=1
-  [[ -z "$rest" ]] && { ZCODER_WRAPPED+=(""); return 0; }
+  [[ -z "$1" ]] && { ZCODER_WRAPPED+=(""); return 0; }
 
-  while (( ${#rest} > width )); do
-    probe="${rest[1,$width]}"
+  chars=("${(@s::)1}")
+  total=${#chars}
+  while (( total - pos + 1 > width )); do
+    probe="${(j::)chars[pos,pos+width-1]}"
     prefix="${probe%[[:space:]]*}"
-    if [[ "${rest[$(( width + 1 ))]}" == [[:space:]] ]]; then
-      line="$probe"
-      rest="${rest[$(( width + 2 )),-1]}"
-      rest="${rest##[[:space:]]#}"
+    if [[ "${chars[pos+width]}" == [[:space:]] ]]; then
+      ZCODER_WRAPPED+=("$probe")
+      (( pos += width + 1 ))
+      while (( pos <= total )) && [[ "${chars[pos]}" == [[:space:]] ]]; do (( pos++ )); done
     elif [[ -n "$prefix" && "$prefix" != "$probe" ]]; then
       cut=${#prefix}
-      line="${rest[1,$cut]}"
-      rest="${rest[$(( cut + 1 )),-1]}"
-      rest="${rest##[[:space:]]#}"
+      ZCODER_WRAPPED+=("$prefix")
+      (( pos += cut ))
+      while (( pos <= total )) && [[ "${chars[pos]}" == [[:space:]] ]]; do (( pos++ )); done
     else
-      line="$probe"
-      rest="${rest[$(( width + 1 )),-1]}"
+      ZCODER_WRAPPED+=("$probe")
+      (( pos += width ))
     fi
-    ZCODER_WRAPPED+=("$line")
   done
-  ZCODER_WRAPPED+=("$rest")
+  ZCODER_WRAPPED+=("${(j::)chars[pos,total]}")
 }
 
 zcoder_pad() {
