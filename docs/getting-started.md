@@ -61,6 +61,7 @@ One-shot mode still asks on `/dev/tty` before running shell commands. Pass
     --yes              Allow shell commands in the coding profile
     --deny-commands    Deny shell commands without prompting
     --no-think         Ask Ollama not to return model reasoning
+    --no-warmup        Disable interactive model warm-up
     --debug            Enable the default debug log
     --debug-log PATH   Write diagnostics to a selected path
 ```

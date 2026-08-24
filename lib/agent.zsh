@@ -20,6 +20,10 @@ typeset -ga AGENT_TOOL_OUTCOME_HISTORY=()
 typeset -g ZCODER_MODEL="${ZCODER_MODEL:-qwen3-coder:latest}"
 typeset -g ZCODER_THINK="${ZCODER_THINK:-true}"
 typeset -g ZCODER_PROFILE="${ZCODER_PROFILE:-coding}"
+typeset -g ZCODER_WARMUP="${ZCODER_WARMUP:-true}"
+typeset -gi AGENT_WARMUP_ACTIVE=0
+typeset -g AGENT_WARMUP_MODEL=""
+typeset -g AGENT_WARMUP_HOST=""
 
 (( AGENT_LOOP_REPEAT_LIMIT >= 2 )) || AGENT_LOOP_REPEAT_LIMIT=3
 (( AGENT_LOOP_MAX_CYCLE > 0 )) || AGENT_LOOP_MAX_CYCLE=4
@@ -320,12 +324,7 @@ agent_add_assistant_message() {
   AGENT_MESSAGES+=("${message}}")
 }
 
-agent_build_payload() {
-  local model_json="" system_json="" messages="[" think="true" tools="" options=""
-  # MCP discovery must precede prompt assembly. Besides producing Ollama's
-  # schemas, it gives small models an exact short-name -> function-name map.
-  tools_schema_json
-  tools="$REPLY"
+agent_resolve_system_prompt() {
   local prompt="$AGENT_SYSTEM_PROMPT"
   [[ -n "$prompt" ]] || { agent_default_system_prompt; prompt="$REPLY"; }
   if (( $+functions[instructions_prompt_block] )); then
@@ -344,6 +343,17 @@ agent_build_payload() {
     prompt+=$'\n\n<compacted_context>\n'"$AGENT_COMPACTION_SUMMARY"$'\n</compacted_context>'
   fi
   [[ -n "$AGENT_LOOP_NUDGE" ]] && prompt+=$'\n\n'"$AGENT_LOOP_NUDGE"
+  REPLY="$prompt"
+}
+
+agent_build_payload() {
+  local model_json="" system_json="" messages="[" think="true" tools="" options="" prompt=""
+  # MCP discovery must precede prompt assembly. Besides producing Ollama's
+  # schemas, it gives small models an exact short-name -> function-name map.
+  tools_schema_json
+  tools="$REPLY"
+  agent_resolve_system_prompt
+  prompt="$REPLY"
   json_quote "$ZCODER_MODEL"; model_json="$REPLY"
   json_quote "$prompt"; system_json="$REPLY"
   messages+="{\"role\":\"system\",\"content\":${system_json}}"
@@ -356,6 +366,100 @@ agent_build_payload() {
   [[ "$ZCODER_THINK" == true || "$ZCODER_THINK" == false ]] || think="false"
   [[ "$ZCODER_THINK" == false ]] && think="false"
   REPLY="{\"model\":${model_json},\"messages\":${messages},\"tools\":${tools},\"stream\":false,\"think\":${think},\"options\":{${options}}}"
+}
+
+# Build a disposable request whose prefix matches a normal agent request while
+# excluding conversation history. It loads the selected runner and gives
+# Ollama an opportunity to cache the stable system/tool prefix. The synthetic
+# exchange is never added to AGENT_MESSAGES or persistent session state.
+agent_build_warmup_payload() {
+  local model_json="" system_json="" user_json="" tools="" options="" prompt=""
+  agent_context_configure
+  tools_schema_json
+  tools="$REPLY"
+  agent_resolve_system_prompt
+  prompt="$REPLY"
+  json_quote "$ZCODER_MODEL"; model_json="$REPLY"
+  json_quote "$prompt"; system_json="$REPLY"
+  json_quote "Initialization check only. Do not call tools. After reading all instructions and context, respond with exactly Ready and nothing else."; user_json="$REPLY"
+  agent_context_options_json
+  options="$REPLY"
+  REPLY="{\"model\":${model_json},\"messages\":[{\"role\":\"system\",\"content\":${system_json}},{\"role\":\"user\",\"content\":${user_json}}],\"tools\":${tools},\"stream\":false,\"think\":false,\"options\":{${options}\"num_predict\":8,\"temperature\":0}}"
+}
+
+agent_warmup_enabled() {
+  [[ "$ZCODER_WARMUP" == true && "${REMOTE_MODE:-local}" == local && ${UI_ACTIVE:-0} -eq 1 ]]
+}
+
+agent_warmup_cancel() {
+  local reason="${1:-warm-up superseded}"
+  (( AGENT_WARMUP_ACTIVE )) || return 0
+  zcoder_debug warmup_cancel "model=${(qqq)AGENT_WARMUP_MODEL} host=${(qqq)AGENT_WARMUP_HOST} reason=${(qqq)reason}"
+  http_async_cancel "$reason"
+  AGENT_WARMUP_ACTIVE=0
+  AGENT_WARMUP_MODEL=""
+  AGENT_WARMUP_HOST=""
+  agent_set_status "Ready"
+}
+
+agent_warmup_start() {
+  local payload=""
+  agent_warmup_enabled || return 0
+  (( AGENT_WARMUP_ACTIVE )) && agent_warmup_cancel "warm-up restarted"
+  agent_set_status "Warming Up"
+  agent_build_warmup_payload
+  payload="$REPLY"
+  if ! http_async_start POST /api/chat "$payload" "$OLLAMA_HOST"; then
+    zcoder_debug warmup_start_error "model=${(qqq)ZCODER_MODEL} host=${(qqq)OLLAMA_HOST} error=${(qqq)HTTP_ERROR}"
+    agent_set_status "Warm-up Failed"
+    return 1
+  fi
+  AGENT_WARMUP_ACTIVE=1
+  AGENT_WARMUP_MODEL="$ZCODER_MODEL"
+  AGENT_WARMUP_HOST="$OLLAMA_HOST"
+  zcoder_debug warmup_start "model=${(qqq)AGENT_WARMUP_MODEL} host=${(qqq)AGENT_WARMUP_HOST} payload_chars=${#payload}"
+  return 0
+}
+
+agent_warmup_collect() {
+  local response="" content="" error=""
+  local -i request_status=0 parse_status=0
+  (( AGENT_WARMUP_ACTIVE )) || return 0
+  http_async_ready || return 1
+  http_async_collect
+  request_status=$?
+  response="$HTTP_BODY"
+  AGENT_WARMUP_ACTIVE=0
+  if (( request_status == 0 )); then
+    json_parse_ollama_response "$response" || parse_status=$?
+  fi
+  if (( request_status == 0 && parse_status == 0 )) && [[ -z "$JSON_RESPONSE_ERROR" ]]; then
+    content="$JSON_RESPONSE_CONTENT"
+    agent_context_refresh_after_response
+    zcoder_debug warmup_complete "model=${(qqq)AGENT_WARMUP_MODEL} host=${(qqq)AGENT_WARMUP_HOST} response=${(qqq)content}"
+    AGENT_WARMUP_MODEL=""
+    AGENT_WARMUP_HOST=""
+    agent_set_status "Ready"
+    return 0
+  fi
+  if (( request_status != 0 )); then
+    error="${HTTP_ERROR:-Ollama warm-up request failed}"
+  elif (( parse_status != 0 )); then
+    error="${JSON_ERROR:-invalid Ollama warm-up response}"
+  else
+    error="${JSON_RESPONSE_ERROR:-Ollama warm-up failed}"
+  fi
+  zcoder_debug warmup_error "model=${(qqq)AGENT_WARMUP_MODEL} host=${(qqq)AGENT_WARMUP_HOST} status=$request_status error=${(qqq)error}"
+  AGENT_WARMUP_MODEL=""
+  AGENT_WARMUP_HOST=""
+  agent_set_status "Warm-up Failed"
+  return 1
+}
+
+agent_warmup_poll() {
+  (( AGENT_WARMUP_ACTIVE )) || return 0
+  http_async_ready || return 0
+  agent_warmup_collect || true
 }
 
 agent_emit() {
@@ -432,6 +536,7 @@ agent_user_turn() {
   local -a call_names=() call_args=()
   local -i step i request_status prepare_status incomplete_retries=0 needs_continuation=0
 
+  (( AGENT_WARMUP_ACTIVE )) && agent_warmup_cancel "user prompt submitted"
   AGENT_LAST_RESPONSE=""
   TOOL_PATCH_RETRY_REQUIRED=0
   agent_loop_reset

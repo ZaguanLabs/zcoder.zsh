@@ -67,7 +67,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..472"
+print -r -- "1..491"
 
 input_reset
 input_layout 20 4
@@ -835,6 +835,86 @@ assert_contains "$REPLY" "Good example:" "coding prompt includes a valid unified
 assert_contains "$REPLY" "@@ -10,3 +10,3 @@" "valid patch example includes concrete hunk ranges"
 assert_contains "$REPLY" "Bad example" "coding prompt contrasts an unsupported patch envelope"
 assert_contains "$REPLY" "Never bypass a focused patch failure with write_file" "coding prompt requires patch retry instead of replacement"
+
+saved_context_window_setting="$ZCODER_CONTEXT_WINDOW"
+ZCODER_CONTEXT_WINDOW=8192
+AGENT_CONTEXT_MODEL=""
+AGENT_MESSAGES=('{"role":"user","content":"WARMUP HISTORY SENTINEL"}')
+AGENT_USER_MESSAGES=("WARMUP USER SENTINEL")
+agent_build_warmup_payload
+warmup_payload="$REPLY"
+assert_contains "$warmup_payload" "Project instructions override the default inspection order" "warm-up payload includes the resolved coding system prompt"
+assert_contains "$warmup_payload" "Initialization check only" "warm-up payload asks for an isolated readiness response"
+assert_contains "$warmup_payload" 'respond with exactly Ready and nothing else' "warm-up request specifies the silent readiness sentinel"
+assert_contains "$warmup_payload" '"think":false' "warm-up disables model reasoning"
+assert_contains "$warmup_payload" '"num_predict":8' "warm-up bounds readiness generation"
+assert_not_contains "$warmup_payload" "WARMUP HISTORY SENTINEL" "warm-up excludes saved conversation history"
+assert_eq "WARMUP USER SENTINEL" "${AGENT_USER_MESSAGES[1]}" "building warm-up leaves the user-message ledger unchanged"
+
+saved_warmup_payload_builder="${functions[agent_build_warmup_payload]}"
+saved_warmup_status_setter="${functions[agent_set_status]}"
+saved_warmup_async_start="${functions[http_async_start]}"
+saved_warmup_async_ready="${functions[http_async_ready]}"
+saved_warmup_async_collect="${functions[http_async_collect]}"
+saved_warmup_async_cancel="${functions[http_async_cancel]}"
+saved_warmup_context_refresh="${functions[agent_context_refresh_after_response]}"
+typeset -g MOCK_WARMUP_PAYLOAD="" MOCK_WARMUP_HOST="" MOCK_WARMUP_STATUS="" MOCK_WARMUP_CANCEL_REASON=""
+typeset -gi MOCK_WARMUP_REFRESHES=0
+agent_build_warmup_payload() { REPLY='{"warmup":true}'; }
+agent_set_status() { MOCK_WARMUP_STATUS="$1"; }
+http_async_start() {
+  MOCK_WARMUP_PAYLOAD="$3"
+  MOCK_WARMUP_HOST="$4"
+  HTTP_ASYNC_PID=4242
+  HTTP_ASYNC_BASE="$TEST_TMP/mock-warmup"
+  return 0
+}
+http_async_ready() { return 0; }
+http_async_collect() {
+  HTTP_BODY='{"message":{"content":"Ready"},"done":true}'
+  HTTP_ERROR=""
+  HTTP_ASYNC_PID=""
+  HTTP_ASYNC_BASE=""
+  return 0
+}
+http_async_cancel() {
+  MOCK_WARMUP_CANCEL_REASON="$1"
+  HTTP_ASYNC_PID=""
+  HTTP_ASYNC_BASE=""
+  return 0
+}
+agent_context_refresh_after_response() { (( MOCK_WARMUP_REFRESHES++ )); }
+ZCODER_WARMUP=true
+REMOTE_MODE=local
+UI_ACTIVE=1
+AGENT_WARMUP_ACTIVE=0
+agent_warmup_start
+assert_success "background model warm-up starts" $?
+assert_eq "1" "$AGENT_WARMUP_ACTIVE" "started warm-up owns the asynchronous Ollama channel"
+assert_eq '{"warmup":true}' "$MOCK_WARMUP_PAYLOAD" "warm-up submits its disposable payload"
+assert_eq "$OLLAMA_HOST" "$MOCK_WARMUP_HOST" "warm-up targets the selected Ollama host"
+agent_warmup_collect
+assert_success "completed model warm-up collects silently" $?
+assert_eq "0" "$AGENT_WARMUP_ACTIVE" "completed warm-up releases the asynchronous Ollama channel"
+assert_eq "Ready" "$MOCK_WARMUP_STATUS" "successful warm-up changes the header status to Ready"
+assert_eq "1" "$MOCK_WARMUP_REFRESHES" "successful warm-up refreshes automatic context sizing"
+assert_eq "1" "${#AGENT_MESSAGES}" "warm-up lifecycle does not append model history"
+assert_eq "1" "${#AGENT_USER_MESSAGES}" "warm-up lifecycle does not append user history"
+agent_warmup_start
+agent_warmup_cancel "user prompt submitted"
+assert_eq "0" "$AGENT_WARMUP_ACTIVE" "superseding real work releases an active warm-up"
+assert_eq "user prompt submitted" "$MOCK_WARMUP_CANCEL_REASON" "warm-up cancellation records the superseding action"
+functions[agent_build_warmup_payload]="$saved_warmup_payload_builder"
+functions[agent_set_status]="$saved_warmup_status_setter"
+functions[http_async_start]="$saved_warmup_async_start"
+functions[http_async_ready]="$saved_warmup_async_ready"
+functions[http_async_collect]="$saved_warmup_async_collect"
+functions[http_async_cancel]="$saved_warmup_async_cancel"
+functions[agent_context_refresh_after_response]="$saved_warmup_context_refresh"
+UI_ACTIVE=0
+ZCODER_CONTEXT_WINDOW="$saved_context_window_setting"
+agent_reset
+
 tools_schema_json
 assert_contains "$REPLY" "defaults to 100" "list_files schema advertises its conservative default"
 assert_contains "$REPLY" "defaults to 50" "search schema advertises its conservative default"

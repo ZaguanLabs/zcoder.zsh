@@ -15,10 +15,29 @@ Run `./zcoder.zsh --help` for the complete CLI reference.
 | `ZCODER_PROFILE` | `coding` | `coding` or `sysadmin` prompt |
 | `ZCODER_COMMAND_POLICY` | `ask` | `ask`, `allow`, or `deny` |
 | `ZCODER_THINK` | `true` | Request model reasoning |
+| `ZCODER_WARMUP` | `true` | Warm the model and stable prompt context when the interactive TUI starts |
 | `ZCODER_MAX_TOOL_OUTPUT` | 32768 | Maximum returned tool-output characters |
 | `ZCODER_HOME` | `${XDG_CONFIG_HOME:-$HOME/.config}/zcoder` | User configuration and sessions |
 
 Command-line values take precedence where an equivalent flag exists.
+
+## Interactive model warm-up
+
+The local TUI starts with a `[ Warming Up ]` badge and sends a disposable,
+non-thinking Ollama request containing the resolved system prompt, project
+instructions, Skill context, MCP routing, and tool schemas. Its response is
+captured silently and never enters the transcript, model history, compaction
+ledger, or saved session. A successful response changes the badge to
+`[ Ready ]`.
+
+The prompt editor remains usable during warm-up. Submitting real work before it
+finishes cancels the disposable request and immediately starts the real turn.
+Changing the model, host, session, Skills, or MCP configuration starts a fresh
+warm-up for the effective context.
+
+Use `--no-warmup` for one interactive run or set `ZCODER_WARMUP=false` to
+disable it by default. One-shot and remote-client modes do not perform local
+warm-up.
 
 ## Prompt profiles
 

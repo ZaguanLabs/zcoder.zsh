@@ -14,6 +14,12 @@ The interface includes:
 - a multiline editor with a cursor-following viewport and prompt history
 - an exact-command approval dialog
 
+At local interactive startup, the status badge reads `[ Warming Up ]` while
+zcoder loads the selected Ollama model and submits the stable system/tool
+context in the background. You can type immediately. The disposable readiness
+exchange is silent and is not part of the saved conversation. The badge changes
+to `[ Ready ]` after a successful warm-up.
+
 ## Saved sessions
 
 Interactive jobs are stored under `${ZCODER_HOME}/sessions`, normally

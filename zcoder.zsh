@@ -8,7 +8,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.6.0"
+typeset -gr ZCODER_VERSION="0.6.1"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -68,6 +68,7 @@ usage() {
   print -r -- "      --yes              Allow shell commands (coding profile only)"
   print -r -- "      --deny-commands    Deny shell commands without prompting"
   print -r -- "      --no-think         Ask Ollama not to return model reasoning"
+  print -r -- "      --no-warmup        Do not warm the model at interactive startup"
   print -r -- "      --debug            Append diagnostics to /tmp/zcoder-debug-${UID}.log"
   print -r -- "      --debug-log PATH   Append diagnostics to a specific file"
   print -r -- "      --print-instructions  Show the resolved AGENTS.md chain and exit"
@@ -124,6 +125,7 @@ while (( $# > 0 )); do
     --yes) ZCODER_COMMAND_POLICY="allow" ;;
     --deny-commands) ZCODER_COMMAND_POLICY="deny" ;;
     --no-think) ZCODER_THINK="false" ;;
+    --no-warmup) ZCODER_WARMUP="false" ;;
     --debug) ZCODER_DEBUG_LOG="${TMPDIR:-/tmp}/zcoder-debug-${UID}.log" ;;
     --debug-log)
       require_option_value "$1" "${2:-}"
@@ -222,7 +224,7 @@ cleanup() {
 trap cleanup EXIT INT TERM HUP
 
 handle_slash_command() {
-  local text="$1" value="" provider=""
+  local text="$1" value="" provider="" previous_value=""
   local -i delegate_status=0
   case "$text" in
     /claude|/claude\ *|/codex|/codex\ *|/agy|/agy\ *|/opencode*)
@@ -238,6 +240,7 @@ handle_slash_command() {
       state_new_session
       UI_FOCUS="input"
       ui_set_status "Ready"
+      agent_warmup_start || true
       ;;
     /sessions)
       if [[ "$REMOTE_MODE" == client ]]; then
@@ -257,7 +260,9 @@ handle_slash_command() {
       if [[ "$REMOTE_MODE" == client ]]; then
         ui_append_message system "Remote model: $ZCODER_MODEL (selected by $REMOTE_SERVER_NAME)"
       else
+        previous_value="$ZCODER_MODEL"
         ui_select_model
+        [[ "$ZCODER_MODEL" != "$previous_value" ]] && agent_warmup_start || true
       fi
       ;;
     /model\ *)
@@ -266,8 +271,12 @@ handle_slash_command() {
         return 0
       fi
       value="${text#/model }"; value="${value##[[:space:]]#}"
-      [[ -n "$value" ]] && ZCODER_MODEL="$value"
-      ui_append_message system "Model changed to $ZCODER_MODEL"; ;;
+      if [[ -n "$value" ]]; then
+        ZCODER_MODEL="$value"
+        ui_append_message system "Model changed to $ZCODER_MODEL"
+        agent_warmup_start || true
+      fi
+      ;;
     /host)
       [[ "$REMOTE_MODE" == client ]] && ui_append_message system "Connected to $REMOTE_SERVER_NAME at $REMOTE_ENDPOINT" || ui_append_message system "Current Ollama host: $OLLAMA_HOST"
       ;;
@@ -278,7 +287,10 @@ handle_slash_command() {
       fi
       value="${text#/host }"; value="${value##[[:space:]]#}"
       if ollama_normalize_host "$value"; then
-        OLLAMA_HOST="$REPLY"; ui_append_message system "Ollama host changed to $OLLAMA_HOST"
+        OLLAMA_HOST="$REPLY"
+        AGENT_CONTEXT_MODEL=""
+        ui_append_message system "Ollama host changed to $OLLAMA_HOST"
+        agent_warmup_start || true
       else
         ui_append_message error "$HTTP_ERROR"
       fi
@@ -307,6 +319,7 @@ handle_slash_command() {
       skills_load "$ZCODER_WORKSPACE"
       skills_summary
       ui_append_message system "Skills reloaded."$'\n'"$REPLY"
+      agent_warmup_start || true
       ;;
     /mcp)
       if [[ "$REMOTE_MODE" == client ]]; then
@@ -322,6 +335,7 @@ handle_slash_command() {
       fi
       if mcp_load; then
         ui_append_message system "MCP configuration reloaded."
+        agent_warmup_start || true
       else
         ui_append_message error "$MCP_ERROR"
       fi
@@ -341,6 +355,7 @@ handle_slash_command() {
       value="${text#/skill }"; value="${value%%[[:space:]]*}"
       if skills_activate "$value"; then
         ui_append_message system "$TOOL_RESULT"
+        agent_warmup_start || true
       else
         ui_append_message error "$TOOL_RESULT"
       fi
@@ -350,6 +365,7 @@ handle_slash_command() {
         ui_append_message error "Remote manual compaction is not available in this first server release."
         return 0
       fi
+      (( AGENT_WARMUP_ACTIVE )) && agent_warmup_cancel "manual compaction started"
       if ! agent_compact_history manual; then
         if (( AGENT_CANCELLED )); then
           ui_append_message system "⏹ Compaction stopped."
@@ -444,15 +460,18 @@ handle_slash_command() {
 }
 
 main_tui() {
-  local ch="" key="" mouse="" text=""
+  local ch="" key="" mouse="" text="" previous_model=""
   local -i current_index=1 i=1
   input_reset
   if [[ "$REMOTE_MODE" != client ]] && ! state_init; then
     print -u2 -- "Warning: could not initialize session storage at $ZCODER_SESSIONS_DIR"
   fi
+  [[ "$REMOTE_MODE" == local && "$ZCODER_WARMUP" == true ]] && ui_set_status "Warming Up"
   ui_init || { print -u2 -- "Error: could not initialize curses UI"; return 1; }
+  agent_warmup_start || true
   while (( RUNNING )); do
     ui_poll_resize
+    agent_warmup_poll
     ch=""; key=""; mouse=""
     zcurses timeout input_win 100
     zcurses input input_win ch key mouse
@@ -484,7 +503,9 @@ main_tui() {
         ui_append_message system "Remote model: $ZCODER_MODEL (selected by $REMOTE_SERVER_NAME)"
         ui_refresh_all
       else
+        previous_model="$ZCODER_MODEL"
         ui_select_model
+        [[ "$ZCODER_MODEL" != "$previous_model" ]] && agent_warmup_start || true
         state_save_and_refresh
       fi
     elif [[ "$ch" == $'\x12' ]]; then
@@ -507,12 +528,14 @@ main_tui() {
         if (( current_index > 1 )); then
           state_load_session "${SESSION_IDS[current_index-1]}"
           ui_set_status "Ready"
+          agent_warmup_start || true
           ui_refresh_all
         fi
       elif [[ "$key" == DOWN || "$ch" == j ]]; then
         if (( current_index < ${#SESSION_IDS} )); then
           state_load_session "${SESSION_IDS[current_index+1]}"
           ui_set_status "Ready"
+          agent_warmup_start || true
           ui_refresh_all
         fi
       elif [[ "$ch" == $'\n' || "$ch" == $'\r' || "$key" == ENTER || "$key" == PADENTER ]]; then

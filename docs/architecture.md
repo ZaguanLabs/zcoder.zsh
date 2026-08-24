@@ -57,6 +57,14 @@ Non-streaming does not flatten the reasoning lifecycle. zcoder stores each
 assistant's reasoning, content, and structured tool calls together, appends tool
 results, and returns that complete history on the next model step.
 
+Before the first local interactive turn, zcoder uses the same asynchronous HTTP
+worker for a disposable warm-up request. It includes the resolved system prompt
+and tool schema but excludes saved conversation history. The TUI polls that
+request from its normal input loop, so editing remains responsive. A real user
+turn supersedes an unfinished warm-up because the HTTP worker deliberately owns
+only one Ollama request at a time. Warm-up output is validated and discarded;
+it never enters agent or session state.
+
 ## Built-in tools
 
 | Tool | Purpose | Implementation |

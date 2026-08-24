@@ -18,6 +18,7 @@ External tools are used where they are the actual capability: `rg` for search,
 - **Useful on real projects.** Search, edit, patch, test, and iterate from one conversation.
 - **Bounded and reviewable.** File tools stay inside the workspace; shell commands ask first.
 - **Project-aware.** Hierarchical `AGENTS.md`, Agent Skills, and stdio MCP tools are built in.
+- **Warm on arrival.** The interactive TUI loads the model and stable project context while you type.
 - **Available across your network.** Run the agent beside a remote workspace and control it from your local TUI.
 - **No application framework.** Just Zsh 5.8+, its standard modules, and a handful of purpose-specific tools.
 
