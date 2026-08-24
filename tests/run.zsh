@@ -20,6 +20,7 @@ source "${PROJECT_DIR}/lib/compact.zsh"
 source "${PROJECT_DIR}/lib/agent.zsh"
 source "${PROJECT_DIR}/lib/state.zsh"
 source "${PROJECT_DIR}/lib/delegate.zsh"
+source "${PROJECT_DIR}/lib/remote.zsh"
 
 typeset -gi TESTS=0 FAILURES=0
 typeset -g TEST_TMP=""
@@ -66,7 +67,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..434"
+print -r -- "1..462"
 
 input_reset
 input_layout 20 4
@@ -424,6 +425,84 @@ assert_eq "1" "$AGENT_CANCELLED" "agent records intentional cancellation"
 assert_contains "$HTTP_ERROR" "Escape pressed" "HTTP cancellation records why the client disconnected"
 UI_ACTIVE=0
 unfunction ui_wait_for_generation ui_draw_footer
+
+remote_normalize_endpoint buildbox
+assert_success "remote endpoints accept a hostname" $?
+assert_eq "buildbox:7337" "$REPLY" "remote endpoints receive the default port"
+remote_normalize_endpoint http://buildbox.local:8123
+assert_success "remote endpoints accept an explicit HTTP port" $?
+assert_eq "buildbox.local:8123" "$REPLY" "remote endpoint normalization removes the HTTP scheme"
+remote_normalize_endpoint https://buildbox.local
+assert_failure "remote endpoints reject unsupported HTTPS" $?
+assert_contains "$REMOTE_ERROR" "HTTPS is not supported" "remote HTTPS rejection explains the native transport limit"
+
+remote_token_file="$TEST_TMP/remote-token"
+mapfile[$remote_token_file]="short"
+remote_load_token "$remote_token_file"
+assert_failure "remote authentication rejects short tokens" $?
+remote_token_value="abcdefghijklmnopqrstuvwxyz0123456789ABCDEF"
+mapfile[$remote_token_file]="${remote_token_value}"$'\n'
+remote_load_token "$remote_token_file"
+assert_success "remote authentication loads a URL-safe token file" $?
+assert_eq "$remote_token_value" "$REMOTE_TOKEN" "remote authentication trims the token file newline"
+
+remote_runtime="$TEST_TMP/remote-runtime"
+zf_mkdir -p "$remote_runtime/events" "$remote_runtime/approvals"
+REMOTE_RUNTIME_DIR="$remote_runtime"
+remote_server_emit_message assistant $'remote hello\nsecond line' "private thought"
+assert_success "remote message events publish atomically" $?
+remote_server_emit_status "Thinking 1"
+assert_success "remote status events publish atomically" $?
+_remote_server_next_event 0
+assert_success "remote event polling returns the first unseen event" $?
+json_parse_flat_object "$REPLY"
+assert_success "remote event envelopes remain flat valid JSON" $?
+assert_eq "1" "${JSON_OBJECT[seq]}" "remote events receive ordered sequence numbers"
+assert_eq $'remote hello\nsecond line' "${JSON_OBJECT[content]}" "remote events preserve multiline content"
+_remote_server_next_event 1
+assert_success "remote event polling advances by cursor" $?
+json_parse_flat_object "$REPLY"
+assert_eq "Thinking 1" "${JSON_OBJECT[status]}" "remote status events preserve their display text"
+_remote_server_next_event 2
+remote_next_status=$?
+assert_failure "remote event polling reports an empty tail" $remote_next_status
+assert_eq '{"event":"none"}' "$REPLY" "empty remote event polls return a stable envelope"
+
+_remote_server_clear_turn_runtime
+REMOTE_TURN_ID="12345_67"
+REMOTE_APPROVAL_TIMEOUT=5
+remote_approval_result="$remote_runtime/approval-result"
+(remote_server_request_approval "print -r -- approved"; mapfile[$remote_approval_result]="$?:$REPLY") &
+remote_approval_pid=$!
+remote_approval_deadline=$(( EPOCHREALTIME + 2 ))
+while [[ ! -f "$remote_runtime/pending_approval" ]] && (( EPOCHREALTIME < remote_approval_deadline )); do zselect -t 1; done
+remote_approval_id="${mapfile[$remote_runtime/pending_approval]:-}"
+[[ "$remote_approval_id" == 12345_67_<0-> ]]
+assert_success "remote command approval publishes a one-use identifier" $?
+_remote_server_next_event 0
+assert_success "remote command approval emits an event for the client" $?
+assert_contains "$REPLY" '"event":"approval_required"' "remote approval events identify their purpose"
+mapfile[$remote_runtime/approvals/${remote_approval_id}.response.tmp]="y"
+zf_mv -f "$remote_runtime/approvals/${remote_approval_id}.response.tmp" "$remote_runtime/approvals/${remote_approval_id}.response"
+wait "$remote_approval_pid"
+assert_eq "0:y" "${mapfile[$remote_approval_result]}" "remote command approval resumes only with the matching response"
+
+_remote_server_clear_turn_runtime
+(while true; do zselect -t 10; done) &
+remote_cancel_pid=$!
+mapfile[$remote_runtime/active.pid]="$remote_cancel_pid"
+_remote_server_cancel_turn
+assert_success "remote turn cancellation accepts an active worker" $?
+if kill -0 "$remote_cancel_pid" 2>/dev/null; then remote_cancel_alive=1; else remote_cancel_alive=0; fi
+assert_success "remote turn cancellation reaps the worker" "$remote_cancel_alive"
+if [[ -f "$remote_runtime/active.pid" ]]; then remote_cancel_active=1; else remote_cancel_active=0; fi
+assert_success "remote turn cancellation clears the active marker" "$remote_cancel_active"
+_remote_server_next_event 1
+assert_success "remote turn cancellation publishes a completion event" $?
+assert_contains "$REPLY" '"exit_code":130' "remote cancellation completion carries the stopped status"
+REMOTE_RUNTIME_DIR=""
+REMOTE_TURN_ID=""
+REMOTE_APPROVAL_TIMEOUT=300
 
 guide_root="$TEST_TMP/instruction-repo"
 guide_work="$guide_root/services/payments"

@@ -121,6 +121,7 @@ ui_draw_header() {
   (( UI_ACTIVE )) || return 0
   local -i defer_refresh="${1:-0}"
   local badge="[ ${UI_STATUS} ]" workspace="${ZCODER_WORKSPACE:t}" host="$OLLAMA_HOST"
+  [[ "${REMOTE_MODE:-local}" == client ]] && host="${REMOTE_SERVER_NAME:-remote}@${REMOTE_ENDPOINT}"
   local -i badge_x=$(( SCREEN_W - ${#badge} - 3 ))
   zcurses clear top_win
   zcurses attr top_win bold cyan/black
@@ -754,6 +755,29 @@ ui_wait_for_generation() {
       ui_draw_chat
     fi
   done
+  return 0
+}
+
+# Poll one input event between short remote-event HTTP requests. Keeping this
+# in the UI module preserves the remote transport's independence from curses.
+ui_poll_remote_turn() {
+  local ch="" key="" mouse=""
+  ui_poll_resize
+  zcurses timeout input_win 50
+  zcurses input input_win ch key mouse
+  if [[ "$key" == RESIZE ]]; then
+    UI_RESIZE_PENDING=1
+    ui_poll_resize
+  elif [[ "$ch" == $'\x1b' ]]; then
+    return 130
+  elif [[ "$key" == PPAGE ]]; then
+    UI_AUTO_SCROLL=0
+    (( UI_SCROLL -= 6 )); (( UI_SCROLL < 0 )) && UI_SCROLL=0
+    ui_draw_chat
+  elif [[ "$key" == NPAGE ]]; then
+    (( UI_SCROLL += 6 ))
+    ui_draw_chat
+  fi
   return 0
 }
 

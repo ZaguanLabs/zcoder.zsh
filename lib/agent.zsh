@@ -361,6 +361,10 @@ agent_build_payload() {
 
 agent_emit() {
   local role="$1" content="$2" thinking="${3:-}"
+  if (( ${REMOTE_SERVER_WORKER:-0} && $+functions[remote_server_worker_emit] )); then
+    remote_server_worker_emit "$role" "$content" "$thinking"
+    return $?
+  fi
   if (( $+functions[ui_append_message] && ${UI_ACTIVE:-0} )); then
     ui_append_message "$role" "$content" "$thinking"
     ui_refresh_all
@@ -379,6 +383,10 @@ agent_emit() {
 }
 
 agent_set_status() {
+  if (( ${REMOTE_SERVER_WORKER:-0} && $+functions[remote_server_worker_status] )); then
+    remote_server_worker_status "$1"
+    return $?
+  fi
   if (( $+functions[ui_set_status] && ${UI_ACTIVE:-0} )); then
     ui_set_status "$1"
     ui_draw_header
@@ -415,6 +423,10 @@ agent_ollama_chat() {
 }
 
 agent_user_turn() {
+  if [[ "${REMOTE_MODE:-local}" == client ]] && (( $+functions[remote_client_user_turn] )); then
+    remote_client_user_turn "$1"
+    return $?
+  fi
   local user_content="$1" payload="" response="" content="" thinking="" calls_json="[]"
   local tool_name="" tool_args="" result="" summary="" display_result=""
   local request_signature="" outcome_signature="" loop_notice="" continuation_notice="" batch_error=""

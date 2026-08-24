@@ -86,7 +86,7 @@ _http_close_active() {
 http_request() {
   setopt localoptions nomultibyte
   local method="$1" endpoint_path="$2" payload="${3:-}" endpoint="${4:-$OLLAMA_HOST}"
-  local fd="" request="" chunk="" raw="" header="" body="" status_line=""
+  local extra_headers="${5:-}" fd="" request="" chunk="" raw="" header="" body="" status_line=""
   local -i payload_bytes
   HTTP_BODY=""
   HTTP_ERROR=""
@@ -99,9 +99,15 @@ http_request() {
   fd=$REPLY
   HTTP_ACTIVE_FD="$fd"
   _http_byte_length "$payload"; payload_bytes=$REPLY
+  [[ -z "$extra_headers" || "$extra_headers" == *$'\r\n' ]] || extra_headers+=$'\r\n'
+  if [[ "$extra_headers" == *$'\r\n\r\n'* ]]; then
+    HTTP_ERROR="invalid extra HTTP headers"
+    _http_close_active
+    return 1
+  fi
   request="${method} ${endpoint_path} HTTP/1.1"$'\r\n'"Host: ${endpoint}"$'\r\n'\
 "Content-Type: application/json"$'\r\n'"Accept: application/json"$'\r\n'\
-"Connection: close"$'\r\n'"Content-Length: ${payload_bytes}"$'\r\n\r\n'"${payload}"
+"${extra_headers}""Connection: close"$'\r\n'"Content-Length: ${payload_bytes}"$'\r\n\r\n'"${payload}"
 
   if ! syswrite -o "$fd" "$request" 2>/dev/null; then
     HTTP_ERROR="failed to send request to Ollama"

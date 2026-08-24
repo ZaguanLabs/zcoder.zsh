@@ -1,30 +1,30 @@
 # zcoder.zsh
 
-`zcoder.zsh` is a Zsh-first AI coding agent for Ollama. Its full-screen interface builds on [zchat.zsh](https://github.com/ZaguanLabs/zchat.zsh), adding an iterative tool-calling loop for working on real projects.
+**A capable coding agent for Ollama, built almost entirely in Zsh.**
 
-The model can discover a workspace, read and edit files, search source, apply unified diffs, and request shell commands. File tools are confined to the selected workspace. Every shell command is gated by an explicit approval prompt.
+zcoder works inside a directory you choose. It can explore a project, read and
+edit files, apply patches, run tests, and keep working through multi-step tasks
+until the job is complete. You get a focused terminal interface, local model
+execution, and a clear approval prompt before any shell command runs.
 
-Project guidance is loaded from `AGENTS.md` before the first model turn, with hierarchical overrides and bounded prompt size. Standard [Agent Skills](https://agentskills.io) are discovered from shared project and user locations and loaded progressively when relevant.
+It is deliberately small and inspectable. Application logic—including HTTP,
+JSON, session storage, tool dispatch, and the interface—uses native Zsh modules.
+External tools are used where they are the actual capability: `rg` for search,
+`git` or `patch` for patches, and your shell for approved commands.
 
-## Quick start
+## Why try it?
 
-Requirements:
+- **Local by default.** Use any Ollama model with tool-calling support.
+- **Useful on real projects.** Search, edit, patch, test, and iterate from one conversation.
+- **Bounded and reviewable.** File tools stay inside the workspace; shell commands ask first.
+- **Project-aware.** Hierarchical `AGENTS.md`, Agent Skills, and stdio MCP tools are built in.
+- **Available across your network.** Run the agent beside a remote workspace and control it from your local TUI.
+- **No application framework.** Just Zsh 5.8+, its standard modules, and a handful of purpose-specific tools.
 
-- Zsh 5.8 or newer, with its standard loadable modules
-- a running Ollama server and a model with tool-calling support
-- `ripgrep` (`rg`) for the `list_files` and `search` tools
-- `git` or `patch` for the `apply_patch` tool; installing both provides the widest patch-format compatibility
-- `stty` for adaptive terminal resize detection
+## Try it
 
-GNU `timeout` is optional. Without it, `run_command` still works, but command time limits are not enforced. `make` and `mktemp` are needed only for development and running the test suite. Commands such as `grep`, `sed`, and `awk` may be requested by the model through the approval-gated `run_command` tool, but zcoder itself does not depend on them.
-
-Claude Code, Codex, Google Antigravity, and OpenCode are optional. When their CLIs are installed, zcoder can invoke them as read-only consultants through slash commands; they are not required for the Ollama agent.
-
-The Skills CLI from [skills.sh](https://skills.sh) is optional. zcoder consumes standard installed Skill directories directly and does not require Node.js or `npx` at runtime.
-
-Stdio MCP support adds no runtime dependency: zcoder manages each configured server as a persistent child process using native Zsh IPC and JSON handling.
-
-Start Ollama, pull a coding model, then run:
+You need Zsh 5.8 or newer, a running Ollama server, a tool-capable model, and
+`ripgrep`. Install `git` or `patch` if you want the agent to apply changes.
 
 ```sh
 ollama pull qwen3-coder
@@ -33,282 +33,42 @@ cd zcoder.zsh
 ./zcoder.zsh --model qwen3-coder --workspace /path/to/project
 ```
 
-One-shot mode is useful for scripts and smoke tests:
+Then ask for a concrete outcome:
+
+```text
+Find the cause of the failing tests, make the smallest safe fix, and verify it.
+```
+
+Prefer a non-interactive run? Use `--prompt`:
 
 ```sh
 ./zcoder.zsh --model qwen3-coder --workspace . \
   --prompt "Inspect this project and explain how it is organized"
 ```
 
-One-shot mode still asks on `/dev/tty` before running commands. `--yes` explicitly allows commands for that process; `--deny-commands` refuses them.
+## Remote workspaces
 
-## Prompt profiles
+zcoder can also run headlessly on the machine that owns the model and workspace.
+The local instance becomes a thin client: prompts travel to the server, every
+tool runs remotely, and command approvals return to your local terminal.
 
-The default `coding` profile is the project-oriented coding agent described below. Select the separate system-maintenance profile with:
+See the [remote-agent guide](docs/remote.md) for setup and security guidance.
 
-```sh
-./zcoder.zsh --profile sysadmin --model qwen3-coder \
-  --workspace /path/to/maintenance-workspace
-```
+## Documentation
 
-The sysadmin prompt starts with read-only diagnosis, least privilege, one reviewable change at a time, rollback planning, configuration validation, secret redaction, and explicit rules for disruptive subsystems such as storage, networking, SSH, boot, authentication, and critical services. It also teaches fail-closed command construction: checked dependencies, unpredictable temporary files, cleanup traps, backups, staged validation, and special care for replace-whole-state tools such as `crontab`. The normal hierarchical `AGENTS.md` chain is still appended, so the maintenance workspace can supply machine-specific procedures. Those instructions may make policy stricter but cannot relax the profile's safety and approval rules.
+- [Getting started](docs/getting-started.md)
+- [Interface and sessions](docs/interface.md)
+- [Remote-agent server](docs/remote.md)
+- [Safety and permissions](docs/safety.md)
+- [Project guidance and Agent Skills](docs/project-guidance.md)
+- [MCP servers](docs/mcp.md)
+- [Configuration and context management](docs/configuration.md)
+- [Architecture](docs/architecture.md)
+- [Development](docs/development.md)
 
-Workspace file tools remain confined to the selected maintenance workspace. Host inspection and changes must use `run_command`. In the sysadmin profile every exact command requires separate approval: session-wide approval is unavailable, `--yes` and `ZCODER_COMMAND_POLICY=allow` are rejected, and the confirmation dialog has no “allow session” choice.
+Start with the [documentation index](docs/README.md) if you are not sure where
+to look.
 
-An additional pre-execution guard rejects unmistakably catastrophic literal commands such as broad root/home/workspace deletion, filesystem formatting, raw block-device writes, device shredding, and storage-pool or logical-volume destruction. It also inspects commands nested in common `sh -c` forms. This guard is intentionally conservative rather than a complete shell security parser; always inspect the exact approval request, especially when variables, scripts, interpreters, or privileged utilities are involved.
+## License
 
-Set `ZCODER_PROFILE=sysadmin` to make the profile the environment default. `--profile coding` selects the original coding prompt explicitly. The existing `-p, --prompt TEXT` option remains the one-shot user request and is independent of the profile.
-
-Agent runs have no fixed model-turn ceiling. They continue while useful progress is being made and stop structurally when the model finishes, the user presses Escape, an error blocks the run, or the progress-aware loop guard detects a repeated sequence.
-
-Context sizing defaults to `auto`. If the selected model is already loaded, zcoder uses the allocation reported by Ollama's `/api/ps`. For an unloaded model, the conservative 65,536-token fallback is used only for initial internal accounting: the first request omits `num_ctx`, allowing Ollama to honor the model's Modelfile or server default, and zcoder refreshes its accounting from `/api/ps` after the response. Use `--context-window TOKENS` or `ZCODER_CONTEXT_WINDOW` when a model should be loaded with a specific allocation from its first request.
-
-Larger contexts consume more memory. `/context` shows the allocation and current compaction threshold.
-
-## Agent tools
-
-| Tool | Purpose | Implementation |
-| --- | --- | --- |
-| `list_files` | Discover the workspace tree | `rg --files --no-require-git`, with Zsh tree formatting |
-| `read_file` | Read a complete text file | `zsh/mapfile` |
-| `read_file_range` | Read inclusive numbered lines | Native Zsh splitting/indexing |
-| `write_file` | Create or replace a text file | `zsh/mapfile` and `zsh/files` |
-| `apply_patch` | Apply a standard unified or context diff | `git apply` with `patch` dry-run fallback |
-| `search` | Regex source search with locations | `rg` |
-| `run_command` | Run builds, tests, formatters, and diagnostics | `zsh -c`, after approval |
-| `activate_skill` | Load matching Agent Skill instructions on demand | Native Zsh discovery and frontmatter parsing |
-| `read_skill_resource` | Read a referenced file from an active Skill | Read-only, canonicalized Skill-root access |
-| `finish` | Complete or block the current turn with a final response | Agent-loop control protocol |
-
-`list_files` gives the agent a bounded discovery primitive before it knows filenames or search terms.
-
-The two read tools intentionally coexist: `read_file` is convenient for small files, while `read_file_range` lets the model keep context bounded when files are large.
-
-Both prompt profiles give local reasoning models an explicit `OBSERVE → DECIDE → ACT → CHECK` operating loop. The model is told to plan privately, inspect only until it has enough evidence, act instead of returning a plan-only preamble, re-plan from exact errors, and verify changes before completion. Verification is proportional: begin with the smallest meaningful syntax, test, build, or read-back check and broaden it when the change carries wider risk.
-
-The coding prompt asks the model to search first—using the `search` tool backed by ripgrep—then read only relevant ranges. Whole-file reads are reserved for small files or cases where complete context is genuinely necessary. Rephrased discovery searches are discouraged once a usable location is known. Both `list_files` and `search` honor workspace and nested `.gitignore` files even when no Git repository exists and skip common dependency/build trees. `list_files` defaults to 100 entries and `search` to 50 matches. For text processing that does not fit `search`, the model may request `run_command` with `rg`, `grep`, `sed`, or `awk`; the normal command-approval gate still applies.
-
-Successful reads are compact in the TUI: `Read(path)` and `Read File Range(path:start-end)`. The actual contents remain in model history. Reasoning-only assistant turns are retained as collapsible transcript entries even when the model emits no ordinary content before a tool call. `write_file` and `apply_patch` continue to display their proposed content so edits stay reviewable.
-
-`apply_patch` does not require the workspace to be a Git repository. It first validates with `git apply --check`; if Git rejects an otherwise usable diff, it tries a workspace-confined `patch --dry-run` before applying. Both system-prompt profiles include valid and invalid patch examples. After a rejected patch, `write_file` is removed from the tool schema and rejected for the rest of that user turn until a corrected patch succeeds, preventing it from becoming an accidental focused-edit fallback.
-
-## MCP servers
-
-zcoder implements the MCP tools client subset over stdio for the exact protocol versions `2025-11-25` and `2026-07-28`. It sends the modern `server/discover` probe first. A 2026 server then receives the required namespaced client metadata on every request; a legacy server falls back to `initialize` and `notifications/initialized`. Tool listing follows pagination, input schemas are passed through to Ollama, nested tool arguments are preserved, and results are retained in normal tool history. MCP tools appear as `mcp__SERVER__TOOL`, with punctuation normalized to underscores for model compatibility. The system prompt includes a bounded exact mapping from each server's short tool name to that namespaced function, allowing project instructions such as “use `fast_context` first” to remain actionable for smaller models. Project-designated MCP routing takes precedence over the default built-in search workflow.
-
-Configuration uses the common `mcpServers` JSON shape. User servers live in `${ZCODER_HOME}/mcp.json`; project servers live in `<workspace>/.mcp.json` and override a same-named user server:
-
-```json
-{
-  "mcpServers": {
-    "project-index": {
-      "type": "stdio",
-      "command": "example-mcp-server",
-      "args": ["--stdio"],
-      "env": {"EXAMPLE_MODE": "local"},
-      "enabled": true
-    }
-  }
-}
-```
-
-Manage the registry without starting Ollama:
-
-```sh
-./zcoder.zsh mcp list
-./zcoder.zsh mcp list --json
-./zcoder.zsh mcp get project-index --json
-./zcoder.zsh mcp add project-index -- example-mcp-server --stdio
-./zcoder.zsh mcp add --scope project --env EXAMPLE_MODE=local \
-  project-index -- example-mcp-server --stdio
-./zcoder.zsh mcp disable project-index
-./zcoder.zsh mcp enable project-index
-./zcoder.zsh mcp test project-index
-./zcoder.zsh mcp remove project-index
-```
-
-`delete` is accepted as an alias for `remove`. New servers default to the `user` scope; pass `--scope project` to write `.mcp.json`. Enable, disable, and remove operate on the visible definition unless a scope is explicit. `list` reports configuration state without launching servers, while `test` performs negotiation and tool discovery. Inside the TUI, `/mcp` opens a live status modal and connects enabled servers; `r` restarts the selected server. `/mcp reload` rereads both configuration files. Normal launch remains fast because servers start lazily when MCP tools are first needed.
-
-Adding and enabling an MCP server is the trust boundary. Its tools are exposed to the model and run without a second per-call approval prompt. This does not change `run_command`: shell commands requested through zcoder still use the existing approval gate, and the sysadmin profile's restrictions remain active. Review server commands, arguments, environment variables, and project `.mcp.json` before use.
-
-This release is stdio-first. Streamable HTTP, OAuth, prompts, resources, sampling, and elicitation are not yet exposed. Configured non-stdio servers remain visible with an `unsupported` status instead of being silently ignored.
-
-## Permission model
-
-Read, search, and workspace edit tools execute directly. `run_command` always starts in `ask` mode and presents:
-
-- `y`: allow this command once
-- `a`: allow commands for the remainder of this process
-- `n` or Escape: deny
-
-Commands run only inside the chosen workspace (or a workspace-contained `cwd`). General file-tool paths are canonicalized and rejected if they resolve outside the workspace. `read_skill_resource` has a separate read-only boundary: it accepts only relative paths inside a discovered and activated Skill directory, rejects escaping symlinks, and cannot write. Output returned to the model is bounded to avoid runaway context growth.
-
-## AGENTS.md project instructions
-
-At startup, zcoder builds an instruction chain using modern coding-agent precedence:
-
-1. Global guidance from `$ZCODER_HOME/AGENTS.override.md`, otherwise `$ZCODER_HOME/AGENTS.md`. `ZCODER_HOME` defaults to `${XDG_CONFIG_HOME:-$HOME/.config}/zcoder`.
-2. Project guidance from the nearest Git root down to the selected workspace. Without a Git root, only the workspace directory is checked.
-3. In each directory, the first non-empty match wins: `AGENTS.override.md`, `AGENTS.md`, then names configured in `ZCODER_PROJECT_DOC_FALLBACKS`.
-4. Files are merged from broadest to most specific, so later nested guidance takes precedence.
-
-The combined file-content limit defaults to 32 KiB and can be changed with `ZCODER_PROJECT_DOC_MAX_BYTES`. Fallback filenames are colon-separated:
-
-```sh
-export ZCODER_PROJECT_DOC_FALLBACKS='TEAM_GUIDE.md:.agents.md'
-export ZCODER_PROJECT_DOC_MAX_BYTES=65536
-```
-
-Instructions are loaded once when zcoder starts. Audit the resolved chain without contacting Ollama:
-
-```sh
-./zcoder.zsh --workspace /path/to/project --print-instructions
-```
-
-Inside the TUI, `/instructions` lists the active sources. The base agent prompt also directs the model to check for closer instruction files before changing files in nested directories.
-
-## Agent Skills
-
-zcoder implements the open Agent Skills format with progressive disclosure. At startup it parses only each valid `SKILL.md` name and description. The compact catalog tells the model which capabilities exist; the full Markdown body enters context only after the model calls `activate_skill` or the user activates it explicitly. Referenced scripts, documentation, and assets are read individually with `read_skill_resource` instead of being loaded eagerly.
-
-Only the shared standard locations are scanned:
-
-- project: `<project-root>/.agents/skills/<name>/SKILL.md`
-- user: `~/.agents/skills/<name>/SKILL.md`
-- user config: `${XDG_CONFIG_HOME:-$HOME/.config}/agents/skills/<name>/SKILL.md`
-
-Project Skills override same-named user Skills. Model disclosure is bounded by `ZCODER_MAX_SKILLS` (default 128) and `ZCODER_SKILL_CATALOG_MAX_BYTES` (default 32 KiB), each activated body by `ZCODER_SKILL_MAX_BYTES` (default 32 KiB), all active bodies together by `ZCODER_ACTIVE_SKILLS_MAX_BYTES` (default 64 KiB), and simultaneous active Skills by `ZCODER_MAX_ACTIVE_SKILLS` (default 8). The activation-tool enum contains exactly the disclosed names. Active instructions are kept in the system prompt, deduplicated, and therefore survive conversation compaction; `/new` clears them.
-
-Audit discovery without contacting Ollama:
-
-```sh
-./zcoder.zsh --workspace /path/to/project --print-skills
-```
-
-Inside the TUI, `/skills` lists discovered and active Skills, `/skills reload` rescans the standard locations, and `/skill NAME` activates one. Prefix a normal request with `$skill-name` to activate it before the first model turn. Otherwise, the model selects a Skill from its description and activates it itself.
-
-Skill files and bundled scripts are potentially untrusted. Their instructions cannot override the base profile, AGENTS.md, workspace/write boundaries, sysadmin restrictions, or command approval. The experimental `allowed-tools` frontmatter field is intentionally not treated as permission. Executing a bundled script still requires an ordinary approved `run_command`.
-
-## Interface
-
-The adaptive curses layout includes:
-
-- header with model, Ollama host, workspace, and agent status
-- session sidebar with resumable jobs above a separated project, tool, and command-policy block
-- scrollable transcript with tool activity and collapsible reasoning
-- native syntax highlighting for `write_file` previews and semantic diff colors for `apply_patch`
-- native multiline editor with a four-line cursor-following viewport and prompt history
-- command-approval modal
-
-Interactive jobs are saved under `${ZCODER_HOME}/sessions` (normally `${XDG_CONFIG_HOME:-$HOME/.config}/zcoder/sessions`) and the most recently updated matching job is resumed at startup. A session retains the current Ollama/tool context, visible transcript, compaction checkpoint and accounting, active Skills, selected model, and reasoning-expansion state. Sessions are isolated by both canonical workspace and prompt profile, so a coding conversation is never offered inside a sysadmin workspace session. The storage directory is private to the current user.
-
-Press Tab to focus the sidebar, then Up or Down to resume a job; Enter returns to the prompt. Ctrl+N creates a new saved job without deleting older ones. `/sessions` focuses the same list.
-
-Curses redraws make ordinary mouse selection unreliable in many terminals. Ctrl+Y or `/copy` temporarily leaves the TUI and prints the visible transcript as stable plain text. Select and copy it with the terminal's normal mouse and keyboard controls, then press Enter to return. Expanded reasoning is included; collapsed reasoning remains hidden, matching the TUI.
-
-Keyboard shortcuts:
-
-| Key | Action |
-| --- | --- |
-| Enter | Send prompt |
-| Shift+Enter | Insert a newline; Alt+Enter is the fallback when the terminal cannot distinguish Shift+Enter |
-| Escape | Stop the running Ollama response or external consultation |
-| Tab | Move focus between the prompt, session sidebar, and transcript |
-| Ctrl+O | Open the Ollama model picker |
-| Ctrl+R | Toggle the latest reasoning block |
-| Ctrl+N | Start a new saved session |
-| Ctrl+Y | Open the plain-text transcript copy view |
-| Page Up / Page Down | Scroll transcript |
-| Ctrl+U | Clear input |
-| Ctrl+W | Delete previous word |
-| Up / Down | Move within multiline input, then navigate prompt history at its boundaries |
-| Ctrl+Q / Ctrl+D | Exit |
-
-Slash commands: `/model` opens the picker; `/model NAME`, `/host HOST`, `/instructions`, `/mcp`, `/mcp reload`, `/skills`, `/skills reload`, `/skill NAME`, `/compact`, `/context`, `/sessions`, `/copy`, `/new`, `/help`, and `/quit` are also available.
-
-## External consultants
-
-The optional delegate commands ask another installed coding harness for a second opinion without handing its edits back to zcoder:
-
-```text
-/claude Review the authentication change for edge cases
-/codex Find the likely cause of this failing test
-/agy Suggest the smallest safe refactor
-/opencode Compare these two implementation approaches
-```
-
-Claude uses `claude-opus-5` at medium effort with only its read, glob, and grep tools. Codex uses `gpt-5.6-sol` at medium reasoning in its read-only sandbox. Antigravity uses `gemini-3.7-flash-medium` at medium effort in plan+sandbox mode. OpenCode uses its plan agent and a selected `provider/model`; run `/opencode` without a request to open the picker, or set one directly with `/opencode-model PROVIDER/MODEL`.
-
-The defaults can be changed with `ZCODER_CLAUDE_MODEL`, `ZCODER_CODEX_MODEL`, `ZCODER_AGY_MODEL`, and `ZCODER_OPENCODE_MODEL`. `ZCODER_OPENCODE_VARIANT` passes an optional OpenCode model variant. Consultations time out after 1,800 seconds by default (`ZCODER_DELEGATE_TIMEOUT_SECONDS`). Escape cancels the running CLI and its result is not retained.
-
-Successful CLI output is decoded from JSON or JSONL, displayed as a consultant response, and retained with its request as explicitly untrusted reference material for later Ollama turns. The visible result defaults to at most 32,768 characters; the copy retained in model context defaults to 12,000, with the original request capped separately at 2,000. Configure these with `ZCODER_DELEGATE_MAX_OUTPUT`, `ZCODER_DELEGATE_HISTORY_CHARS`, and `ZCODER_DELEGATE_REQUEST_CHARS`. A delegated harness is never invoked through `run_command`, never inherits zcoder's command-approval override, and this first implementation has no worker/edit mode.
-
-## Architecture
-
-```text
-zcoder.zsh              CLI and curses event loop
-lib/
-  agent.zsh             Ollama messages and iterative tool loop
-  compact.zsh           token accounting and conversation checkpoints
-  delegate.zsh          read-only external harness consultations
-  mcp.zsh               MCP registry, stdio brokers, version negotiation, and tools
-  instructions.zsh      AGENTS.md discovery, precedence, and prompt assembly
-  skills.zsh            standard Agent Skills discovery and progressive loading
-  state.zsh             workspace/profile-scoped persistent sessions
-  http.zsh              native TCP/HTTP Ollama client
-  json.zsh              native tokenizer, decoder, and encoder
-  tools.zsh             schemas, confinement, dispatch, and execution
-  ui.zsh                adaptive curses layout and approval modal
-  input.zsh             native multiline editor, viewport, and history
-  util.zsh              wrapping, truncation, and display helpers
-tests/run.zsh           shell-level unit and integration tests
-```
-
-Agent turns currently use `stream: false`. The HTTP request runs in a background Zsh worker so the curses loop can accept Escape; stopping the worker closes its TCP connection and cancels Ollama's request. Non-streaming affects live display, not interleaved reasoning: zcoder stores an assistant's `thinking`, content, and structured calls together, appends the tool results, and returns that complete history for the next reasoning step.
-
-One assistant response may batch multiple independent read-only built-ins: `list_files`, `read_file`, `read_file_range`, `search`, and `read_skill_resource`. zcoder executes an accepted batch sequentially in the order emitted so result history remains deterministic. A batch containing an edit, command, approval, activation, `finish`, unknown tool, or MCP tool without explicit read-only metadata is rejected before anything runs. Dependent calls and all state-changing operations therefore require separate reasoning cycles. This is batched tool selection, not concurrent execution.
-
-The agent separately watches recent tool rounds for real repetition. Three identical request-and-result cycles trigger a recovery warning; request cycles whose output changes get four repetitions. Cycles up to four rounds long are recognized, so alternating A/B behavior is covered. The warning is injected into the next system prompt and gives the model one chance to choose a materially different approach before the run is stopped. Tune the guard with `ZCODER_LOOP_REPEAT_LIMIT` and `ZCODER_LOOP_MAX_CYCLE`.
-
-Turn completion is adaptive across local models. While work remains, the model should call a work tool. When complete or genuinely blocked, it can call `finish` as the only tool with a `complete` or `blocked` status and the final user-facing response. A non-empty tool-free response is also accepted as final because some otherwise tool-capable models do not reliably call `finish` for conversational answers. Empty or malformed responses receive up to three recovery attempts. Tune that budget with `ZCODER_INCOMPLETE_RETRY_LIMIT`; setting it to `0` disables recovery. Set `ZCODER_REQUIRE_FINISH_TOOL=1` to opt into strict structural completion, where every tool-free response is provisional until the model calls `finish`.
-
-## Debugging interrupted turns
-
-Add `--debug` to append structured diagnostics without writing through curses:
-
-```zsh
-./zcoder.zsh --debug --model qwen3-coder --workspace /path/to/project
-tail -f /tmp/zcoder-debug-${UID}.log
-```
-
-The log records session and exit state, Ollama request status, bounded raw responses, parsed content and tool-call counts, recovery or strict-continuation decisions and reasons, and bounded tool-result summaries. Use `--debug-log PATH` or `ZCODER_DEBUG_LOG=PATH` for another location, and `ZCODER_DEBUG_MAX_CHARS` to change the per-record limit. Debug logs can contain prompts, assistant text, and tool arguments, so treat them as sensitive.
-
-## Context compaction
-
-Compaction uses continuation checkpoints with conservative safety margins for local models:
-
-1. Ollama's `prompt_eval_count` calibrates a conservative pre-request token estimate. Before the first usage sample, zcoder estimates three bytes per token plus fixed chat-template headroom.
-2. Automatic compaction starts at 85% of the allocated context by default. Change this with `--compact-at PERCENT` or `ZCODER_COMPACT_PERCENT`.
-3. A tool-free, non-thinking Ollama turn creates a concise continuation checkpoint. Its output is capped at the smaller of 2,048 tokens or 10% of the active context.
-4. The checkpoint retains the latest complete assistant/tool exchange—up to one sixth of the context or 16,384 tokens—plus a bounded exact-user ledger. This helps local models remember the operation immediately preceding compaction. The visible TUI transcript is not discarded.
-5. If the checkpoint request itself is too large, oldest detailed records are omitted until the request is estimated below 85% of the window. The transcript reports when this fallback was necessary.
-
-Use `/compact` to create a checkpoint manually and `/context` to inspect the current estimate, threshold, and checkpoint count. After compaction, the automatic trigger rearms above the new checkpoint size so it cannot immediately compact the same state again. Compacting an already-small conversation may produce a larger checkpoint; zcoder reports that case instead of pretending space was saved. Repeated compactions summarize the previous checkpoint together with newer detailed history. Any summary-based compaction can gradually lose precision across a long thread, so starting a focused new conversation remains preferable when practical.
-
-## Development
-
-```sh
-make test
-```
-
-The tests cover native JSON decoding, both MCP protocol generations, paginated MCP tools and nested calls, reasoning/tool history, safe read-only batching, token accounting and compaction, path confinement, file reads and writes, search, patch application, loop detection, cancellation, and both denied and allowed command execution.
-
-Real-model prompt evaluation is opt-in and is not part of `make test`. It creates isolated temporary workspaces, denies shell commands, and reports tab-separated behavioral results for repeated read, dependent-search, edit-and-verify, failure-recovery, and conversational scenarios:
-
-```sh
-ZCODER_EVAL_MODELS='ornith-1.5:9b,laguna-xs-2.1' \
-ZCODER_EVAL_REPEATS=3 \
-make model-eval
-```
-
-Set `ZCODER_EVAL_BASELINE_PROMPT_FILE` to a complete previous system prompt to run the same scenarios against `current` and `baseline` variants. The placeholder `{{WORKSPACE}}` in that file is replaced with each temporary fixture path. Because this target performs real inference, model availability, quantization, sampling defaults, and Ollama configuration remain the operator's responsibility.
+[MIT](LICENSE)

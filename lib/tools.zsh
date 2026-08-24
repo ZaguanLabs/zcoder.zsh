@@ -479,7 +479,10 @@ tool_approve_command() {
     allow) (( per_command )) || return 0 ;;
     deny) return 1 ;;
   esac
-  if (( $+functions[ui_confirm_command] )); then
+  if (( ${REMOTE_SERVER_WORKER:-0} && $+functions[remote_server_request_approval] )); then
+    remote_server_request_approval "$command_text"
+    answer="$REPLY"
+  elif (( $+functions[ui_confirm_command] )); then
     ui_confirm_command "$command_text"
     answer="$REPLY"
   elif [[ -r /dev/tty && -w /dev/tty ]]; then

@@ -2,14 +2,13 @@
 # zcoder.zsh - a Zsh-first Ollama coding agent.
 
 setopt EXTENDED_GLOB NO_NOMATCH NO_MONITOR NO_NOTIFY NO_CHECK_JOBS NO_HUP 2>/dev/null
-zmodload zsh/curses zsh/datetime zsh/files zsh/mapfile zsh/net/tcp \
-  zsh/system zsh/terminfo zsh/zselect || {
+zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect || {
   print -u2 -- "Error: required Zsh loadable modules are unavailable."
   exit 1
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.4.6"
+typeset -gr ZCODER_VERSION="0.5.0"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -28,6 +27,7 @@ source "${ZCODER_DIR}/lib/compact.zsh"
 source "${ZCODER_DIR}/lib/agent.zsh"
 source "${ZCODER_DIR}/lib/state.zsh"
 source "${ZCODER_DIR}/lib/delegate.zsh"
+source "${ZCODER_DIR}/lib/remote.zsh"
 
 typeset -g ONE_SHOT_PROMPT=""
 typeset -gi RUNNING=1
@@ -43,6 +43,10 @@ usage() {
   print -r -- "  -m, --model NAME       Ollama model (default: ${ZCODER_MODEL})"
   print -r -- "  -h, --host HOST        Ollama host (default: ${OLLAMA_HOST})"
   print -r -- "  -w, --workspace PATH   Directory the agent may access (default: current)"
+  print -r -- "      --server NAME      Run a headless remote-agent server"
+  print -r -- "      --port PORT        Remote-agent server port (default: 7337)"
+  print -r -- "      --connect HOST     Connect this UI to a remote-agent server"
+  print -r -- "      --token-file PATH  Shared remote authentication token file"
   print -r -- "      --profile NAME     System prompt profile: coding or sysadmin (default: ${ZCODER_PROFILE})"
   print -r -- "  -p, --prompt TEXT      Run one prompt without the full-screen UI"
   print -r -- "      --context-window N Context tokens to request, or auto (default: ${ZCODER_CONTEXT_WINDOW})"
@@ -81,6 +85,18 @@ while (( $# > 0 )); do
       [[ -d "$2" ]] || { print -u2 -- "Error: workspace is not a directory: $2"; exit 2; }
       ZCODER_WORKSPACE="${2:A}"; shift
       ;;
+    --server)
+      require_option_value "$1" "${2:-}"
+      [[ "$REMOTE_MODE" == local || "$REMOTE_MODE" == server ]] || { print -u2 -- "Error: --server and --connect cannot be combined"; exit 2; }
+      REMOTE_MODE="server"; REMOTE_SERVER_NAME="$2"; shift
+      ;;
+    --port) require_option_value "$1" "${2:-}"; REMOTE_SERVER_PORT="$2"; shift ;;
+    --connect)
+      require_option_value "$1" "${2:-}"
+      [[ "$REMOTE_MODE" == local || "$REMOTE_MODE" == client ]] || { print -u2 -- "Error: --server and --connect cannot be combined"; exit 2; }
+      REMOTE_MODE="client"; REMOTE_ENDPOINT="$2"; shift
+      ;;
+    --token-file) require_option_value "$1" "${2:-}"; REMOTE_TOKEN_FILE="$2"; shift ;;
     --profile)
       require_option_value "$1" "${2:-}"
       if ! agent_select_profile "$2"; then print -u2 -- "Error: $REPLY"; exit 2; fi
@@ -115,6 +131,13 @@ while (( $# > 0 )); do
   shift
 done
 
+if [[ "$REMOTE_MODE" != server ]]; then
+  zmodload zsh/curses zsh/terminfo || {
+    print -u2 -- "Error: required Zsh curses modules are unavailable."
+    exit 1
+  }
+fi
+
 if ! agent_select_profile "$ZCODER_PROFILE"; then
   print -u2 -- "Error: $REPLY"
   exit 2
@@ -132,10 +155,22 @@ if [[ -n "$ZCODER_DEBUG_LOG" ]]; then
     zcoder_debug session "version=$ZCODER_VERSION profile=$ZCODER_PROFILE model=${(qqq)ZCODER_MODEL} host=${(qqq)OLLAMA_HOST} workspace=${(qqq)ZCODER_WORKSPACE}"
   fi
 fi
-instructions_load "$ZCODER_WORKSPACE"
-skills_load "$ZCODER_WORKSPACE"
-if ! mcp_load; then
-  print -u2 -- "Warning: $MCP_ERROR"
+if [[ "$REMOTE_MODE" == client ]]; then
+  if ! remote_normalize_endpoint "$REMOTE_ENDPOINT"; then
+    print -u2 -- "Error: $REMOTE_ERROR"
+    exit 2
+  fi
+  REMOTE_ENDPOINT="$REPLY"
+  if ! remote_client_handshake; then
+    print -u2 -- "Error: $REMOTE_ERROR"
+    exit 1
+  fi
+else
+  instructions_load "$ZCODER_WORKSPACE"
+  skills_load "$ZCODER_WORKSPACE"
+  if ! mcp_load; then
+    print -u2 -- "Warning: $MCP_ERROR"
+  fi
 fi
 
 if (( PRINT_INSTRUCTIONS )); then
@@ -155,19 +190,22 @@ if (( PRINT_SKILLS )); then
   exit 0
 fi
 
-if ! ollama_normalize_host "$OLLAMA_HOST"; then
-  print -u2 -- "Error: $HTTP_ERROR"
-  exit 2
+if [[ "$REMOTE_MODE" != client ]]; then
+  if ! ollama_normalize_host "$OLLAMA_HOST"; then
+    print -u2 -- "Error: $HTTP_ERROR"
+    exit 2
+  fi
+  OLLAMA_HOST="$REPLY"
 fi
-OLLAMA_HOST="$REPLY"
 
 cleanup() {
   local exit_status=$?
   zcoder_debug session_end "status=$exit_status running=$RUNNING async_pid=${HTTP_ASYNC_PID:-none} delegate_pid=${DELEGATE_PID:-none}"
   RUNNING=0
-  (( $+functions[state_save_session] )) && state_save_session
+  [[ "$REMOTE_MODE" != server ]] && (( $+functions[state_save_session] )) && state_save_session
   delegate_async_cancel
   http_async_cancel
+  remote_server_stop
   mcp_shutdown_all
   ui_end
 }
@@ -178,11 +216,19 @@ handle_slash_command() {
   local -i delegate_status=0
   case "$text" in
     /new|/clear)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "Remote session reset is not available in this first server release."
+        return 0
+      fi
       state_new_session
       UI_FOCUS="input"
       ui_set_status "Ready"
       ;;
     /sessions)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "Remote session browsing is not available in this first server release."
+        return 0
+      fi
       if (( SIDE_W > 0 )); then
         UI_FOCUS="sidebar"
       else
@@ -193,14 +239,28 @@ handle_slash_command() {
       ui_copy_view
       ;;
     /model)
-      ui_select_model; ;;
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message system "Remote model: $ZCODER_MODEL (selected by $REMOTE_SERVER_NAME)"
+      else
+        ui_select_model
+      fi
+      ;;
     /model\ *)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "The remote model is fixed by the server process."
+        return 0
+      fi
       value="${text#/model }"; value="${value##[[:space:]]#}"
       [[ -n "$value" ]] && ZCODER_MODEL="$value"
       ui_append_message system "Model changed to $ZCODER_MODEL"; ;;
     /host)
-      ui_append_message system "Current Ollama host: $OLLAMA_HOST"; ;;
+      [[ "$REMOTE_MODE" == client ]] && ui_append_message system "Connected to $REMOTE_SERVER_NAME at $REMOTE_ENDPOINT" || ui_append_message system "Current Ollama host: $OLLAMA_HOST"
+      ;;
     /host\ *)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "The Ollama host is controlled by the remote server."
+        return 0
+      fi
       value="${text#/host }"; value="${value##[[:space:]]#}"
       if ollama_normalize_host "$value"; then
         OLLAMA_HOST="$REPLY"; ui_append_message system "Ollama host changed to $OLLAMA_HOST"
@@ -209,22 +269,42 @@ handle_slash_command() {
       fi
       ;;
     /instructions)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "Remote instruction inspection is not available in this first server release."
+        return 0
+      fi
       instructions_summary
       ui_append_message system "$REPLY"
       ;;
     /skills)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "Remote Skill inspection is not available in this first server release."
+        return 0
+      fi
       skills_summary
       ui_append_message system "$REPLY"
       ;;
     /skills\ reload)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "Skills are loaded and controlled by the remote server."
+        return 0
+      fi
       skills_load "$ZCODER_WORKSPACE"
       skills_summary
       ui_append_message system "Skills reloaded."$'\n'"$REPLY"
       ;;
     /mcp)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "Remote MCP inspection is not available in this first server release."
+        return 0
+      fi
       ui_mcp_servers
       ;;
     /mcp\ reload)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "MCP servers are loaded and controlled by the remote server."
+        return 0
+      fi
       if mcp_load; then
         ui_append_message system "MCP configuration reloaded."
       else
@@ -232,9 +312,17 @@ handle_slash_command() {
       fi
       ;;
     /skill)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "Skills are activated by prompts handled on the remote server."
+        return 0
+      fi
       ui_append_message error "/skill requires an installed Skill name"
       ;;
     /skill\ *)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "Skills are activated by prompts handled on the remote server."
+        return 0
+      fi
       value="${text#/skill }"; value="${value%%[[:space:]]*}"
       if skills_activate "$value"; then
         ui_append_message system "$TOOL_RESULT"
@@ -243,6 +331,10 @@ handle_slash_command() {
       fi
       ;;
     /compact)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "Remote manual compaction is not available in this first server release."
+        return 0
+      fi
       if ! agent_compact_history manual; then
         if (( AGENT_CANCELLED )); then
           ui_append_message system "⏹ Compaction stopped."
@@ -258,14 +350,26 @@ handle_slash_command() {
       fi
       ;;
     /context)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message system "Remote model: $ZCODER_MODEL; context accounting is maintained by the server."
+        return 0
+      fi
       agent_context_summary
       ui_append_message system "$REPLY"
       ;;
     /claude|/codex|/agy)
       provider="${text#/}"
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "External consultations are not exposed by the remote server."
+        return 0
+      fi
       ui_append_message error "/${provider} requires a request"
       ;;
     /claude\ *|/codex\ *|/agy\ *)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "External consultations are not exposed by the remote server."
+        return 0
+      fi
       provider="${text%% *}"; provider="${provider#/}"
       value="${text#/${provider} }"
       delegate_run "$provider" "$value" || delegate_status=$?
@@ -274,9 +378,17 @@ handle_slash_command() {
       fi
       ;;
     /opencode)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "External consultations are not exposed by the remote server."
+        return 0
+      fi
       ui_select_opencode_model
       ;;
     /opencode\ *)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "External consultations are not exposed by the remote server."
+        return 0
+      fi
       value="${text#/opencode }"
       if [[ -z "$ZCODER_OPENCODE_MODEL" ]]; then
         ui_select_opencode_model || { ui_refresh_all; return 0; }
@@ -287,9 +399,17 @@ handle_slash_command() {
       fi
       ;;
     /opencode-model)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "External consultations are not exposed by the remote server."
+        return 0
+      fi
       ui_select_opencode_model
       ;;
     /opencode-model\ *)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "External consultations are not exposed by the remote server."
+        return 0
+      fi
       value="${text#/opencode-model }"; value="${value##[[:space:]]#}"
       if [[ "$value" == */* ]]; then
         ZCODER_OPENCODE_MODEL="$value"
@@ -312,7 +432,7 @@ main_tui() {
   local ch="" key="" mouse="" text=""
   local -i current_index=1 i=1
   input_reset
-  if ! state_init; then
+  if [[ "$REMOTE_MODE" != client ]] && ! state_init; then
     print -u2 -- "Warning: could not initialize session storage at $ZCODER_SESSIONS_DIR"
   fi
   ui_init || { print -u2 -- "Error: could not initialize curses UI"; return 1; }
@@ -345,8 +465,13 @@ main_tui() {
     elif [[ "$ch" == $'\x19' ]]; then
       ui_copy_view
     elif [[ "$ch" == $'\x0f' ]]; then
-      ui_select_model
-      state_save_and_refresh
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message system "Remote model: $ZCODER_MODEL (selected by $REMOTE_SERVER_NAME)"
+        ui_refresh_all
+      else
+        ui_select_model
+        state_save_and_refresh
+      fi
     elif [[ "$ch" == $'\x12' ]]; then
       ui_toggle_reasoning
     elif [[ "$ch" == $'\t' || "$key" == TAB ]]; then
@@ -417,7 +542,10 @@ main_tui() {
   done
 }
 
-if [[ -n "$ONE_SHOT_PROMPT" ]]; then
+if [[ "$REMOTE_MODE" == server ]]; then
+  [[ -z "$ONE_SHOT_PROMPT" ]] || { print -u2 -- "Error: --server and --prompt cannot be combined"; exit 2; }
+  remote_server_main
+elif [[ -n "$ONE_SHOT_PROMPT" ]]; then
   agent_user_turn "$ONE_SHOT_PROMPT"
 else
   [[ -t 0 && -t 1 ]] || { print -u2 -- "Error: interactive mode requires a terminal; use --prompt for one-shot mode"; exit 2; }
