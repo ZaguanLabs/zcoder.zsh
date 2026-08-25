@@ -82,6 +82,31 @@ Remote one-shot prompts work too:
   --prompt "Run the tests and explain any failures"
 ```
 
+## Model readiness
+
+Starting a remote server does not load its model. When a client connects, the
+server checks Ollama's running-model list for its own configured model. If the
+model is already resident, the client becomes ready immediately. Otherwise the
+server sends the disposable warm-up request and the client shows
+`[ Warming Up ]` until it completes.
+
+The server checks again before every turn because another local workload or a
+different remote server may have evicted the model after the connection was
+established. The submitted prompt is held while the model warms and is not sent
+to Ollama concurrently with the warm-up. Systems capable of retaining multiple
+models benefit from Ollama's full running-model list: an already resident model
+is never warmed unnecessarily.
+
+The server never warms merely because its process launched. `--no-warmup`
+continues to control local interactive startup only, so existing headless
+server commands may retain the flag without disabling connection-aware model
+readiness.
+
+While warming or running a turn, process listings show a background Zsh child
+with the same command line as the listener. It owns the temporary Ollama
+request or agent turn and exits when that work completes; it is not a second
+listening server.
+
 ## Approvals and cancellation
 
 When `run_command` requires approval, the server pauses its agent worker and

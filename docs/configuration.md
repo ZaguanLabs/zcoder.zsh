@@ -15,13 +15,13 @@ Run `./zcoder.zsh --help` for the complete CLI reference.
 | `ZCODER_PROFILE` | `coding` | `coding` or `sysadmin` prompt |
 | `ZCODER_COMMAND_POLICY` | `ask` | `ask`, `allow`, or `deny` |
 | `ZCODER_THINK` | `true` | Request model reasoning |
-| `ZCODER_WARMUP` | `true` | Warm the model and stable prompt context when the interactive TUI starts |
+| `ZCODER_WARMUP` | `true` | Warm the selected model and stable prompt context before interactive work |
 | `ZCODER_MAX_TOOL_OUTPUT` | 32768 | Maximum returned tool-output characters |
 | `ZCODER_HOME` | `${XDG_CONFIG_HOME:-$HOME/.config}/zcoder` | User configuration and sessions |
 
 Command-line values take precedence where an equivalent flag exists.
 
-## Interactive model warm-up
+## Model warm-up
 
 The local TUI starts with a `[ Warming Up ]` badge and sends a disposable,
 non-thinking Ollama request containing the resolved system prompt, project
@@ -35,9 +35,20 @@ finishes cancels the disposable request and immediately starts the real turn.
 Changing the model, host, session, Skills, or MCP configuration starts a fresh
 warm-up for the effective context.
 
-Use `--no-warmup` for one interactive run or set `ZCODER_WARMUP=false` to
-disable it by default. One-shot and remote-client modes do not perform local
-warm-up.
+Use `--no-warmup` for one local interactive run or set `ZCODER_WARMUP=false`
+to disable local startup warm-up by default. One-shot mode does not warm
+separately from its real request.
+
+Remote-agent servers do not warm at process launch. A client handshake checks
+whether that server's configured model is currently resident in Ollama and
+warms it only when needed. The client displays `[ Warming Up ]` while it polls
+the server. Every prompt performs another residency check in case local work or
+another remote server evicted the model after connection. A prompt submitted
+during that race remains queued until preparation succeeds. This allows
+separate coding and sysadmin servers to share hardware that can hold only one
+model without continuously loading both. Remote readiness is connection-driven,
+so `--no-warmup` continues to control only local interactive startup and does
+not disable the server's connection and pre-turn checks.
 
 ## Prompt profiles
 

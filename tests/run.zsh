@@ -67,7 +67,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..549"
+print -r -- "1..578"
 
 input_reset
 input_layout 20 4
@@ -522,6 +522,150 @@ assert_success "remote turn cancellation clears the active marker" "$remote_canc
 _remote_server_next_event 1
 assert_success "remote turn cancellation publishes a completion event" $?
 assert_contains "$REPLY" '"exit_code":130' "remote cancellation completion carries the stopped status"
+
+saved_remote_context_lookup="${functions[ollama_get_running_context]}"
+saved_remote_warmup_start="${functions[_remote_server_model_start_warmup]}"
+saved_remote_http_ready="${functions[http_async_ready]}"
+saved_remote_http_collect="${functions[http_async_collect]}"
+saved_remote_context_refresh="${functions[agent_context_refresh_after_response]}"
+saved_remote_client_request="${functions[remote_client_request]}"
+saved_remote_status_setter="${functions[agent_set_status]}"
+saved_remote_emitter="${functions[agent_emit]}"
+saved_remote_turn_start="${functions[_remote_server_start_turn]}"
+saved_remote_model_poll="${functions[_remote_server_model_poll]}"
+saved_remote_warmup_setting="$ZCODER_WARMUP"
+saved_remote_ui_active="$UI_ACTIVE"
+
+typeset -gi MOCK_REMOTE_CONTEXT_CHECKS=0 MOCK_REMOTE_WARMUP_STARTS=0
+ollama_get_running_context() {
+  (( MOCK_REMOTE_CONTEXT_CHECKS++ ))
+  OLLAMA_RUNNING_CONTEXT=32768
+  HTTP_ERROR=""
+  return 0
+}
+_remote_server_model_start_warmup() {
+  (( MOCK_REMOTE_WARMUP_STARTS++ ))
+  REMOTE_MODEL_STATUS="warming"
+  return 0
+}
+ZCODER_WARMUP=true
+REMOTE_MODEL_STATUS="unknown"
+_remote_server_model_ensure 1
+assert_success "remote residency checks accept an already loaded configured model" $?
+assert_eq "ready" "$REMOTE_MODEL_STATUS" "resident remote models become ready without a warm-up"
+assert_eq "0" "$MOCK_REMOTE_WARMUP_STARTS" "resident remote models do not start a warm-up request"
+assert_eq "32768" "$AGENT_CONTEXT_WINDOW" "remote residency checks retain the loaded context allocation"
+
+ollama_get_running_context() {
+  (( MOCK_REMOTE_CONTEXT_CHECKS++ ))
+  OLLAMA_RUNNING_CONTEXT=0
+  HTTP_ERROR=""
+  return 1
+}
+REMOTE_MODEL_STATUS="ready"
+_remote_server_model_ensure 1
+remote_missing_status=$?
+assert_eq "1" "$remote_missing_status" "an evicted remote model reports warm-up in progress"
+assert_eq "warming" "$REMOTE_MODEL_STATUS" "an evicted remote model enters the warming state"
+assert_eq "1" "$MOCK_REMOTE_WARMUP_STARTS" "a forced pre-turn check starts warm-up after eviction"
+
+typeset -gi MOCK_REMOTE_COLLECTS=0 MOCK_REMOTE_REFRESHES=0
+http_async_ready() { return 1; }
+REMOTE_MODEL_STATUS="warming"
+_remote_server_model_poll
+assert_eq "1" "$?" "an unfinished remote warm-up remains pending"
+http_async_ready() { return 0; }
+http_async_collect() {
+  (( MOCK_REMOTE_COLLECTS++ ))
+  HTTP_BODY='{"message":{"content":"Ready"},"done":true}'
+  HTTP_ERROR=""
+  return 0
+}
+agent_context_refresh_after_response() { (( MOCK_REMOTE_REFRESHES++ )); }
+_remote_server_model_poll
+assert_success "a completed remote warm-up is collected" $?
+assert_eq "ready" "$REMOTE_MODEL_STATUS" "a successful remote warm-up changes model state to ready"
+assert_eq "1" "$MOCK_REMOTE_COLLECTS" "remote warm-up completion collects its HTTP worker"
+assert_eq "1" "$MOCK_REMOTE_REFRESHES" "remote warm-up completion refreshes context allocation"
+
+typeset -ga MOCK_REMOTE_CLIENT_REQUESTS=()
+typeset -g MOCK_REMOTE_CLIENT_STATUS=""
+remote_client_request() {
+  MOCK_REMOTE_CLIENT_REQUESTS+=("$1:$2")
+  if [[ "$1:$2" == POST:/v1/model/ensure ]]; then
+    HTTP_BODY='{"model_status":"warming","model_error":""}'
+  else
+    HTTP_BODY='{"model_status":"ready","model_error":""}'
+  fi
+  REMOTE_ERROR=""
+  return 0
+}
+agent_set_status() { MOCK_REMOTE_CLIENT_STATUS="$1"; }
+agent_emit() { return 0; }
+UI_ACTIVE=0
+REMOTE_MODEL_STATUS="warming"
+REMOTE_CLIENT_NEXT_MODEL_POLL=0
+remote_client_model_ensure
+assert_success "remote clients hold a prompt until connection-triggered warm-up completes" $?
+assert_contains "${(j: :)MOCK_REMOTE_CLIENT_REQUESTS}" "POST:/v1/model/ensure" "each remote prompt requests a fresh residency check"
+assert_contains "${(j: :)MOCK_REMOTE_CLIENT_REQUESTS}" "GET:/v1/model" "remote clients poll an active model warm-up"
+assert_eq "Ready" "$MOCK_REMOTE_CLIENT_STATUS" "remote clients become ready after warm-up"
+
+MOCK_REMOTE_CLIENT_REQUESTS=()
+REMOTE_MODEL_STATUS="unmanaged"
+remote_client_model_ensure
+assert_success "new clients remain compatible with servers lacking model status" $?
+assert_eq "0" "${#MOCK_REMOTE_CLIENT_REQUESTS}" "legacy remote servers bypass the new readiness endpoint"
+
+functions[remote_client_request]="$saved_remote_client_request"
+functions[agent_set_status]="$saved_remote_status_setter"
+functions[agent_emit]="$saved_remote_emitter"
+typeset -gi MOCK_REMOTE_TURN_STARTS=0
+typeset -g MOCK_REMOTE_STARTED_PROMPT=""
+_remote_server_model_poll() {
+  REMOTE_MODEL_STATUS="ready"
+  return 0
+}
+_remote_server_start_turn() {
+  (( MOCK_REMOTE_TURN_STARTS++ ))
+  MOCK_REMOTE_STARTED_PROMPT="$1"
+  REPLY="queued-turn"
+  return 0
+}
+_remote_server_clear_turn_runtime
+REMOTE_MODEL_STATUS="warming"
+_remote_server_queue_turn "queued while warming"
+assert_success "remote prompts can be queued during a warm-up race" $?
+[[ -f "$remote_runtime/pending_prompt" ]]
+assert_success "queued remote prompts remain pending on disk" $?
+assert_eq "queued while warming" "${mapfile[$remote_runtime/pending_prompt]}" "queued remote prompts preserve exact content"
+_remote_server_progress_pending_turn
+assert_success "a queued remote prompt starts after model warm-up" $?
+assert_eq "1" "$MOCK_REMOTE_TURN_STARTS" "model readiness starts exactly one queued turn worker"
+assert_eq "queued while warming" "$MOCK_REMOTE_STARTED_PROMPT" "the queued prompt reaches the turn worker unchanged"
+[[ ! -f "$remote_runtime/pending_prompt" ]]
+assert_success "starting a queued turn clears its pending marker" $?
+
+_remote_server_clear_turn_runtime
+REMOTE_MODEL_STATUS="warming"
+_remote_server_queue_turn "cancel before ready"
+_remote_server_cancel_turn
+assert_success "remote cancellation accepts a prompt waiting for model warm-up" $?
+[[ ! -f "$remote_runtime/pending_prompt" ]]
+assert_success "cancelling a queued prompt clears its pending marker" $?
+_remote_server_next_event 1
+assert_success "queued-prompt cancellation publishes completion" $?
+assert_contains "$REPLY" '"exit_code":130' "queued-prompt cancellation reports the stopped exit code"
+
+functions[ollama_get_running_context]="$saved_remote_context_lookup"
+functions[_remote_server_model_start_warmup]="$saved_remote_warmup_start"
+functions[http_async_ready]="$saved_remote_http_ready"
+functions[http_async_collect]="$saved_remote_http_collect"
+functions[agent_context_refresh_after_response]="$saved_remote_context_refresh"
+functions[_remote_server_start_turn]="$saved_remote_turn_start"
+functions[_remote_server_model_poll]="$saved_remote_model_poll"
+ZCODER_WARMUP="$saved_remote_warmup_setting"
+UI_ACTIVE="$saved_remote_ui_active"
 REMOTE_RUNTIME_DIR=""
 REMOTE_TURN_ID=""
 REMOTE_APPROVAL_TIMEOUT=300

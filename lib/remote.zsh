@@ -12,9 +12,13 @@ typeset -g REMOTE_TURN_ID=""
 typeset -g REMOTE_LISTEN_FD=""
 typeset -g REMOTE_CLIENT_EVENT_CURSOR="0"
 typeset -g REMOTE_ERROR=""
+typeset -g REMOTE_MODEL_STATUS="unknown"
+typeset -g REMOTE_MODEL_ERROR=""
 typeset -gi REMOTE_SERVER_WORKER=0
 typeset -gi REMOTE_MAX_REQUEST_BYTES="${ZCODER_REMOTE_MAX_REQUEST_BYTES:-1048576}"
 typeset -gi REMOTE_APPROVAL_TIMEOUT="${ZCODER_REMOTE_APPROVAL_TIMEOUT:-300}"
+typeset -gF REMOTE_CLIENT_NEXT_MODEL_POLL=0.0
+typeset -grF REMOTE_CLIENT_MODEL_POLL_INTERVAL=0.5
 
 typeset -g REMOTE_REQUEST_METHOD=""
 typeset -g REMOTE_REQUEST_TARGET=""
@@ -117,6 +121,97 @@ remote_client_handshake() {
   ZCODER_MODEL="$model"
   ZCODER_PROFILE="$profile"
   ZCODER_COMMAND_POLICY="$command_policy"
+  # Protocol-1 servers predating connection-aware warm-up omit this field.
+  # Keep those servers usable and let their first real turn load the model.
+  REMOTE_MODEL_STATUS="${JSON_OBJECT[model_status]:-unmanaged}"
+  REMOTE_MODEL_ERROR="${JSON_OBJECT[model_error]:-}"
+}
+
+_remote_client_parse_model_status() {
+  if ! json_parse_flat_object "$HTTP_BODY"; then
+    REMOTE_ERROR="invalid remote model status: ${JSON_ERROR:-parse error}"
+    return 1
+  fi
+  REMOTE_MODEL_STATUS="${JSON_OBJECT[model_status]:-unknown}"
+  REMOTE_MODEL_ERROR="${JSON_OBJECT[model_error]:-}"
+  [[ "$REMOTE_MODEL_STATUS" == ready || "$REMOTE_MODEL_STATUS" == warming || "$REMOTE_MODEL_STATUS" == error ]] || {
+    REMOTE_ERROR="invalid remote model status: ${REMOTE_MODEL_STATUS}"
+    return 1
+  }
+}
+
+remote_client_model_poll() {
+  local -i force="${1:-0}"
+  local -F now=$EPOCHREALTIME
+  [[ "$REMOTE_MODEL_STATUS" == warming ]] || return 0
+  if (( ! force && now < REMOTE_CLIENT_NEXT_MODEL_POLL )); then
+    return 0
+  fi
+  REMOTE_CLIENT_NEXT_MODEL_POLL=$(( now + REMOTE_CLIENT_MODEL_POLL_INTERVAL ))
+  if ! remote_client_request GET /v1/model; then
+    REMOTE_MODEL_STATUS="error"
+    REMOTE_MODEL_ERROR="$REMOTE_ERROR"
+    agent_set_status "Warm-up Failed"
+    return 1
+  fi
+  _remote_client_parse_model_status || {
+    REMOTE_MODEL_STATUS="error"
+    REMOTE_MODEL_ERROR="$REMOTE_ERROR"
+    agent_set_status "Warm-up Failed"
+    return 1
+  }
+  case "$REMOTE_MODEL_STATUS" in
+    ready) agent_set_status "Ready" ;;
+    warming) agent_set_status "Warming Up" ;;
+    error) agent_set_status "Warm-up Failed"; return 1 ;;
+  esac
+}
+
+remote_client_model_ensure() {
+  local -i poll_status=0 announced=0
+  if [[ "$REMOTE_MODEL_STATUS" == unmanaged ]]; then
+    agent_set_status "Ready"
+    return 0
+  fi
+  agent_set_status "Checking Model"
+  if ! remote_client_request POST /v1/model/ensure '{}'; then
+    REMOTE_MODEL_STATUS="error"
+    REMOTE_MODEL_ERROR="$REMOTE_ERROR"
+    agent_set_status "Warm-up Failed"
+    return 1
+  fi
+  _remote_client_parse_model_status || {
+    REMOTE_MODEL_STATUS="error"
+    REMOTE_MODEL_ERROR="$REMOTE_ERROR"
+    agent_set_status "Warm-up Failed"
+    return 1
+  }
+  while [[ "$REMOTE_MODEL_STATUS" == warming ]]; do
+    agent_set_status "Warming Up"
+    if (( ! ${UI_ACTIVE:-0} && ! announced )); then
+      agent_emit system "Warming the remote model before submitting the prompt."
+      announced=1
+    fi
+    if (( ${UI_ACTIVE:-0} && $+functions[ui_poll_remote_turn] )); then
+      ui_poll_remote_turn
+      poll_status=$?
+      if (( poll_status == 130 )); then
+        agent_emit system "⏹ Prompt cancelled before it was sent; remote model warm-up continues."
+        agent_set_status "Warming Up"
+        return 130
+      fi
+    else
+      zselect -t 1 2>/dev/null
+    fi
+    remote_client_model_poll 1 || return 1
+  done
+  if [[ "$REMOTE_MODEL_STATUS" == ready ]]; then
+    agent_set_status "Ready"
+    return 0
+  fi
+  REMOTE_ERROR="${REMOTE_MODEL_ERROR:-remote model warm-up failed}"
+  agent_set_status "Warm-up Failed"
+  return 1
 }
 
 _remote_client_emit_event() {
@@ -148,12 +243,25 @@ remote_client_user_turn() {
     ui_refresh_all
   fi
   json_quote "$user_content"; prompt_json="$REPLY"
+  remote_client_model_ensure
+  poll_status=$?
+  if (( poll_status != 0 )); then
+    (( poll_status == 130 )) && return 130
+    agent_emit error "Remote model preparation failed: ${REMOTE_MODEL_ERROR:-$REMOTE_ERROR}"
+    return 1
+  fi
   agent_set_status "Connecting"
-  if ! remote_client_request POST /v1/turn "{\"prompt\":${prompt_json}}"; then
+  while ! remote_client_request POST /v1/turn "{\"prompt\":${prompt_json}}"; do
+    if [[ "$REMOTE_ERROR" == "model is warming" ]]; then
+      REMOTE_MODEL_STATUS="warming"
+      remote_client_model_ensure || return $?
+      agent_set_status "Connecting"
+      continue
+    fi
     agent_emit error "Remote turn failed: $REMOTE_ERROR"
     agent_set_status "Error"
     return 1
-  fi
+  done
   REMOTE_CLIENT_EVENT_CURSOR=0
   while true; do
     if ! remote_client_request GET "/v1/events?after=${REMOTE_CLIENT_EVENT_CURSOR}"; then
@@ -268,6 +376,92 @@ remote_server_worker_status() {
   remote_server_emit_status "$1"
 }
 
+_remote_server_model_status_json() {
+  local status_json="" error_json=""
+  json_quote "$REMOTE_MODEL_STATUS"; status_json="$REPLY"
+  json_quote "$REMOTE_MODEL_ERROR"; error_json="$REPLY"
+  REPLY="{\"model_status\":${status_json},\"model_error\":${error_json}}"
+}
+
+_remote_server_model_poll() {
+  local response="" error=""
+  local -i request_status=0 parse_status=0
+  [[ "$REMOTE_MODEL_STATUS" == warming ]] || return 0
+  http_async_ready || return 1
+  http_async_collect
+  request_status=$?
+  response="$HTTP_BODY"
+  if (( request_status == 0 )); then
+    json_parse_ollama_response "$response" || parse_status=$?
+  fi
+  if (( request_status == 0 && parse_status == 0 )) && [[ -z "$JSON_RESPONSE_ERROR" ]]; then
+    REMOTE_MODEL_STATUS="ready"
+    REMOTE_MODEL_ERROR=""
+    agent_context_refresh_after_response
+    zcoder_debug remote_warmup_complete "model=${(qqq)ZCODER_MODEL} host=${(qqq)OLLAMA_HOST}"
+    return 0
+  fi
+  if (( request_status != 0 )); then
+    error="${HTTP_ERROR:-Ollama warm-up request failed}"
+  elif (( parse_status != 0 )); then
+    error="${JSON_ERROR:-invalid Ollama warm-up response}"
+  else
+    error="${JSON_RESPONSE_ERROR:-Ollama warm-up failed}"
+  fi
+  REMOTE_MODEL_STATUS="error"
+  REMOTE_MODEL_ERROR="$error"
+  zcoder_debug remote_warmup_error "model=${(qqq)ZCODER_MODEL} host=${(qqq)OLLAMA_HOST} status=$request_status error=${(qqq)error}"
+  return 2
+}
+
+_remote_server_model_start_warmup() {
+  local payload=""
+  agent_build_warmup_payload
+  payload="$REPLY"
+  if ! http_async_start POST /api/chat "$payload" "$OLLAMA_HOST"; then
+    REMOTE_MODEL_STATUS="error"
+    REMOTE_MODEL_ERROR="${HTTP_ERROR:-could not start Ollama warm-up}"
+    zcoder_debug remote_warmup_start_error "model=${(qqq)ZCODER_MODEL} host=${(qqq)OLLAMA_HOST} error=${(qqq)REMOTE_MODEL_ERROR}"
+    return 1
+  fi
+  REMOTE_MODEL_STATUS="warming"
+  REMOTE_MODEL_ERROR=""
+  zcoder_debug remote_warmup_start "model=${(qqq)ZCODER_MODEL} host=${(qqq)OLLAMA_HOST} payload_chars=${#payload}"
+}
+
+# Check residency only at meaningful boundaries: initial connection and just
+# before a turn. Status polling merely collects an existing warm-up so several
+# configured servers do not continually fight over constrained model memory.
+_remote_server_model_ensure() {
+  local -i force="${1:-0}" poll_status=0
+  if [[ "$REMOTE_MODEL_STATUS" == warming ]]; then
+    _remote_server_model_poll
+    poll_status=$?
+    (( poll_status == 1 )) && return 1
+    (( poll_status == 2 )) && return 2
+    (( force )) || return 0
+  fi
+  if (( ! force )) && [[ "$REMOTE_MODEL_STATUS" == ready ]]; then
+    return 0
+  fi
+  REMOTE_MODEL_STATUS="checking"
+  REMOTE_MODEL_ERROR=""
+  if ollama_get_running_context "$ZCODER_MODEL" "$OLLAMA_HOST"; then
+    REMOTE_MODEL_STATUS="ready"
+    AGENT_CONTEXT_WINDOW="$OLLAMA_RUNNING_CONTEXT"
+    AGENT_CONTEXT_MODEL="$ZCODER_MODEL"
+    return 0
+  fi
+  if [[ -n "$HTTP_ERROR" ]]; then
+    REMOTE_MODEL_STATUS="error"
+    REMOTE_MODEL_ERROR="$HTTP_ERROR"
+    zcoder_debug remote_model_check_error "model=${(qqq)ZCODER_MODEL} host=${(qqq)OLLAMA_HOST} error=${(qqq)REMOTE_MODEL_ERROR}"
+    return 2
+  fi
+  _remote_server_model_start_warmup || return 2
+  return 1
+}
+
 remote_server_request_approval() {
   local command_text="$1" approval_id="${REMOTE_TURN_ID}_${RANDOM}" id_json="" command_json=""
   local pending="$REMOTE_RUNTIME_DIR/pending_approval" response="$REMOTE_RUNTIME_DIR/approvals/${approval_id}.response"
@@ -292,7 +486,7 @@ remote_server_request_approval() {
 _remote_server_clear_turn_runtime() {
   zf_rm -f "$REMOTE_RUNTIME_DIR"/events/*.json(N) \
     "$REMOTE_RUNTIME_DIR"/approvals/*.response(N) \
-    "$REMOTE_RUNTIME_DIR"/{pending_approval,worker.done}(N) 2>/dev/null
+    "$REMOTE_RUNTIME_DIR"/{pending_approval,pending_prompt,worker.done}(N) 2>/dev/null
 }
 
 _remote_server_next_event() {
@@ -318,6 +512,7 @@ _remote_http_reason() {
     200) REPLY="OK" ;; 202) REPLY="Accepted" ;; 400) REPLY="Bad Request" ;;
     401) REPLY="Unauthorized" ;; 404) REPLY="Not Found" ;; 409) REPLY="Conflict" ;;
     413) REPLY="Payload Too Large" ;; 500) REPLY="Internal Server Error" ;;
+    503) REPLY="Service Unavailable" ;;
     *) REPLY="Error" ;;
   esac
 }
@@ -437,8 +632,42 @@ _remote_server_start_turn() {
   REPLY="$REMOTE_TURN_ID"
 }
 
+_remote_server_queue_turn() {
+  local prompt="$1"
+  REMOTE_TURN_ID="${EPOCHSECONDS}_${RANDOM}"
+  _remote_server_clear_turn_runtime
+  mapfile[$REMOTE_RUNTIME_DIR/pending_prompt]="$prompt" || return 1
+  REPLY="$REMOTE_TURN_ID"
+}
+
+_remote_server_progress_pending_turn() {
+  local prompt=""
+  [[ -f "$REMOTE_RUNTIME_DIR/pending_prompt" ]] || return 0
+  _remote_server_model_poll || true
+  if [[ "$REMOTE_MODEL_STATUS" == ready ]]; then
+    prompt="${mapfile[$REMOTE_RUNTIME_DIR/pending_prompt]}"
+    zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" 2>/dev/null
+    _remote_server_start_turn "$prompt" || {
+      remote_server_emit_message error "Could not start the prepared remote turn."
+      _remote_server_publish_json '{"event":"complete","exit_code":1}'
+      return 1
+    }
+  elif [[ "$REMOTE_MODEL_STATUS" == error ]]; then
+    zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" 2>/dev/null
+    remote_server_emit_message error "Remote model preparation failed: ${REMOTE_MODEL_ERROR:-unknown error}"
+    _remote_server_publish_json '{"event":"complete","exit_code":1}'
+    return 1
+  fi
+}
+
 _remote_server_cancel_turn() {
   local pid="${mapfile[$REMOTE_RUNTIME_DIR/active.pid]:-}"
+  if [[ -f "$REMOTE_RUNTIME_DIR/pending_prompt" ]]; then
+    zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" 2>/dev/null
+    remote_server_emit_status "Stopped"
+    _remote_server_publish_json '{"event":"complete","exit_code":130}'
+    return 0
+  fi
   [[ "$pid" == <1-> ]] || return 1
   if kill -0 "$pid" 2>/dev/null; then
     kill -TERM "$pid" 2>/dev/null
@@ -468,17 +697,30 @@ _remote_server_handle_connection() {
   target="$REMOTE_REQUEST_TARGET"
   case "$REMOTE_REQUEST_METHOD:$target" in
     GET:/v1/hello)
-      local name_json="" workspace_json="" model_json="" profile_json="" policy_json=""
+      local name_json="" workspace_json="" model_json="" profile_json="" policy_json="" model_status_json="" model_error_json=""
       local effective_policy="${mapfile[$REMOTE_RUNTIME_DIR/command_policy]:-$ZCODER_COMMAND_POLICY}"
+      _remote_server_model_ensure 1 || true
       json_quote "$REMOTE_SERVER_NAME"; name_json="$REPLY"
       json_quote "${ZCODER_WORKSPACE:A}"; workspace_json="$REPLY"
       json_quote "$ZCODER_MODEL"; model_json="$REPLY"
       json_quote "$ZCODER_PROFILE"; profile_json="$REPLY"
       json_quote "$effective_policy"; policy_json="$REPLY"
-      _remote_http_send "$fd" 200 "{\"protocol\":1,\"server_name\":${name_json},\"workspace\":${workspace_json},\"model\":${model_json},\"profile\":${profile_json},\"command_policy\":${policy_json}}"
+      json_quote "$REMOTE_MODEL_STATUS"; model_status_json="$REPLY"
+      json_quote "$REMOTE_MODEL_ERROR"; model_error_json="$REPLY"
+      _remote_http_send "$fd" 200 "{\"protocol\":1,\"server_name\":${name_json},\"workspace\":${workspace_json},\"model\":${model_json},\"profile\":${profile_json},\"command_policy\":${policy_json},\"model_status\":${model_status_json},\"model_error\":${model_error_json}}"
+      ;;
+    GET:/v1/model)
+      _remote_server_model_poll || true
+      _remote_server_model_status_json
+      _remote_http_send "$fd" 200 "$REPLY"
+      ;;
+    POST:/v1/model/ensure)
+      _remote_server_model_ensure 1 || true
+      _remote_server_model_status_json
+      _remote_http_send "$fd" 200 "$REPLY"
       ;;
     POST:/v1/turn)
-      if [[ -f "$REMOTE_RUNTIME_DIR/active.pid" ]]; then
+      if [[ -f "$REMOTE_RUNTIME_DIR/active.pid" || -f "$REMOTE_RUNTIME_DIR/pending_prompt" ]]; then
         _remote_http_error "$fd" 409 "a remote turn is already running"
         return
       fi
@@ -491,6 +733,19 @@ _remote_server_handle_connection() {
         _remote_http_error "$fd" 400 "prompt must be a non-empty string"
         return
       }
+      _remote_server_model_ensure 1 || true
+      if [[ "$REMOTE_MODEL_STATUS" == warming ]]; then
+        if ! _remote_server_queue_turn "$prompt"; then
+          _remote_http_error "$fd" 500 "could not queue the remote turn during model warm-up"
+          return
+        fi
+        json_quote "$REPLY"; turn_json="$REPLY"
+        _remote_http_send "$fd" 202 "{\"turn_id\":${turn_json},\"model_status\":\"warming\"}"
+        return
+      elif [[ "$REMOTE_MODEL_STATUS" == error ]]; then
+        _remote_http_error "$fd" 503 "${REMOTE_MODEL_ERROR:-model preparation failed}"
+        return
+      fi
       if ! _remote_server_start_turn "$prompt"; then
         _remote_http_error "$fd" 500 "could not start the remote turn"
         return
@@ -501,6 +756,7 @@ _remote_server_handle_connection() {
     GET:/v1/events\?after=*)
       after="${target#*/v1/events\?after=}"
       [[ "$after" == <0-> ]] || { _remote_http_error "$fd" 400 "after must be a non-negative integer"; return; }
+      _remote_server_progress_pending_turn || true
       _remote_server_next_event "$after"
       _remote_http_send "$fd" 200 "$REPLY"
       ;;
@@ -552,7 +808,8 @@ remote_server_stop() {
         kill -TERM "$pid" 2>/dev/null
         wait "$pid" 2>/dev/null || true
       fi
-      zf_rm -f "$REMOTE_RUNTIME_DIR/active.pid" "$REMOTE_RUNTIME_DIR/server.pid" 2>/dev/null
+      zf_rm -f "$REMOTE_RUNTIME_DIR/active.pid" "$REMOTE_RUNTIME_DIR/pending_prompt" \
+        "$REMOTE_RUNTIME_DIR/server.pid" 2>/dev/null
     fi
   fi
   if [[ -n "$REMOTE_LISTEN_FD" ]]; then

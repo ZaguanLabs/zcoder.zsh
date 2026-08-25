@@ -8,7 +8,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.6.2"
+typeset -gr ZCODER_VERSION="0.6.3"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -466,12 +466,24 @@ main_tui() {
   if [[ "$REMOTE_MODE" != client ]] && ! state_init; then
     print -u2 -- "Warning: could not initialize session storage at $ZCODER_SESSIONS_DIR"
   fi
-  [[ "$REMOTE_MODE" == local && "$ZCODER_WARMUP" == true ]] && ui_set_status "Warming Up"
+  if [[ "$REMOTE_MODE" == local && "$ZCODER_WARMUP" == true ]]; then
+    ui_set_status "Warming Up"
+  elif [[ "$REMOTE_MODE" == client ]]; then
+    case "$REMOTE_MODEL_STATUS" in
+      warming) ui_set_status "Warming Up" ;;
+      error) ui_set_status "Warm-up Failed" ;;
+      *) ui_set_status "Ready" ;;
+    esac
+  fi
   ui_init || { print -u2 -- "Error: could not initialize curses UI"; return 1; }
   agent_warmup_start || true
   while (( RUNNING )); do
     ui_poll_resize
-    agent_warmup_poll
+    if [[ "$REMOTE_MODE" == client ]]; then
+      remote_client_model_poll || true
+    else
+      agent_warmup_poll
+    fi
     ch=""; key=""; mouse=""
     zcurses timeout input_win 100
     zcurses input input_win ch key mouse

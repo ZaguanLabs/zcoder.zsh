@@ -138,6 +138,14 @@ Remote mode moves the complete agent loop behind a small authenticated HTTP API.
 The local TUI submits a turn and polls ordered, sequence-numbered events. A
 server worker owns the Ollama request, tools, and session state.
 
+The initial handshake and every turn boundary check whether the server's
+configured model is resident in Ollama. An absent model is warmed
+asynchronously with the same disposable stable-prefix request used locally,
+and the client polls explicit model status for its `[ Warming Up ]` badge. The
+server does not warm models merely because configured server processes exist.
+If eviction races with prompt submission, the prompt is stored privately and
+starts only after warm-up succeeds.
+
 Command approval is an explicit protocol event. The worker pauses until the
 client sends a decision tied to the active one-use identifier. Cancellation
 terminates and reaps the worker. Runtime events are published atomically through
