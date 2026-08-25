@@ -107,13 +107,28 @@ separate reasoning cycles.
 The agent watches recent tool rounds for repetition. Three identical
 request-and-result cycles trigger a recovery warning. Repeated requests whose
 outputs change receive a more tolerant fourth repetition. Alternating cycles up
-to four rounds long are also detected. If the model repeats the pattern after
-the warning, the run stops.
+to four rounds long are also detected. The first detection gives the model one
+explicit final recovery turn and records the next tool round that would
+continue the cycle. A materially different tool or argument set clears the
+warning and keeps the conversation running. If the model requests the forbidden
+cycle step again, zcoder rejects it before tool dispatch and stops the run.
 
 When work is complete or genuinely blocked, the model may call `finish` as its
 only tool with a status and final response. A non-empty tool-free response is
 also accepted because some otherwise capable local models do not reliably call
 `finish`. Empty or malformed responses receive a bounded retry budget.
+
+LFM-family models sometimes return their planner envelope as ordinary JSON
+content instead of using Ollama's native `tool_calls` field. For those models,
+zcoder recognizes `actions`, `tool_call(s)`, and `commands` planner shapes and
+normalizes one action at a time into the regular tool pipeline. Shell-like
+`command` or `keystrokes` entries become `run_command` calls, so workspace
+validation, safety guards, and command approval still apply. Malformed planner
+JSON and false claims that the supplied tools are unavailable receive a bounded
+native-tool retry; the planner text is never displayed as a completed answer.
+Other model families and ordinary JSON answers keep the standard adaptive
+completion behavior. Explicit requests for a plan without execution or for a
+JSON-only response also bypass LFM action promotion.
 
 Set `ZCODER_REQUIRE_FINISH_TOOL=1` for strict structural completion.
 

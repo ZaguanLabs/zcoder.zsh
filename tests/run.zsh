@@ -67,7 +67,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..491"
+print -r -- "1..549"
 
 input_reset
 input_layout 20 4
@@ -1178,6 +1178,174 @@ assert_success "adaptive completion accepts a non-empty tool-free response" "$in
 assert_eq "1" "$MOCK_INCOMPLETE_TURNS" "adaptive completion does not spend another model turn"
 assert_eq "The requested explanation is complete." "$AGENT_LAST_RESPONSE" "adaptive completion retains the plain response"
 
+saved_lfm_model="$ZCODER_MODEL"
+ZCODER_MODEL="lfm2.5-8b-fast"
+agent_content_is_lfm_intermediate_plan '{"analysis":"inspect first","plan":"run a check","commands":[{"command":"pwd"}],"status":"working"}'
+assert_success "LFM command-plan envelopes are recognized" $?
+agent_content_is_lfm_intermediate_plan '{"plan":"create it","instructions":"write the file","commands":[{"keystrokes":"write code"}],"check":"launch it"}'
+assert_success "LFM alternate planner fields are recognized" $?
+agent_content_is_lfm_intermediate_plan '{"analysis":"inspect first","plan":"explore the workspace","observations":[{"description":"nothing inspected"}],"next_steps":["list files"]}'
+assert_success "LFM observation and next-step plans are recognized without commands" $?
+agent_content_is_lfm_intermediate_plan '{"plan":"write it","observations":"ready to create","steps":"create then check","next actions":"write the file","tool_calls":[{"name":"write_file","arguments":{"path":"editor.py","content":"code"}}]}'
+assert_success "LFM foreign tool-call envelopes are recognized" $?
+agent_content_is_lfm_intermediate_plan $'{"analysis":"inspect","plan":"run it","commands":[{"command":"pwd\n"}]}'
+assert_success "malformed multiline LFM plans are recognized without execution" $?
+ZCODER_MODEL="qwen3-coder"
+agent_content_is_lfm_intermediate_plan '{"analysis":"requested JSON","plan":"show commands","commands":[{"command":"pwd"}]}'
+assert_failure "non-LFM JSON responses retain adaptive plain completion" $?
+agent_content_is_lfm_false_tool_refusal "File system tools are not available in my current capabilities."
+assert_failure "non-LFM tool availability answers retain adaptive plain completion" $?
+ZCODER_MODEL="lfm2.5-8b-fast"
+agent_content_is_lfm_false_tool_refusal "I cannot create the file because file system tools are not available in my current capabilities."
+assert_success "false LFM tool-unavailable responses are recognized" $?
+agent_content_is_lfm_false_tool_refusal "The requested deployment tool is not available, but here is the completed analysis."
+assert_failure "specific unavailable-tool explanations are not treated as LFM protocol failures" $?
+agent_lfm_user_requests_plan_only "Provide a plan only; do not execute it."
+assert_success "explicit plan-only requests disable LFM action promotion" $?
+agent_lfm_user_requests_plan_only "Create the editor and verify it."
+assert_failure "ordinary implementation requests retain LFM action promotion" $?
+agent_content_is_lfm_intermediate_plan '{"analysis":"nothing to run","plan":"done","commands":[]}'
+assert_failure "empty LFM command lists are not treated as stalled execution" $?
+agent_content_is_lfm_intermediate_plan '{"commands":[{"command":"pwd"}]}'
+assert_failure "a commands field alone does not trigger LFM recovery" $?
+agent_extract_lfm_plan_action '{"analysis":"inspect first","plan":"list files","actions":[{"tool_name":"list_files","arguments":{"path":".","max_entries":20}}],"check":"inspect the result"}'
+assert_success "named LFM plan actions can be normalized" $?
+assert_eq "list_files" "$AGENT_COMPAT_TOOL_NAME" "LFM action normalization preserves the native tool name"
+assert_contains "$AGENT_COMPAT_TOOL_ARGS" '"max_entries":20' "LFM action normalization preserves nested arguments"
+agent_extract_lfm_plan_action '{"analysis":"inspect first","plan":"run pwd","commands":[{"command":"pwd"}],"status":"working"}'
+assert_success "LFM command plans can be normalized" $?
+assert_eq "run_command" "$AGENT_COMPAT_TOOL_NAME" "LFM commands enter the approval-gated command tool"
+assert_contains "$AGENT_COMPAT_TOOL_ARGS" '"command":"pwd"' "LFM command text is preserved"
+agent_extract_lfm_plan_action '{"plan":"create the file","instructions":"use the terminal","commands":[{"keystrokes":"print -r -- ready\n","cwd":"/workspace/project","timeout_seconds":5}],"check":"inspect it"}'
+assert_success "LFM keystroke command plans can be normalized" $?
+assert_not_contains "$AGENT_COMPAT_TOOL_ARGS" '"keystrokes"' "LFM keystrokes are converted to native command arguments"
+assert_contains "$AGENT_COMPAT_TOOL_ARGS" '"cwd":"/workspace/project"' "LFM command working directories remain subject to native workspace checks"
+assert_contains "$AGENT_COMPAT_TOOL_ARGS" '"timeout_seconds":5' "LFM command timeouts are preserved"
+agent_extract_lfm_plan_action '{"plan":"write it","observations":"ready to create","steps":"create then check","next actions":"write the file","tool_calls":[{"name":"write_file,\n","arguments":{"path":"editor.py","content":"code"}}]}'
+assert_success "LFM foreign named tool calls can be normalized" $?
+assert_eq "write_file" "$AGENT_COMPAT_TOOL_NAME" "LFM foreign tool names lose protocol punctuation"
+assert_contains "$AGENT_COMPAT_TOOL_ARGS" '"path":"editor.py"' "LFM foreign tool arguments are preserved"
+agent_extract_lfm_plan_action '{"analysis":"inspect","plan":"list files","next_step":"inspect output","tool_call":{"name":"list_files","arguments":{"path":".","max_entries":10}}}'
+assert_success "LFM singular foreign tool calls can be normalized" $?
+assert_eq "list_files" "$AGENT_COMPAT_TOOL_NAME" "LFM singular tool calls preserve their name"
+assert_contains "$AGENT_COMPAT_TOOL_ARGS" '"max_entries":10' "LFM singular tool calls preserve arguments"
+
+typeset -gi MOCK_LFM_TURNS=0 MOCK_LFM_DISPATCHES=0
+typeset -ga MOCK_LFM_PAYLOADS=()
+saved_lfm_dispatch="${functions[tool_dispatch]}"
+typeset -gi MOCK_LFM_ACTION_TURNS=0
+typeset -g MOCK_LFM_ACTION_NAME="" MOCK_LFM_ACTION_SECOND_PAYLOAD=""
+agent_ollama_chat() {
+  (( MOCK_LFM_ACTION_TURNS++ ))
+  if (( MOCK_LFM_ACTION_TURNS == 1 )); then
+    HTTP_BODY='{"message":{"content":"{\"analysis\":\"inspect first\",\"plan\":\"list files\",\"actions\":[{\"tool_name\":\"list_files\",\"arguments\":{\"path\":\".\",\"max_entries\":20}}],\"check\":\"inspect the result\"}"}}'
+  else
+    MOCK_LFM_ACTION_SECOND_PAYLOAD="$1"
+    HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"complete","response":"Promoted action completed."}}}]}}'
+  fi
+  HTTP_ERROR=""
+  return 0
+}
+tool_dispatch() {
+  MOCK_LFM_ACTION_NAME="$1"
+  TOOL_RESULT="promoted native result"
+  TOOL_RESULT_OK=1
+  return 0
+}
+AGENT_INCOMPLETE_RETRY_LIMIT=1
+AGENT_REQUIRE_FINISH_TOOL=0
+agent_reset
+agent_user_turn "complete an LFM action plan" >/dev/null 2>&1
+assert_success "named LFM plan actions enter native dispatch" $?
+assert_eq "2" "$MOCK_LFM_ACTION_TURNS" "promoted LFM actions continue without a retry turn"
+assert_eq "list_files" "$MOCK_LFM_ACTION_NAME" "promoted LFM actions use the requested native tool"
+assert_contains "$MOCK_LFM_ACTION_SECOND_PAYLOAD" '"name":"list_files"' "promoted LFM actions are recorded as structured tool calls"
+assert_contains "$MOCK_LFM_ACTION_SECOND_PAYLOAD" "promoted native result" "promoted LFM action results return to the model"
+assert_not_contains "$MOCK_LFM_ACTION_SECOND_PAYLOAD" "intermediate JSON plan" "named LFM actions do not spend the continuation budget"
+
+agent_ollama_chat() {
+  (( MOCK_LFM_TURNS++ ))
+  MOCK_LFM_PAYLOADS+=("$1")
+  if (( MOCK_LFM_TURNS == 1 )); then
+    HTTP_BODY='{"message":{"content":"{\"analysis\":\"inspect first\",\"plan\":\"run pwd\",\"commands\":[{\"command\":pwd}],\"status\":\"working\"}"}}'
+  elif (( MOCK_LFM_TURNS == 2 )); then
+    HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"list_files","arguments":{"path":"."}}}]}}'
+  elif (( MOCK_LFM_TURNS == 3 )); then
+    HTTP_BODY='{"message":{"content":"{\"analysis\":\"continue\",\"plan\":\"run another check\",\"commands\":[{\"command\":pwd}],\"status\":\"working\"}"}}'
+  else
+    HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"complete","response":"LFM recovery completed."}}}]}}'
+  fi
+  HTTP_ERROR=""
+  return 0
+}
+tool_dispatch() {
+  (( MOCK_LFM_DISPATCHES++ ))
+  TOOL_RESULT="native tool result"
+  TOOL_RESULT_OK=1
+  return 0
+}
+AGENT_INCOMPLETE_RETRY_LIMIT=1
+AGENT_REQUIRE_FINISH_TOOL=0
+MOCK_LFM_TURNS=0
+MOCK_LFM_DISPATCHES=0
+MOCK_LFM_PAYLOADS=()
+agent_reset
+agent_user_turn "complete a multi-step LFM task" >/dev/null 2>&1
+assert_success "adaptive completion recovers LFM command plans" $?
+assert_eq "4" "$MOCK_LFM_TURNS" "LFM recovery continues through native tool use"
+assert_eq "1" "$MOCK_LFM_DISPATCHES" "only native LFM tool calls reach dispatch"
+assert_contains "${MOCK_LFM_PAYLOADS[2]}" "intermediate JSON plan" "first LFM plan receives a native-tool nudge"
+assert_contains "${MOCK_LFM_PAYLOADS[4]}" "intermediate JSON plan" "native tool progress resets the LFM recovery budget"
+assert_eq "LFM recovery completed." "$AGENT_LAST_RESPONSE" "LFM recovery retains the structured final response"
+assert_contains "${(j:\n:)AGENT_MESSAGES}" 'commands' "unexecuted LFM plans remain model-visible without being dispatched"
+
+typeset -gi MOCK_LFM_REFUSAL_TURNS=0
+typeset -g MOCK_LFM_REFUSAL_PAYLOAD=""
+agent_ollama_chat() {
+  (( MOCK_LFM_REFUSAL_TURNS++ ))
+  if (( MOCK_LFM_REFUSAL_TURNS == 1 )); then
+    HTTP_BODY='{"message":{"content":"I cannot create the file because file system tools are not available in my current capabilities."}}'
+  else
+    MOCK_LFM_REFUSAL_PAYLOAD="$1"
+    HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"complete","response":"LFM tool recovery completed."}}}]}}'
+  fi
+  HTTP_ERROR=""
+  return 0
+}
+AGENT_INCOMPLETE_RETRY_LIMIT=1
+MOCK_LFM_REFUSAL_TURNS=0
+agent_reset
+agent_user_turn "use the supplied LFM tools" >/dev/null 2>&1
+assert_success "adaptive completion recovers false LFM tool refusals" $?
+assert_eq "2" "$MOCK_LFM_REFUSAL_TURNS" "false LFM tool refusals receive one recovery turn"
+assert_contains "$MOCK_LFM_REFUSAL_PAYLOAD" "tools in this request are available" "LFM refusal recovery corrects the protocol misunderstanding"
+assert_eq "LFM tool recovery completed." "$AGENT_LAST_RESPONSE" "LFM refusal recovery accepts structured completion"
+
+typeset -gi MOCK_LFM_PLAN_ONLY_TURNS=0 MOCK_LFM_PLAN_ONLY_DISPATCHES=0
+agent_ollama_chat() {
+  (( MOCK_LFM_PLAN_ONLY_TURNS++ ))
+  HTTP_BODY='{"message":{"content":"{\"analysis\":\"document it\",\"plan\":\"show a command\",\"commands\":[{\"command\":\"pwd\"}]}"}}'
+  HTTP_ERROR=""
+  return 0
+}
+tool_dispatch() {
+  (( MOCK_LFM_PLAN_ONLY_DISPATCHES++ ))
+  TOOL_RESULT="unexpected dispatch"
+  TOOL_RESULT_OK=1
+  return 0
+}
+MOCK_LFM_PLAN_ONLY_TURNS=0
+MOCK_LFM_PLAN_ONLY_DISPATCHES=0
+agent_reset
+agent_user_turn "Respond with JSON and provide a plan only; do not execute it." >/dev/null 2>&1
+assert_success "explicit LFM plan-only turns complete as plain content" $?
+assert_eq "1" "$MOCK_LFM_PLAN_ONLY_TURNS" "explicit LFM plans do not receive an action retry"
+assert_eq "0" "$MOCK_LFM_PLAN_ONLY_DISPATCHES" "explicit LFM plans never enter tool dispatch"
+assert_contains "$AGENT_LAST_RESPONSE" '"commands"' "explicit LFM plan JSON remains the final response"
+functions[tool_dispatch]="$saved_lfm_dispatch"
+ZCODER_MODEL="$saved_lfm_model"
+AGENT_INCOMPLETE_RETRY_LIMIT=3
+
 agent_ollama_chat() {
   (( MOCK_INCOMPLETE_TURNS++ ))
   if (( MOCK_INCOMPLETE_TURNS == 1 )); then
@@ -1277,7 +1445,7 @@ agent_loop_record "command:test" "result:four"
 agent_loop_detect
 assert_success "repeated requests are eventually detected despite changing output" $?
 
-typeset -gi MOCK_LOOP_TURNS=0
+typeset -gi MOCK_LOOP_TURNS=0 MOCK_LOOP_DISPATCHES=0
 agent_ollama_chat() {
   (( MOCK_LOOP_TURNS++ ))
   HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"read_file","arguments":{"path":"same.txt"}}}]}}'
@@ -1285,6 +1453,7 @@ agent_ollama_chat() {
   return 0
 }
 tool_dispatch() {
+  (( MOCK_LOOP_DISPATCHES++ ))
   TOOL_RESULT="unchanged mock file"
   TOOL_RESULT_OK=1
   return 0
@@ -1295,7 +1464,39 @@ agent_user_turn "keep reading forever" >/dev/null 2>&1
 mock_loop_status=$?
 assert_failure "agent stops when a model ignores the loop warning" "$mock_loop_status"
 assert_eq "4" "$MOCK_LOOP_TURNS" "agent gives one recovery turn before stopping"
+assert_eq "3" "$MOCK_LOOP_DISPATCHES" "the violating recovery call is rejected before tool dispatch"
 assert_contains "$AGENT_LOOP_NUDGE" "materially different action" "loop warning tells the model how to recover"
+assert_contains "$AGENT_LOOP_NUDGE" "one and only recovery turn" "loop warning makes the final chance explicit"
+assert_contains "$AGENT_LOOP_NUDGE" "rejected without execution" "loop warning explains the consequence of repetition"
+
+typeset -gi MOCK_LOOP_RECOVERY_TURNS=0 MOCK_LOOP_RECOVERY_DISPATCHES=0
+agent_ollama_chat() {
+  (( MOCK_LOOP_RECOVERY_TURNS++ ))
+  if (( MOCK_LOOP_RECOVERY_TURNS <= 3 )); then
+    HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"read_file","arguments":{"path":"same.txt"}}}]}}'
+  elif (( MOCK_LOOP_RECOVERY_TURNS == 4 )); then
+    HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"read_file","arguments":{"path":"different.txt"}}}]}}'
+  else
+    HTTP_BODY='{"message":{"content":"Recovered with different evidence."}}'
+  fi
+  HTTP_ERROR=""
+  return 0
+}
+tool_dispatch() {
+  (( MOCK_LOOP_RECOVERY_DISPATCHES++ ))
+  TOOL_RESULT="mock file ${MOCK_LOOP_RECOVERY_TURNS}"
+  TOOL_RESULT_OK=1
+  return 0
+}
+MOCK_LOOP_RECOVERY_TURNS=0
+MOCK_LOOP_RECOVERY_DISPATCHES=0
+agent_reset
+agent_user_turn "recover from a repeated read" >/dev/null 2>&1
+assert_success "a materially different recovery action keeps the conversation running" $?
+assert_eq "5" "$MOCK_LOOP_RECOVERY_TURNS" "successful loop recovery reaches the following model turn"
+assert_eq "4" "$MOCK_LOOP_RECOVERY_DISPATCHES" "successful loop recovery dispatches the different action"
+assert_eq "Recovered with different evidence." "$AGENT_LAST_RESPONSE" "successful loop recovery retains the final response"
+assert_eq "0" "$AGENT_LOOP_WARNING_ACTIVE" "a different action clears the active loop warning"
 
 typeset -gi MOCK_LONG_TURNS=0
 agent_prepare_payload() {

@@ -15,6 +15,7 @@ typeset -g AGENT_FINISH_ERROR=""
 typeset -gi AGENT_LOOP_WARNING_ACTIVE=0
 typeset -g AGENT_LOOP_NUDGE=""
 typeset -g AGENT_LOOP_REASON=""
+typeset -g AGENT_LOOP_FORBIDDEN_REQUEST=""
 typeset -ga AGENT_TOOL_REQUEST_HISTORY=()
 typeset -ga AGENT_TOOL_OUTCOME_HISTORY=()
 typeset -g ZCODER_MODEL="${ZCODER_MODEL:-qwen3-coder:latest}"
@@ -24,6 +25,8 @@ typeset -g ZCODER_WARMUP="${ZCODER_WARMUP:-true}"
 typeset -gi AGENT_WARMUP_ACTIVE=0
 typeset -g AGENT_WARMUP_MODEL=""
 typeset -g AGENT_WARMUP_HOST=""
+typeset -g AGENT_COMPAT_TOOL_NAME=""
+typeset -g AGENT_COMPAT_TOOL_ARGS="{}"
 
 (( AGENT_LOOP_REPEAT_LIMIT >= 2 )) || AGENT_LOOP_REPEAT_LIMIT=3
 (( AGENT_LOOP_MAX_CYCLE > 0 )) || AGENT_LOOP_MAX_CYCLE=4
@@ -232,6 +235,7 @@ agent_loop_reset() {
   AGENT_LOOP_WARNING_ACTIVE=0
   AGENT_LOOP_NUDGE=""
   AGENT_LOOP_REASON=""
+  AGENT_LOOP_FORBIDDEN_REQUEST=""
   AGENT_TOOL_REQUEST_HISTORY=()
   AGENT_TOOL_OUTCOME_HISTORY=()
 }
@@ -462,6 +466,224 @@ agent_warmup_poll() {
   agent_warmup_collect || true
 }
 
+_agent_content_is_lfm_json_plan() {
+  local content="$1" model="${(L)ZCODER_MODEL:t}" key=""
+  local -i has_plan=0 has_context=0 has_next_action=0
+  [[ "$model" == *lfm* ]] || return 1
+  json_begin "$content" || return 1
+  [[ "$JSON_TOKEN_TYPE" == '{' ]] || return 1
+  json_next || return 1
+  while [[ "$JSON_TOKEN_TYPE" != '}' ]]; do
+    [[ "$JSON_TOKEN_TYPE" == string ]] || return 1
+    key="$JSON_TOKEN_VALUE"
+    json_next || return 1
+    [[ "$JSON_TOKEN_TYPE" == ':' ]] || return 1
+    json_next || return 1
+    if [[ "$key" == commands && "$JSON_TOKEN_TYPE" == '[' ]]; then
+      json_next || return 1
+      while [[ "$JSON_TOKEN_TYPE" != ']' ]]; do
+        has_next_action=1
+        json_discard_value || return 1
+        if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
+          json_next || return 1
+        elif [[ "$JSON_TOKEN_TYPE" != ']' ]]; then
+          return 1
+        fi
+      done
+      json_next || return 1
+    else
+      case "$key:$JSON_TOKEN_TYPE" in
+        plan:string) has_plan=1 ;;
+        analysis:string|observations:string|observations:'['|steps:string|steps:'[') has_context=1 ;;
+        instructions:string|check:string|turn_control:string)
+          has_context=1
+          has_next_action=1
+          ;;
+        next_steps:'['|next_step:string|next\ actions:string|actions:'['|tool_calls:'['|tool_call:'{')
+          has_next_action=1
+          ;;
+      esac
+      json_discard_value || return 1
+    fi
+    if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
+      json_next || return 1
+    elif [[ "$JSON_TOKEN_TYPE" != '}' ]]; then
+      return 1
+    fi
+  done
+  json_next || return 1
+  [[ "$JSON_TOKEN_TYPE" == eof ]] || return 1
+  (( has_plan && has_context && has_next_action ))
+}
+
+agent_content_is_lfm_intermediate_plan() {
+  local content="$1" model="${(L)ZCODER_MODEL:t}" compact=""
+  local -i has_next_action=0
+  [[ "$model" == *lfm* ]] || return 1
+  _agent_content_is_lfm_json_plan "$content" && return 0
+  # Some LFM turns place literal newlines inside quoted shell commands. The
+  # inner planner envelope is then invalid JSON even though Ollama's outer
+  # response is valid. Recognize that model-specific shape only for a retry;
+  # malformed content is never promoted to a tool call.
+  compact="${content//[[:space:]]/}"
+  [[ "$compact" == \{* && "$compact" == *'"plan":'* ]] || return 1
+  [[ "$compact" == *'"analysis":'* || "$compact" == *'"instructions":'* || \
+     "$compact" == *'"observations":'* || "$compact" == *'"steps":'* ]] || return 1
+  [[ "$compact" == *'"commands":'* && "$compact" != *'"commands":[]'* ]] && has_next_action=1
+  [[ "$compact" == *'"actions":'* && "$compact" != *'"actions":[]'* ]] && has_next_action=1
+  [[ "$compact" == *'"next_steps":'* && "$compact" != *'"next_steps":[]'* ]] && has_next_action=1
+  [[ "$compact" == *'"next_step":'* ]] && has_next_action=1
+  [[ "$compact" == *'"next actions":'* ]] && has_next_action=1
+  [[ "$compact" == *'"tool_calls":'* && "$compact" != *'"tool_calls":[]'* ]] && has_next_action=1
+  [[ "$compact" == *'"tool_call":{'* ]] && has_next_action=1
+  [[ "$compact" == *'"turn_control":'* ]] && has_next_action=1
+  (( has_next_action ))
+}
+
+agent_content_is_lfm_false_tool_refusal() {
+  local model="${(L)ZCODER_MODEL:t}" content="${(L)1}"
+  [[ "$model" == *lfm* ]] || return 1
+  [[ "$content" == *'file system tools'*'not available'* || \
+     "$content" == *'filesystem tools'*'not available'* || \
+     "$content" == *'tools, which are not available'* || \
+     "$content" == *'tools are not available in my current capabilities'* || \
+     "$content" == *'do not have access to the provided tools'* || \
+     "$content" == *'cannot access the provided tools'* ]]
+}
+
+agent_lfm_user_requests_plan_only() {
+  local content="${(L)1}"
+  [[ "$content" == *'do not execute'* || "$content" == *"don't execute"* || \
+     "$content" == *'without executing'* || "$content" == *'plan only'* || \
+     "$content" == *'only provide a plan'* || "$content" == *'just provide a plan'* || \
+     "$content" == *'respond with json'* || "$content" == *'return only json'* ]]
+}
+
+_agent_parse_lfm_action_object() {
+  local key="" name="" args="{}"
+  [[ "$JSON_TOKEN_TYPE" == '{' ]] || return 1
+  json_next || return 1
+  while [[ "$JSON_TOKEN_TYPE" != '}' ]]; do
+    [[ "$JSON_TOKEN_TYPE" == string ]] || return 1
+    key="$JSON_TOKEN_VALUE"
+    json_next || return 1
+    [[ "$JSON_TOKEN_TYPE" == ':' ]] || return 1
+    json_next || return 1
+    case "$key:$JSON_TOKEN_TYPE" in
+      tool_name:string|name:string) name="$JSON_TOKEN_VALUE"; json_next || return 1 ;;
+      arguments:'{') json_capture_raw_value || return 1; args="$REPLY" ;;
+      *) json_discard_value || return 1 ;;
+    esac
+    if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
+      json_next || return 1
+    elif [[ "$JSON_TOKEN_TYPE" != '}' ]]; then
+      return 1
+    fi
+  done
+  json_next || return 1
+  while [[ -n "$name" && "$name[1]" == [[:space:]] ]]; do name="$name[2,-1]"; done
+  while [[ -n "$name" && "$name[-1]" == [[:space:],] ]]; do name="$name[1,-2]"; done
+  [[ -n "$name" ]] || return 1
+  AGENT_COMPAT_TOOL_NAME="$name"
+  AGENT_COMPAT_TOOL_ARGS="$args"
+}
+
+_agent_parse_lfm_command_object() {
+  local key="" command_text="" cwd="." timeout_seconds="120"
+  local command_json="" cwd_json=""
+  [[ "$JSON_TOKEN_TYPE" == '{' ]] || return 1
+  json_next || return 1
+  while [[ "$JSON_TOKEN_TYPE" != '}' ]]; do
+    [[ "$JSON_TOKEN_TYPE" == string ]] || return 1
+    key="$JSON_TOKEN_VALUE"
+    json_next || return 1
+    [[ "$JSON_TOKEN_TYPE" == ':' ]] || return 1
+    json_next || return 1
+    case "$key:$JSON_TOKEN_TYPE" in
+      command:string) command_text="$JSON_TOKEN_VALUE"; json_next || return 1 ;;
+      keystrokes:string)
+        [[ -n "$command_text" ]] || command_text="$JSON_TOKEN_VALUE"
+        json_next || return 1
+        ;;
+      cwd:string) cwd="$JSON_TOKEN_VALUE"; json_next || return 1 ;;
+      timeout_seconds:number) timeout_seconds="$JSON_TOKEN_VALUE"; json_next || return 1 ;;
+      *) json_discard_value || return 1 ;;
+    esac
+    if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
+      json_next || return 1
+    elif [[ "$JSON_TOKEN_TYPE" != '}' ]]; then
+      return 1
+    fi
+  done
+  json_next || return 1
+  [[ -n "$command_text" ]] || return 1
+  [[ "$timeout_seconds" == <1-3600> ]] || timeout_seconds=120
+  json_quote "$command_text"; command_json="$REPLY"
+  json_quote "$cwd"; cwd_json="$REPLY"
+  AGENT_COMPAT_TOOL_NAME="run_command"
+  AGENT_COMPAT_TOOL_ARGS="{\"command\":${command_json},\"cwd\":${cwd_json},\"timeout_seconds\":${timeout_seconds}}"
+}
+
+agent_extract_lfm_plan_action() {
+  local content="$1" key=""
+  local -i found=0
+  AGENT_COMPAT_TOOL_NAME=""
+  AGENT_COMPAT_TOOL_ARGS="{}"
+  agent_content_is_lfm_intermediate_plan "$content" || return 1
+  json_begin "$content" || return 1
+  [[ "$JSON_TOKEN_TYPE" == '{' ]] || return 1
+  json_next || return 1
+  while [[ "$JSON_TOKEN_TYPE" != '}' ]]; do
+    [[ "$JSON_TOKEN_TYPE" == string ]] || return 1
+    key="$JSON_TOKEN_VALUE"
+    json_next || return 1
+    [[ "$JSON_TOKEN_TYPE" == ':' ]] || return 1
+    json_next || return 1
+    if [[ ( "$key" == actions || "$key" == tool_calls ) && "$JSON_TOKEN_TYPE" == '[' ]]; then
+      json_next || return 1
+      if [[ "$JSON_TOKEN_TYPE" == '{' ]]; then
+        _agent_parse_lfm_action_object || return 1
+        found=1
+      fi
+      while [[ "$JSON_TOKEN_TYPE" != ']' ]]; do
+        if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
+          json_next || return 1
+        else
+          json_discard_value || return 1
+        fi
+      done
+      json_next || return 1
+    elif [[ "$key" == tool_call && "$JSON_TOKEN_TYPE" == '{' ]]; then
+      _agent_parse_lfm_action_object || return 1
+      found=1
+    elif [[ "$key" == commands && "$JSON_TOKEN_TYPE" == '[' ]]; then
+      json_next || return 1
+      if [[ "$JSON_TOKEN_TYPE" == '{' ]]; then
+        _agent_parse_lfm_command_object || return 1
+        found=1
+      fi
+      while [[ "$JSON_TOKEN_TYPE" != ']' ]]; do
+        if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
+          json_next || return 1
+        else
+          json_discard_value || return 1
+        fi
+      done
+      json_next || return 1
+    else
+      json_discard_value || return 1
+    fi
+    if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
+      json_next || return 1
+    elif [[ "$JSON_TOKEN_TYPE" != '}' ]]; then
+      return 1
+    fi
+  done
+  json_next || return 1
+  [[ "$JSON_TOKEN_TYPE" == eof ]] || return 1
+  (( found ))
+}
+
 agent_emit() {
   local role="$1" content="$2" thinking="${3:-}"
   if (( ${REMOTE_SERVER_WORKER:-0} && $+functions[remote_server_worker_emit] )); then
@@ -534,12 +756,13 @@ agent_user_turn() {
   local tool_name="" tool_args="" result="" summary="" display_result=""
   local request_signature="" outcome_signature="" loop_notice="" continuation_notice="" batch_error=""
   local -a call_names=() call_args=()
-  local -i step i request_status prepare_status incomplete_retries=0 needs_continuation=0
+  local -i step i request_status prepare_status incomplete_retries=0 needs_continuation=0 lfm_command_plan=0 lfm_tool_refusal=0 lfm_plan_only=0 loop_cycle=0 loop_count=0
 
   (( AGENT_WARMUP_ACTIVE )) && agent_warmup_cancel "user prompt submitted"
   AGENT_LAST_RESPONSE=""
   TOOL_PATCH_RETRY_REQUIRED=0
   agent_loop_reset
+  agent_lfm_user_requests_plan_only "$user_content" && lfm_plan_only=1
   if (( $+functions[skills_activate_explicit_from_text] )); then
     skills_activate_explicit_from_text "$user_content"
     zcoder_debug explicit_skills "active=${(j:,:)SKILL_ACTIVE_NAMES}"
@@ -631,17 +854,37 @@ agent_user_turn() {
     calls_json="$JSON_RESPONSE_TOOL_CALLS"
     call_names=("${JSON_TOOL_NAMES[@]}")
     call_args=("${JSON_TOOL_ARGS[@]}")
+    if (( ${#call_names} == 0 && ! lfm_plan_only )) && agent_extract_lfm_plan_action "$content"; then
+      call_names=("$AGENT_COMPAT_TOOL_NAME")
+      call_args=("$AGENT_COMPAT_TOOL_ARGS")
+      json_quote "$AGENT_COMPAT_TOOL_NAME"
+      calls_json="[{\"type\":\"function\",\"function\":{\"name\":${REPLY},\"arguments\":${AGENT_COMPAT_TOOL_ARGS}}}]"
+      [[ -n "$thinking" ]] && thinking+=$'\n\n'
+      thinking+="$content"
+      content=""
+      zcoder_debug lfm_action_promoted "step=$step name=${(qqq)AGENT_COMPAT_TOOL_NAME} args=${(qqq)AGENT_COMPAT_TOOL_ARGS}"
+    fi
     zcoder_debug response_parsed "step=$step content=${(qqq)content} thinking_chars=${#thinking} tool_calls=${#call_names} prompt_tokens=$JSON_RESPONSE_PROMPT_TOKENS output_tokens=$JSON_RESPONSE_OUTPUT_TOKENS"
     agent_add_assistant_message "$content" "$thinking" "$calls_json"
 
     needs_continuation=0
-    if (( ${#call_names} == 0 && AGENT_INCOMPLETE_RETRY_LIMIT > 0 )); then
-      if (( AGENT_REQUIRE_FINISH_TOOL )) || [[ -z "$content" ]]; then
+    lfm_command_plan=0
+    lfm_tool_refusal=0
+    if (( ${#call_names} == 0 && AGENT_INCOMPLETE_RETRY_LIMIT > 0 && ! lfm_plan_only )); then
+      agent_content_is_lfm_intermediate_plan "$content" && lfm_command_plan=1
+      agent_content_is_lfm_false_tool_refusal "$content" && lfm_tool_refusal=1
+      if (( AGENT_REQUIRE_FINISH_TOOL || lfm_command_plan || lfm_tool_refusal )) || [[ -z "$content" ]]; then
         needs_continuation=1
       fi
     fi
     if (( needs_continuation )); then
-      if [[ -z "$content" ]]; then
+      if (( lfm_command_plan )); then
+        AGENT_CONTINUATION_REASON="LFM response contained an intermediate JSON plan instead of acting or answering"
+        continuation_notice="Your previous response was an intermediate JSON plan, not an action or final answer. Any commands in it were not executed. Do not repeat or translate commands as prose. If work remains, call exactly one provided native tool now; use run_command for shell commands so workspace and approval checks apply. If the task is complete or genuinely blocked, call finish or return one complete user-facing answer."
+      elif (( lfm_tool_refusal )); then
+        AGENT_CONTINUATION_REASON="LFM response incorrectly claimed that supplied tools were unavailable"
+        continuation_notice="Your previous response incorrectly claimed that file or command tools were unavailable. The tools in this request are available. If work remains, call exactly one provided native tool now. Do not describe a hypothetical solution. If the task is complete or genuinely blocked for another observed reason, call finish or return one complete user-facing answer."
+      elif [[ -z "$content" ]]; then
         AGENT_CONTINUATION_REASON="response was empty and omitted a tool call"
         if (( AGENT_REQUIRE_FINISH_TOOL )); then
           continuation_notice="Your previous response was empty. If work remains, call the next work tool now. If the task is complete or genuinely blocked, call finish as the only tool with the final response."
@@ -656,7 +899,9 @@ agent_user_turn() {
       if (( incomplete_retries < AGENT_INCOMPLETE_RETRY_LIMIT )); then
         (( incomplete_retries++ ))
         agent_add_message system "$continuation_notice"
-        if [[ -z "$content" ]]; then
+        if (( lfm_command_plan || lfm_tool_refusal )); then
+          agent_emit system "↻ LFM returned a non-action response; requesting tool use or a final answer (${incomplete_retries}/${AGENT_INCOMPLETE_RETRY_LIMIT})."
+        elif [[ -z "$content" ]]; then
           agent_emit system "↻ Model returned an empty response; retrying (${incomplete_retries}/${AGENT_INCOMPLETE_RETRY_LIMIT})."
         else
           agent_emit system "↻ Model omitted a work/finish tool; continuing automatically (${incomplete_retries}/${AGENT_INCOMPLETE_RETRY_LIMIT})."
@@ -706,6 +951,10 @@ agent_user_turn() {
       return 0
     fi
 
+    # A valid native call means the model recovered and made progress. Give a
+    # later malformed/empty/LFM-plan response its own bounded recovery budget.
+    incomplete_retries=0
+
     request_signature=""
     for (( i=1; i<=${#call_names}; i++ )); do
       tool_name="${call_names[i]}"
@@ -713,6 +962,19 @@ agent_user_turn() {
       zcoder_debug tool_call "step=$step index=$i name=${(qqq)tool_name} args=${(qqq)tool_args}"
       request_signature+="${#tool_name}:$tool_name${#tool_args}:$tool_args"
     done
+    if (( AGENT_LOOP_WARNING_ACTIVE )); then
+      if [[ "$request_signature" == "$AGENT_LOOP_FORBIDDEN_REQUEST" ]]; then
+        agent_emit error "Loop guard rejected the repeated tool round without executing it. The model ignored its final recovery warning: ${AGENT_LOOP_REASON}."
+        zcoder_debug loop_violation "step=$step request=${(qqq)request_signature} reason=${(qqq)AGENT_LOOP_REASON}"
+        agent_set_status "Loop stopped"
+        return 1
+      fi
+      zcoder_debug loop_recovered "step=$step previous_reason=${(qqq)AGENT_LOOP_REASON} request=${(qqq)request_signature}"
+      AGENT_LOOP_WARNING_ACTIVE=0
+      AGENT_LOOP_NUDGE=""
+      AGENT_LOOP_REASON=""
+      AGENT_LOOP_FORBIDDEN_REQUEST=""
+    fi
     batch_error=""
     if (( ${#call_names} > 1 )); then
       for tool_name in "${call_names[@]}"; do
@@ -761,18 +1023,17 @@ agent_user_turn() {
 
     agent_loop_record "$request_signature" "$outcome_signature"
     if agent_loop_detect; then
-      if (( AGENT_LOOP_WARNING_ACTIVE )); then
-        agent_emit error "Loop guard stopped the run: ${AGENT_LOOP_REASON}."
-        agent_set_status "Loop stopped"
-        return 1
-      fi
-      loop_notice="Loop guard noticed that ${AGENT_LOOP_REASON}. Do not repeat that sequence. Reassess the evidence, choose a materially different action, or explain what blocks further progress."
+      loop_cycle=$REPLY
+      loop_count=${#AGENT_TOOL_REQUEST_HISTORY}
+      AGENT_LOOP_FORBIDDEN_REQUEST="${AGENT_TOOL_REQUEST_HISTORY[loop_count-loop_cycle+1]}"
+      loop_notice="CRITICAL: LOOP DETECTED. This is your one and only recovery turn. ${AGENT_LOOP_REASON}. You MUST NOT continue that tool sequence. On your next response, take a materially different action by calling a different tool, use materially different arguments justified by new evidence, or finish with an honest blocker. Do not repeat a cycle step merely to try it again. If your next tool round continues the detected sequence, it will be rejected without execution and the run will stop."
       AGENT_LOOP_WARNING_ACTIVE=1
       AGENT_LOOP_NUDGE="$loop_notice"
       agent_emit system "⚠ $loop_notice"
     else
       AGENT_LOOP_WARNING_ACTIVE=0
       AGENT_LOOP_NUDGE=""
+      AGENT_LOOP_FORBIDDEN_REQUEST=""
     fi
   done
 }
