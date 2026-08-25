@@ -156,6 +156,15 @@ Command approval is an explicit protocol event. The worker pauses until the
 client sends a decision tied to the active one-use identifier. Cancellation
 terminates and reaps the worker. Runtime events are published atomically through
 private files, while the conversation uses the normal persistent session format.
+Visible worker events are appended to that format as well as streamed to the
+connected client, so reconnecting restores the transcript instead of only the
+model's hidden conversation history.
+
+Session ownership remains on the server. Cursor-based endpoints expose bounded
+session summaries and transcript events to the client, and authenticated
+selection/new-session requests update the named server's selected job. The
+client keeps only the sidebar and transcript view in memory; it does not write a
+second local copy of remote state.
 
 The server accepts one active turn at a time. See [Remote-agent server](remote.md)
 for operation and security constraints.

@@ -124,9 +124,16 @@ and reaps its worker before accepting another turn.
 
 ## Sessions and current limitations
 
-Each named server has one persistent session that survives process restarts.
-The first release accepts one active turn at a time. A concurrent turn receives
-a busy response instead of running alongside it.
+Sessions belong to the named server and survive server and client restarts. The
+client loads the server's session list and selected transcript during the
+handshake. Use Ctrl+N or `/new` to create a remote job, and focus the Sessions
+sidebar with Tab or `/sessions` to resume another one. Selecting a job changes
+the server-side conversation; no duplicate session state is stored on the
+workstation.
+
+The server accepts one active turn at a time. A concurrent turn receives a busy
+response instead of running alongside it. Session creation and switching are
+also rejected while a turn is active.
 
 `ZCODER_REMOTE_APPROVAL_TIMEOUT` changes the approval timeout from its default
 of 300 seconds. `ZCODER_REMOTE_MAX_REQUEST_BYTES` changes the one-mebibyte
@@ -134,7 +141,6 @@ request-body limit.
 
 These controls are not yet exposed remotely:
 
-- session browsing and `/new`
 - model or Ollama host switching
 - manual `/compact`
 - Skills and MCP management screens

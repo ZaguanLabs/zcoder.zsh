@@ -14,6 +14,7 @@ typeset -g REMOTE_CLIENT_EVENT_CURSOR="0"
 typeset -g REMOTE_ERROR=""
 typeset -g REMOTE_MODEL_STATUS="unknown"
 typeset -g REMOTE_MODEL_ERROR=""
+typeset -gi REMOTE_SESSIONS_SUPPORTED=0
 typeset -gi REMOTE_SERVER_WORKER=0
 typeset -gi REMOTE_MAX_REQUEST_BYTES="${ZCODER_REMOTE_MAX_REQUEST_BYTES:-1048576}"
 typeset -gi REMOTE_APPROVAL_TIMEOUT="${ZCODER_REMOTE_APPROVAL_TIMEOUT:-300}"
@@ -105,7 +106,7 @@ remote_client_request() {
 }
 
 remote_client_handshake() {
-  local protocol="" server_name="" workspace="" model="" profile="" command_policy=""
+  local protocol="" server_name="" workspace="" model="" profile="" command_policy="" sessions=""
   remote_load_token "$REMOTE_TOKEN_FILE" || return 1
   remote_client_request GET /v1/hello || return 1
   json_parse_flat_object "$HTTP_BODY" || { REMOTE_ERROR="invalid server handshake: ${JSON_ERROR:-parse error}"; return 1; }
@@ -115,6 +116,7 @@ remote_client_handshake() {
   model="${JSON_OBJECT[model]:-unknown}"
   profile="${JSON_OBJECT[profile]:-coding}"
   command_policy="${JSON_OBJECT[command_policy]:-ask}"
+  sessions="${JSON_OBJECT[sessions]:-false}"
   [[ "$protocol" == 1 ]] || { REMOTE_ERROR="unsupported remote protocol: ${protocol:-missing}"; return 1; }
   REMOTE_SERVER_NAME="$server_name"
   ZCODER_WORKSPACE="$workspace"
@@ -125,6 +127,121 @@ remote_client_handshake() {
   # Keep those servers usable and let their first real turn load the model.
   REMOTE_MODEL_STATUS="${JSON_OBJECT[model_status]:-unmanaged}"
   REMOTE_MODEL_ERROR="${JSON_OBJECT[model_error]:-}"
+  if [[ "$sessions" == true ]]; then
+    REMOTE_SESSIONS_SUPPORTED=1
+    remote_client_refresh_sessions || return 1
+    [[ -z "$CURRENT_SESSION_ID" ]] || remote_client_load_session "$CURRENT_SESSION_ID" || return 1
+  else
+    REMOTE_SESSIONS_SUPPORTED=0
+  fi
+}
+
+remote_client_refresh_sessions() {
+  local event="" id="" title="" model="" current="0"
+  local -i cursor=0 next_cursor=0
+  local current_id="$CURRENT_SESSION_ID"
+  local -a ids=() titles=() models=()
+  while true; do
+    remote_client_request GET "/v1/sessions?after=${cursor}" || return 1
+    json_parse_flat_object "$HTTP_BODY" || {
+      REMOTE_ERROR="invalid remote session list: ${JSON_ERROR:-parse error}"
+      return 1
+    }
+    event="${JSON_OBJECT[event]:-}"
+    [[ "$event" == none ]] && break
+    [[ "$event" == session && "${JSON_OBJECT[seq]:-}" == <1-> ]] || {
+      REMOTE_ERROR="invalid remote session list entry"
+      return 1
+    }
+    next_cursor="${JSON_OBJECT[seq]}"
+    (( next_cursor > cursor )) || { REMOTE_ERROR="remote session list cursor did not advance"; return 1; }
+    cursor=$next_cursor
+    id="${JSON_OBJECT[id]:-}"
+    _state_valid_id "$id" || { REMOTE_ERROR="invalid remote session identifier"; return 1; }
+    title="${JSON_OBJECT[title]:-Untitled}"
+    model="${JSON_OBJECT[model]:-unknown}"
+    current="${JSON_OBJECT[current]:-0}"
+    ids+=("$id")
+    titles+=("$title")
+    models+=("$model")
+    [[ "$current" == 1 ]] && current_id="$id"
+  done
+  SESSION_IDS=("${ids[@]}")
+  SESSION_TITLES=("${titles[@]}")
+  SESSION_MODELS=("${models[@]}")
+  if (( ${#SESSION_IDS} == 0 )); then
+    CURRENT_SESSION_ID=""
+    SESSION_TITLE="New Job"
+  elif (( ! ${SESSION_IDS[(Ie)$current_id]} )); then
+    CURRENT_SESSION_ID="${SESSION_IDS[1]}"
+    SESSION_TITLE="${SESSION_TITLES[1]}"
+  else
+    CURRENT_SESSION_ID="$current_id"
+    local -i current_index=${SESSION_IDS[(Ie)$current_id]}
+    SESSION_TITLE="${SESSION_TITLES[current_index]}"
+  fi
+}
+
+remote_client_load_session() {
+  local id="$1" event="" role="" content="" thinking="" time="" reasoning_open="0"
+  local -i cursor=0 next_cursor=0 index=${SESSION_IDS[(Ie)$id]}
+  _state_valid_id "$id" || { REMOTE_ERROR="invalid remote session identifier"; return 1; }
+  UI_ROLES=()
+  UI_CONTENTS=()
+  UI_THINKINGS=()
+  UI_TIMES=()
+  UI_REASONING_OPEN=()
+  while true; do
+    remote_client_request GET "/v1/session?id=${id}&after=${cursor}" || return 1
+    json_parse_flat_object "$HTTP_BODY" || {
+      REMOTE_ERROR="invalid remote session transcript: ${JSON_ERROR:-parse error}"
+      return 1
+    }
+    event="${JSON_OBJECT[event]:-}"
+    [[ "$event" == none ]] && break
+    [[ "$event" == message && "${JSON_OBJECT[seq]:-}" == <1-> ]] || {
+      REMOTE_ERROR="invalid remote session transcript entry"
+      return 1
+    }
+    next_cursor="${JSON_OBJECT[seq]}"
+    (( next_cursor > cursor )) || { REMOTE_ERROR="remote transcript cursor did not advance"; return 1; }
+    cursor=$next_cursor
+    role="${JSON_OBJECT[role]:-system}"
+    content="${JSON_OBJECT[content]:-}"
+    thinking="${JSON_OBJECT[thinking]:-}"
+    time="${JSON_OBJECT[time]:-}"
+    reasoning_open="${JSON_OBJECT[reasoning_open]:-0}"
+    UI_ROLES+=("$role")
+    UI_CONTENTS+=("$content")
+    UI_THINKINGS+=("$thinking")
+    UI_TIMES+=("$time")
+    [[ "$reasoning_open" == 1 ]] && UI_REASONING_OPEN+=(1) || UI_REASONING_OPEN+=(0)
+  done
+  CURRENT_SESSION_ID="$id"
+  (( index > 0 )) && SESSION_TITLE="${SESSION_TITLES[index]}"
+  (( UI_TRANSCRIPT_GENERATION++ ))
+  UI_SCROLL=0
+  UI_AUTO_SCROLL=1
+}
+
+remote_client_select_session() {
+  local id="$1" id_json=""
+  (( REMOTE_SESSIONS_SUPPORTED )) || { REMOTE_ERROR="remote session browsing is not supported by this server"; return 1; }
+  json_quote "$id"; id_json="$REPLY"
+  remote_client_request POST /v1/session/select "{\"id\":${id_json}}" || return 1
+  remote_client_refresh_sessions || return 1
+  remote_client_load_session "$id"
+}
+
+remote_client_new_session() {
+  local id=""
+  (( REMOTE_SESSIONS_SUPPORTED )) || { REMOTE_ERROR="remote session creation is not supported by this server"; return 1; }
+  remote_client_request POST /v1/session/new '{}' || return 1
+  json_parse_flat_object "$HTTP_BODY" || { REMOTE_ERROR="invalid remote new-session response"; return 1; }
+  id="${JSON_OBJECT[id]:-}"
+  _state_valid_id "$id" || { REMOTE_ERROR="invalid remote new-session identifier"; return 1; }
+  remote_client_refresh_sessions || return 1
+  remote_client_load_session "$id"
 }
 
 _remote_client_parse_model_status() {
@@ -322,6 +439,9 @@ remote_client_user_turn() {
         ;;
       complete)
         [[ "$exit_code" == <0-255> ]] || exit_code=1
+        if (( REMOTE_SESSIONS_SUPPORTED )) && ! remote_client_refresh_sessions; then
+          agent_emit error "Could not refresh remote sessions: $REMOTE_ERROR"
+        fi
         (( exit_code == 0 )) && agent_set_status "Ready" || agent_set_status "Error"
         return "$exit_code"
         ;;
@@ -369,6 +489,7 @@ remote_server_emit_status() {
 }
 
 remote_server_worker_emit() {
+  ui_append_message "$@"
   remote_server_emit_message "$@"
 }
 
@@ -508,6 +629,89 @@ _remote_server_next_event() {
   return 1
 }
 
+_remote_server_refresh_sessions() {
+  local -i saved_state_enabled=$STATE_ENABLED
+  STATE_ENABLED=1
+  state_refresh_sessions_list
+  STATE_ENABLED=$saved_state_enabled
+}
+
+_remote_server_session_summary() {
+  local after="$1" id="" title_json="" id_json="" model_json="" current=0
+  local -i index
+  [[ "$after" == <0-> ]] || after=0
+  _remote_server_refresh_sessions
+  index=$(( after + 1 ))
+  if (( index > ${#SESSION_IDS} )); then
+    REPLY='{"event":"none"}'
+    return 1
+  fi
+  id="${SESSION_IDS[index]}"
+  [[ "$id" == "$REMOTE_SESSION_ID" ]] && current=1
+  json_quote "$id"; id_json="$REPLY"
+  json_quote "${SESSION_TITLES[index]:-Untitled}"; title_json="$REPLY"
+  json_quote "${SESSION_MODELS[index]:-unknown}"; model_json="$REPLY"
+  REPLY="{\"event\":\"session\",\"seq\":${index},\"id\":${id_json},\"title\":${title_json},\"model\":${model_json},\"current\":${current}}"
+}
+
+_remote_server_session_event() {
+  local id="$1" after="$2" session_dir="" ui_dir="" seq=""
+  local role_json="" content_json="" thinking_json="" time_json="" reasoning_open="0"
+  local -i index count
+  _state_valid_id "$id" || return 2
+  [[ "$after" == <0-> ]] || return 2
+  session_dir="$ZCODER_SESSIONS_DIR/${id}.session"
+  [[ -d "$session_dir" ]] || return 2
+  _state_scope_matches "${mapfile[$session_dir/workspace]}" "${mapfile[$session_dir/profile]}" || return 2
+  _state_nonnegative "${mapfile[$session_dir/ui_event_count]:-0}"; count=$REPLY
+  index=$(( after + 1 ))
+  if (( index > count )); then
+    REPLY='{"event":"none"}'
+    return 1
+  fi
+  printf -v seq '%06d' "$index"
+  ui_dir="$session_dir/ui_events"
+  [[ -f "$ui_dir/$seq.role" ]] || return 2
+  json_quote "${mapfile[$ui_dir/$seq.role]:-system}"; role_json="$REPLY"
+  json_quote "${mapfile[$ui_dir/$seq.content]}"; content_json="$REPLY"
+  json_quote "${mapfile[$ui_dir/$seq.thinking]}"; thinking_json="$REPLY"
+  json_quote "${mapfile[$ui_dir/$seq.time]}"; time_json="$REPLY"
+  _state_nonnegative "${mapfile[$ui_dir/$seq.reasoning_open]:-0}"; reasoning_open=$REPLY
+  (( reasoning_open > 0 )) && reasoning_open=1
+  REPLY="{\"event\":\"message\",\"seq\":${index},\"role\":${role_json},\"content\":${content_json},\"thinking\":${thinking_json},\"time\":${time_json},\"reasoning_open\":${reasoning_open}}"
+}
+
+_remote_server_select_session() {
+  local id="$1" session_dir=""
+  _state_valid_id "$id" || return 1
+  session_dir="$ZCODER_SESSIONS_DIR/${id}.session"
+  [[ -d "$session_dir" ]] || return 1
+  _state_scope_matches "${mapfile[$session_dir/workspace]}" "${mapfile[$session_dir/profile]}" || return 1
+  REMOTE_SESSION_ID="$id"
+  mapfile[$REMOTE_RUNTIME_DIR/selected_session]="$id"
+}
+
+_remote_server_new_session() {
+  local -i saved_state_enabled=$STATE_ENABLED
+  local -i create_status=0
+  STATE_ENABLED=0
+  CURRENT_SESSION_ID=""
+  agent_reset
+  UI_ROLES=()
+  UI_CONTENTS=()
+  UI_THINKINGS=()
+  UI_TIMES=()
+  UI_REASONING_OPEN=()
+  STATE_ENABLED=1
+  state_new_session || create_status=$?
+  if (( create_status == 0 )); then
+    REMOTE_SESSION_ID="$CURRENT_SESSION_ID"
+    mapfile[$REMOTE_RUNTIME_DIR/selected_session]="$REMOTE_SESSION_ID" || create_status=$?
+  fi
+  STATE_ENABLED=$saved_state_enabled
+  return "$create_status"
+}
+
 _remote_http_reason() {
   case "$1" in
     200) REPLY="OK" ;; 202) REPLY="Accepted" ;; 400) REPLY="Bad Request" ;;
@@ -617,6 +821,7 @@ _remote_server_turn_worker() {
     ZCODER_COMMAND_POLICY="allow"
   fi
   state_note_user "$prompt"
+  ui_append_message user "$prompt"
   agent_user_turn "$prompt" || exit_code=$?
   state_save_session || true
   mapfile[$REMOTE_RUNTIME_DIR/command_policy]="$ZCODER_COMMAND_POLICY" || true
@@ -685,7 +890,7 @@ _remote_server_cancel_turn() {
 }
 
 _remote_server_handle_connection() {
-  local fd="$1" read_status=0 target="" after="0" prompt="" turn_json="" id="" decision=""
+  local fd="$1" read_status=0 target="" after="0" prompt="" turn_json="" id="" decision="" session_status=0
   _remote_http_read_request "$fd"
   read_status=$?
   if (( read_status != 0 )); then
@@ -710,7 +915,7 @@ _remote_server_handle_connection() {
       json_quote "$effective_policy"; policy_json="$REPLY"
       json_quote "$REMOTE_MODEL_STATUS"; model_status_json="$REPLY"
       json_quote "$REMOTE_MODEL_ERROR"; model_error_json="$REPLY"
-      _remote_http_send "$fd" 200 "{\"protocol\":1,\"server_name\":${name_json},\"workspace\":${workspace_json},\"model\":${model_json},\"profile\":${profile_json},\"command_policy\":${policy_json},\"model_status\":${model_status_json},\"model_error\":${model_error_json}}"
+      _remote_http_send "$fd" 200 "{\"protocol\":1,\"server_name\":${name_json},\"workspace\":${workspace_json},\"model\":${model_json},\"profile\":${profile_json},\"command_policy\":${policy_json},\"model_status\":${model_status_json},\"model_error\":${model_error_json},\"sessions\":true}"
       ;;
     GET:/v1/model)
       _remote_server_model_poll || true
@@ -762,6 +967,54 @@ _remote_server_handle_connection() {
       _remote_server_progress_pending_turn "$fd" || true
       _remote_server_next_event "$after"
       _remote_http_send "$fd" 200 "$REPLY"
+      ;;
+    GET:/v1/sessions\?after=*)
+      after="${target#*/v1/sessions\?after=}"
+      [[ "$after" == <0-> ]] || { _remote_http_error "$fd" 400 "after must be a non-negative integer"; return; }
+      _remote_server_session_summary "$after" || true
+      _remote_http_send "$fd" 200 "$REPLY"
+      ;;
+    GET:/v1/session\?id=*\&after=*)
+      id="${target#*/v1/session\?id=}"
+      after="${id#*\&after=}"
+      id="${id%%\&after=*}"
+      _remote_server_session_event "$id" "$after"
+      session_status=$?
+      if (( session_status != 0 )); then
+        if (( session_status == 2 )); then
+          _remote_http_error "$fd" 404 "remote session does not exist"
+          return
+        fi
+      fi
+      _remote_http_send "$fd" 200 "$REPLY"
+      ;;
+    POST:/v1/session/select)
+      if [[ -f "$REMOTE_RUNTIME_DIR/active.pid" || -f "$REMOTE_RUNTIME_DIR/pending_prompt" ]]; then
+        _remote_http_error "$fd" 409 "cannot switch sessions while a remote turn is running"
+        return
+      fi
+      if ! json_parse_flat_object "$REMOTE_REQUEST_BODY"; then
+        _remote_http_error "$fd" 400 "invalid session selection"
+        return
+      fi
+      id="${JSON_OBJECT[id]:-}"
+      if ! _remote_server_select_session "$id"; then
+        _remote_http_error "$fd" 404 "remote session does not exist"
+        return
+      fi
+      _remote_http_send "$fd" 200 '{"ok":true}'
+      ;;
+    POST:/v1/session/new)
+      if [[ -f "$REMOTE_RUNTIME_DIR/active.pid" || -f "$REMOTE_RUNTIME_DIR/pending_prompt" ]]; then
+        _remote_http_error "$fd" 409 "cannot create a session while a remote turn is running"
+        return
+      fi
+      if ! _remote_server_new_session; then
+        _remote_http_error "$fd" 500 "could not create a remote session"
+        return
+      fi
+      json_quote "$REMOTE_SESSION_ID"; id="$REPLY"
+      _remote_http_send "$fd" 200 "{\"id\":${id}}"
       ;;
     POST:/v1/approval)
       if ! json_parse_flat_object "$REMOTE_REQUEST_BODY"; then
@@ -822,7 +1075,7 @@ remote_server_stop() {
 }
 
 remote_server_main() {
-  local safe_name="" client_fd="" existing_pid="" old_umask="$(umask)"
+  local safe_name="" client_fd="" existing_pid="" selected_session="" old_umask="$(umask)"
   [[ "$REMOTE_SERVER_PORT" == <1-65535> ]] || { print -u2 -- "Error: --port expects an integer from 1 through 65535"; return 2; }
   [[ -n "$REMOTE_SERVER_NAME" ]] || { print -u2 -- "Error: --server requires a non-empty name"; return 2; }
   remote_load_token "$REMOTE_TOKEN_FILE" || { print -u2 -- "Error: $REMOTE_ERROR"; return 2; }
@@ -857,6 +1110,12 @@ remote_server_main() {
     return 1
   fi
   REMOTE_SESSION_ID="$CURRENT_SESSION_ID"
+  selected_session="${mapfile[$REMOTE_RUNTIME_DIR/selected_session]:-}"
+  if _remote_server_select_session "$selected_session"; then
+    REMOTE_SESSION_ID="$selected_session"
+  else
+    mapfile[$REMOTE_RUNTIME_DIR/selected_session]="$REMOTE_SESSION_ID" || true
+  fi
   # The long-lived listener must not overwrite worker-updated session data on exit.
   STATE_ENABLED=0
   if ! ztcp -l "$REMOTE_SERVER_PORT"; then

@@ -8,7 +8,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.6.4"
+typeset -gr ZCODER_VERSION="0.6.5"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -223,6 +223,14 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM HUP
 
+zcoder_refresh_sessions() {
+  if [[ "$REMOTE_MODE" == client && ${REMOTE_SESSIONS_SUPPORTED:-0} -eq 1 ]]; then
+    remote_client_refresh_sessions
+  else
+    state_save_and_refresh
+  fi
+}
+
 handle_slash_command() {
   local text="$1" value="" provider="" previous_value=""
   local -i delegate_status=0
@@ -234,17 +242,20 @@ handle_slash_command() {
   case "$text" in
     /new|/clear)
       if [[ "$REMOTE_MODE" == client ]]; then
-        ui_append_message error "Remote session reset is not available in this first server release."
-        return 0
+        if ! remote_client_new_session; then
+          ui_append_message error "Could not create a remote session: $REMOTE_ERROR"
+          return 0
+        fi
+      else
+        state_new_session
+        agent_warmup_start || true
       fi
-      state_new_session
       UI_FOCUS="input"
       ui_set_status "Ready"
-      agent_warmup_start || true
       ;;
     /sessions)
-      if [[ "$REMOTE_MODE" == client ]]; then
-        ui_append_message error "Remote session browsing is not available in this first server release."
+      if [[ "$REMOTE_MODE" == client && ${REMOTE_SESSIONS_SUPPORTED:-0} -ne 1 ]]; then
+        ui_append_message error "Remote session browsing is not supported by this server."
         return 0
       fi
       if (( SIDE_W > 0 )); then
@@ -455,7 +466,7 @@ handle_slash_command() {
     /quit|/exit|/q) RUNNING=0 ;;
     *) return 1 ;;
   esac
-  (( $+functions[state_save_and_refresh] )) && state_save_and_refresh
+  (( $+functions[zcoder_refresh_sessions] )) && zcoder_refresh_sessions
   ui_refresh_all
 }
 
@@ -518,7 +529,7 @@ main_tui() {
         previous_model="$ZCODER_MODEL"
         ui_select_model
         [[ "$ZCODER_MODEL" != "$previous_model" ]] && agent_warmup_start || true
-        state_save_and_refresh
+        zcoder_refresh_sessions
       fi
     elif [[ "$ch" == $'\x12' ]]; then
       ui_toggle_reasoning
@@ -538,16 +549,24 @@ main_tui() {
       (( current_index > 0 )) || current_index=1
       if [[ "$key" == UP || "$ch" == k ]]; then
         if (( current_index > 1 )); then
-          state_load_session "${SESSION_IDS[current_index-1]}"
+          if [[ "$REMOTE_MODE" == client ]]; then
+            remote_client_select_session "${SESSION_IDS[current_index-1]}" || ui_append_message error "Could not load remote session: $REMOTE_ERROR"
+          else
+            state_load_session "${SESSION_IDS[current_index-1]}"
+            agent_warmup_start || true
+          fi
           ui_set_status "Ready"
-          agent_warmup_start || true
           ui_refresh_all
         fi
       elif [[ "$key" == DOWN || "$ch" == j ]]; then
         if (( current_index < ${#SESSION_IDS} )); then
-          state_load_session "${SESSION_IDS[current_index+1]}"
+          if [[ "$REMOTE_MODE" == client ]]; then
+            remote_client_select_session "${SESSION_IDS[current_index+1]}" || ui_append_message error "Could not load remote session: $REMOTE_ERROR"
+          else
+            state_load_session "${SESSION_IDS[current_index+1]}"
+            agent_warmup_start || true
+          fi
           ui_set_status "Ready"
-          agent_warmup_start || true
           ui_refresh_all
         fi
       elif [[ "$ch" == $'\n' || "$ch" == $'\r' || "$key" == ENTER || "$key" == PADENTER ]]; then
@@ -561,10 +580,10 @@ main_tui() {
       ui_input_changed
       if [[ -n "$text" ]]; then
         if [[ "$text" == /* ]]; then
-          handle_slash_command "$text" || { agent_user_turn "$text"; state_save_and_refresh; }
+          handle_slash_command "$text" || { agent_user_turn "$text"; zcoder_refresh_sessions; }
         else
           agent_user_turn "$text"
-          state_save_and_refresh
+          zcoder_refresh_sessions
         fi
       fi
     elif [[ "$key" == BACKSPACE || "$ch" == $'\x7f' || "$ch" == $'\b' ]]; then

@@ -67,7 +67,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..583"
+print -r -- "1..621"
 
 input_reset
 input_layout 20 4
@@ -500,6 +500,88 @@ remote_next_status=$?
 assert_failure "remote event polling reports an empty tail" $remote_next_status
 assert_eq '{"event":"none"}' "$REPLY" "empty remote event polls return a stable envelope"
 
+ui_append_message() {
+  UI_ROLES+=("$1")
+  UI_CONTENTS+=("$2")
+  UI_THINKINGS+=("${3:-}")
+}
+UI_ROLES=(); UI_CONTENTS=(); UI_THINKINGS=()
+remote_server_worker_emit tool "persist this visible result" "worker reasoning"
+assert_eq "tool" "${UI_ROLES[1]}" "remote workers retain emitted roles in the persistent transcript"
+assert_eq "persist this visible result" "${UI_CONTENTS[1]}" "remote workers retain emitted content in the persistent transcript"
+unfunction ui_append_message
+
+saved_remote_sessions_dir="$ZCODER_SESSIONS_DIR"
+saved_remote_workspace="$ZCODER_WORKSPACE"
+saved_remote_profile="$ZCODER_PROFILE"
+saved_remote_session_id="$REMOTE_SESSION_ID"
+saved_remote_state_enabled="$STATE_ENABLED"
+saved_remote_current_session_id="$CURRENT_SESSION_ID"
+saved_remote_session_ids=("${SESSION_IDS[@]}")
+saved_remote_session_titles=("${SESSION_TITLES[@]}")
+saved_remote_session_models=("${SESSION_MODELS[@]}")
+ZCODER_SESSIONS_DIR="$remote_runtime/sessions"
+ZCODER_WORKSPACE="$TEST_TMP/remote-workspace"
+ZCODER_PROFILE=coding
+STATE_ENABLED=0
+remote_newer_id="2000000000_2"
+remote_current_id="1000000000_1"
+for remote_fixture_id in "$remote_newer_id" "$remote_current_id"; do
+  remote_fixture_dir="$ZCODER_SESSIONS_DIR/${remote_fixture_id}.session"
+  zf_mkdir -p "$remote_fixture_dir/ui_events"
+  mapfile[$remote_fixture_dir/workspace]="${ZCODER_WORKSPACE:A}"
+  mapfile[$remote_fixture_dir/profile]="$ZCODER_PROFILE"
+  mapfile[$remote_fixture_dir/model]="remote-model"
+  mapfile[$remote_fixture_dir/title]="Remote ${remote_fixture_id}"
+  mapfile[$remote_fixture_dir/updated_at]="${remote_fixture_id%%_*}"
+  mapfile[$remote_fixture_dir/ui_event_count]="0"
+done
+REMOTE_SESSION_ID="$remote_current_id"
+remote_fixture_dir="$ZCODER_SESSIONS_DIR/${remote_current_id}.session"
+mapfile[$remote_fixture_dir/ui_event_count]="1"
+mapfile[$remote_fixture_dir/ui_events/000001.role]="assistant"
+mapfile[$remote_fixture_dir/ui_events/000001.content]=$'saved remote reply\nsecond line'
+mapfile[$remote_fixture_dir/ui_events/000001.thinking]="saved reasoning"
+mapfile[$remote_fixture_dir/ui_events/000001.time]="21:27"
+mapfile[$remote_fixture_dir/ui_events/000001.reasoning_open]="1"
+
+_remote_server_session_summary 0
+assert_success "remote session listing returns its newest session" $?
+json_parse_flat_object "$REPLY"
+assert_success "remote session summaries remain flat valid JSON" $?
+assert_eq "$remote_newer_id" "${JSON_OBJECT[id]}" "remote session listing is ordered by recent activity"
+assert_eq "0" "${JSON_OBJECT[current]}" "remote session summaries distinguish inactive jobs"
+assert_eq "Remote ${remote_newer_id}" "${JSON_OBJECT[title]}" "remote session summaries preserve titles"
+_remote_server_session_summary 1
+assert_success "remote session listing advances by cursor" $?
+json_parse_flat_object "$REPLY"
+assert_eq "$remote_current_id" "${JSON_OBJECT[id]}" "remote session listing returns every scoped job"
+assert_eq "1" "${JSON_OBJECT[current]}" "remote session summaries identify the selected job"
+_remote_server_session_summary 2
+assert_failure "remote session listing reports an empty tail" $?
+assert_eq '{"event":"none"}' "$REPLY" "empty remote session lists return a stable envelope"
+
+_remote_server_session_event "$remote_current_id" 0
+assert_success "remote transcript loading returns a persisted event" $?
+json_parse_flat_object "$REPLY"
+assert_success "remote transcript events remain flat valid JSON" $?
+assert_eq $'saved remote reply\nsecond line' "${JSON_OBJECT[content]}" "remote transcript loading preserves multiline content"
+assert_eq "saved reasoning" "${JSON_OBJECT[thinking]}" "remote transcript loading preserves reasoning"
+assert_eq "21:27" "${JSON_OBJECT[time]}" "remote transcript loading preserves display timestamps"
+assert_eq "1" "${JSON_OBJECT[reasoning_open]}" "remote transcript loading preserves reasoning visibility"
+_remote_server_session_event "../../escape" 0
+assert_eq "2" "$?" "remote transcript loading rejects unsafe session identifiers"
+
+ZCODER_SESSIONS_DIR="$saved_remote_sessions_dir"
+ZCODER_WORKSPACE="$saved_remote_workspace"
+ZCODER_PROFILE="$saved_remote_profile"
+REMOTE_SESSION_ID="$saved_remote_session_id"
+STATE_ENABLED="$saved_remote_state_enabled"
+CURRENT_SESSION_ID="$saved_remote_current_session_id"
+SESSION_IDS=("${saved_remote_session_ids[@]}")
+SESSION_TITLES=("${saved_remote_session_titles[@]}")
+SESSION_MODELS=("${saved_remote_session_models[@]}")
+
 _remote_server_clear_turn_runtime
 REMOTE_TURN_ID="12345_67"
 REMOTE_APPROVAL_TIMEOUT=5
@@ -644,6 +726,60 @@ REMOTE_MODEL_STATUS="unmanaged"
 remote_client_model_ensure
 assert_success "new clients remain compatible with servers lacking model status" $?
 assert_eq "0" "${#MOCK_REMOTE_CLIENT_REQUESTS}" "legacy remote servers bypass the new readiness endpoint"
+
+typeset -ga MOCK_REMOTE_SESSION_REQUESTS=()
+typeset -g MOCK_REMOTE_SELECTED_SESSION="3000000000_3"
+typeset -g MOCK_REMOTE_SELECT_PAYLOAD=""
+remote_client_request() {
+  local -i mock_current=0
+  MOCK_REMOTE_SESSION_REQUESTS+=("$1:$2")
+  case "$1:$2" in
+    GET:/v1/sessions\?after=0)
+      [[ "$MOCK_REMOTE_SELECTED_SESSION" == "3000000000_3" ]] && mock_current=1
+      HTTP_BODY="{\"event\":\"session\",\"seq\":1,\"id\":\"3000000000_3\",\"title\":\"Current remote job\",\"model\":\"remote-model\",\"current\":${mock_current}}"
+      ;;
+    GET:/v1/sessions\?after=1)
+      [[ "$MOCK_REMOTE_SELECTED_SESSION" == "2000000000_2" ]] && mock_current=1
+      HTTP_BODY="{\"event\":\"session\",\"seq\":2,\"id\":\"2000000000_2\",\"title\":\"Older remote job\",\"model\":\"remote-model\",\"current\":${mock_current}}"
+      ;;
+    GET:/v1/sessions\?after=2) HTTP_BODY='{"event":"none"}' ;;
+    GET:/v1/session\?id=3000000000_3\&after=0)
+      HTTP_BODY='{"event":"message","seq":1,"role":"assistant","content":"persisted reply","thinking":"persisted thought","time":"20:15","reasoning_open":1}'
+      ;;
+    GET:/v1/session\?id=3000000000_3\&after=1|GET:/v1/session\?id=2000000000_2\&after=0)
+      HTTP_BODY='{"event":"none"}'
+      ;;
+    POST:/v1/session/select)
+      MOCK_REMOTE_SELECT_PAYLOAD="${3:-}"
+      json_parse_flat_object "${3:-}" || return 1
+      MOCK_REMOTE_SELECTED_SESSION="${JSON_OBJECT[id]:-}"
+      HTTP_BODY='{"ok":true}'
+      ;;
+    *) REMOTE_ERROR="unexpected mock remote session request: $1 $2"; return 1 ;;
+  esac
+  REMOTE_ERROR=""
+  return 0
+}
+REMOTE_SESSIONS_SUPPORTED=1
+CURRENT_SESSION_ID=""
+SESSION_IDS=(); SESSION_TITLES=(); SESSION_MODELS=()
+remote_client_refresh_sessions
+assert_success "remote clients load the server-owned session list" $?
+assert_eq "2" "${#SESSION_IDS}" "remote clients retain every listed server session"
+assert_eq "3000000000_3" "$CURRENT_SESSION_ID" "remote clients adopt the server-selected session"
+assert_eq "Current remote job" "$SESSION_TITLE" "remote clients retain the selected session title"
+assert_contains "${(j: :)MOCK_REMOTE_SESSION_REQUESTS}" "GET:/v1/sessions?after=2" "remote clients paginate through the session-list tail"
+remote_client_load_session "$CURRENT_SESSION_ID"
+assert_success "remote clients load the selected transcript" $?
+assert_eq "1" "${#UI_ROLES}" "remote clients restore every persisted transcript event"
+assert_eq "assistant" "${UI_ROLES[1]}" "remote clients restore transcript roles"
+assert_eq "persisted reply" "${UI_CONTENTS[1]}" "remote clients restore transcript content"
+assert_eq "20:15" "${UI_TIMES[1]}" "remote clients restore transcript timestamps"
+assert_eq "1" "${UI_REASONING_OPEN[1]}" "remote clients restore expanded reasoning state"
+remote_client_select_session "2000000000_2"
+assert_success "remote clients can select another server-owned session" $?
+assert_contains "$MOCK_REMOTE_SELECT_PAYLOAD" '"id":"2000000000_2"' "remote session selection sends the exact safe identifier"
+assert_eq "2000000000_2" "$CURRENT_SESSION_ID" "remote session selection updates the active client job"
 
 functions[remote_client_request]="$saved_remote_client_request"
 functions[agent_set_status]="$saved_remote_status_setter"
@@ -943,6 +1079,18 @@ state_new_session
 assert_success "new chat creates a separate saved session" $?
 assert_eq "0" "${#AGENT_MESSAGES}" "new sessions clear model history"
 assert_eq "0" "${#UI_ROLES}" "new sessions clear the visible transcript"
+saved_remote_runtime_dir="$REMOTE_RUNTIME_DIR"
+REMOTE_RUNTIME_DIR="$TEST_TMP/remote-session-create-runtime"
+zf_mkdir -p "$REMOTE_RUNTIME_DIR"
+_remote_server_new_session
+assert_success "remote servers create a new server-owned session" $?
+_state_valid_id "$REMOTE_SESSION_ID"
+assert_success "new remote sessions receive traversal-safe identifiers" $?
+[[ -d "$ZCODER_SESSIONS_DIR/${REMOTE_SESSION_ID}.session" ]]
+assert_success "new remote sessions are persisted immediately" $?
+assert_eq "$REMOTE_SESSION_ID" "${mapfile[$REMOTE_RUNTIME_DIR/selected_session]}" "new remote sessions become the selected server job"
+assert_eq "0" "${#UI_ROLES}" "new remote sessions begin with an empty visible transcript"
+REMOTE_RUNTIME_DIR="$saved_remote_runtime_dir"
 STATE_ENABLED=0
 CURRENT_SESSION_ID=""
 SESSION_IDS=(); SESSION_TITLES=(); SESSION_MODELS=()
