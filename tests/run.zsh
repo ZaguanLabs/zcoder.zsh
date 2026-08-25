@@ -67,7 +67,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..578"
+print -r -- "1..583"
 
 input_reset
 input_layout 20 4
@@ -425,6 +425,16 @@ if [[ -e "${cancel_base}.done" || -e "${cancel_base}.body" ]]; then cancel_clean
 assert_success "HTTP cancellation removes request files" "$cancel_clean"
 assert_contains "$HTTP_ERROR" "cancelled" "HTTP cancellation reports its reason"
 
+typeset -ga MOCK_INHERITED_FD_CLOSES=()
+ztcp() {
+  [[ "$1" == -c ]] && MOCK_INHERITED_FD_CLOSES+=("$2")
+  return 0
+}
+_http_close_inherited_fds 7 invalid 9
+assert_eq "2" "${#MOCK_INHERITED_FD_CLOSES}" "descriptor cleanup ignores invalid inherited descriptors"
+assert_eq "7 9" "${(j: :)MOCK_INHERITED_FD_CLOSES}" "descriptor cleanup closes every inherited server socket"
+unfunction ztcp
+
 ui_wait_for_generation() { return 130; }
 ui_draw_footer() { return 0; }
 UI_ACTIVE=1
@@ -535,6 +545,24 @@ saved_remote_turn_start="${functions[_remote_server_start_turn]}"
 saved_remote_model_poll="${functions[_remote_server_model_poll]}"
 saved_remote_warmup_setting="$ZCODER_WARMUP"
 saved_remote_ui_active="$UI_ACTIVE"
+saved_remote_payload_builder="${functions[agent_build_warmup_payload]}"
+saved_remote_async_start="${functions[http_async_start]}"
+saved_remote_listen_fd="$REMOTE_LISTEN_FD"
+
+typeset -g MOCK_REMOTE_WARMUP_FDS=""
+agent_build_warmup_payload() { REPLY='{"warmup":true}'; }
+http_async_start() {
+  MOCK_REMOTE_WARMUP_FDS="$5:$6"
+  return 0
+}
+REMOTE_LISTEN_FD=51
+_remote_server_model_start_warmup 52
+assert_success "remote warm-up starts without retaining the handshake socket" $?
+assert_eq "51:52" "$MOCK_REMOTE_WARMUP_FDS" "remote warm-up detaches the inherited listener and client descriptors"
+assert_eq "warming" "$REMOTE_MODEL_STATUS" "detached remote warm-up enters the warming state"
+functions[agent_build_warmup_payload]="$saved_remote_payload_builder"
+functions[http_async_start]="$saved_remote_async_start"
+REMOTE_LISTEN_FD="$saved_remote_listen_fd"
 
 typeset -gi MOCK_REMOTE_CONTEXT_CHECKS=0 MOCK_REMOTE_WARMUP_STARTS=0
 ollama_get_running_context() {

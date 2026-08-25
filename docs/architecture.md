@@ -146,6 +146,12 @@ server does not warm models merely because configured server processes exist.
 If eviction races with prompt submission, the prompt is stored privately and
 starts only after warm-up succeeds.
 
+Background warm-up and turn processes explicitly close their inherited listener
+and accepted-request descriptors before contacting Ollama. The listener can
+therefore finish the handshake or `202 Accepted` response immediately while the
+child continues, allowing the client to poll status and command-approval events
+without a circular socket wait.
+
 Command approval is an explicit protocol event. The worker pauses until the
 client sends a decision tied to the active one-use identifier. Cancellation
 terminates and reaps the worker. Runtime events are published atomically through

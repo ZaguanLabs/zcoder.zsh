@@ -146,6 +146,14 @@ http_async_cleanup() {
   fi
 }
 
+_http_close_inherited_fds() {
+  local fd=""
+  for fd in "$@"; do
+    [[ "$fd" == <0-> ]] || continue
+    ztcp -c "$fd" 2>/dev/null || true
+  done
+}
+
 # Run one HTTP request in a child process so the curses loop can keep polling.
 # The child owns the TCP descriptor; terminating it closes the connection and
 # propagates cancellation through Ollama's HTTP request context.
@@ -153,6 +161,8 @@ http_async_start() {
   local method="$1" endpoint_path="$2" payload="${3:-}" endpoint="${4:-$OLLAMA_HOST}"
   local tmp_root="${TMPDIR:-/tmp}"
   local base="${tmp_root%/}/zcoder_http_${$}_${EPOCHREALTIME//./_}_${RANDOM}"
+  shift 4
+  local -a inherited_fds=("$@")
 
   HTTP_ERROR=""
   if [[ -n "$HTTP_ASYNC_PID" ]] && kill -0 "$HTTP_ASYNC_PID" 2>/dev/null; then
@@ -167,6 +177,7 @@ http_async_start() {
     trap - EXIT
     trap '_http_close_active; exit 130' INT TERM HUP
     local -i request_status=0
+    _http_close_inherited_fds "${inherited_fds[@]}"
     HTTP_BODY=""
     HTTP_ERROR=""
     http_request "$method" "$endpoint_path" "$payload" "$endpoint" || request_status=$?
