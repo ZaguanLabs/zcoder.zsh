@@ -252,8 +252,7 @@ delegate_async_start() {
   local prompt="$1" stdin_prompt="$2"
   shift 2
   local -a command_argv=("$@")
-  local tmp_root="${TMPDIR:-/tmp}"
-  local base="${tmp_root%/}/zcoder_delegate_${$}_${EPOCHREALTIME//./_}_${RANDOM}"
+  local base=""
   local workspace="${ZCODER_WORKSPACE:A}"
 
   DELEGATE_ERROR=""
@@ -263,6 +262,8 @@ delegate_async_start() {
   fi
   (( ${#command_argv} > 0 )) || { DELEGATE_ERROR="delegate command is empty"; return 1; }
   delegate_async_cleanup
+  zcoder_temp_path delegate || { DELEGATE_ERROR="could not create private temporary storage"; return 1; }
+  base="$REPLY"
   DELEGATE_BASE="$base"
   DELEGATE_STARTED_AT="$EPOCHSECONDS"
 
@@ -632,7 +633,7 @@ delegate_run() {
     ui_set_status "Ready"
     ui_refresh_all
   else
-    print -r -- "$result"
+    zcoder_fd_safe 1 "$result"; print -r -- "$REPLY"
   fi
   zcoder_debug delegate_complete "provider=$provider mode=$mode model=${(qqq)DELEGATE_MODEL} chars=${#result}"
 }

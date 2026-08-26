@@ -732,12 +732,12 @@ agent_emit() {
     case "$role" in
       assistant)
         if [[ -n "$content" ]]; then
-          print -r -- "$content"
+          zcoder_fd_safe 1 "$content"; print -r -- "$REPLY"
         fi
         ;;
-      tool) print -r -- "[tool] $content" ;;
-      system) print -r -- "$content" ;;
-      error) print -r -- "Error: $content" >&2 ;;
+      tool) zcoder_fd_safe 1 "$content"; print -r -- "[tool] $REPLY" ;;
+      system) zcoder_fd_safe 1 "$content"; print -r -- "$REPLY" ;;
+      error) zcoder_fd_safe 2 "$content"; print -r -- "Error: $REPLY" >&2 ;;
     esac
   fi
 }

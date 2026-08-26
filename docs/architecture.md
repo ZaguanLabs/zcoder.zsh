@@ -104,7 +104,7 @@ remain compatible and are treated as availability unknown.
 | `list_files` | Discover a bounded workspace tree | `rg --files --no-require-git` plus Zsh formatting |
 | `read_file` | Read a complete small text file | `zsh/mapfile` |
 | `read_file_range` | Read numbered inclusive lines | Native Zsh splitting and indexing |
-| `write_file` | Create or deliberately replace a file | `zsh/mapfile` and `zsh/files` |
+| `write_file` | Create or deliberately replace a file | Confined `zsh/system` descriptor writes |
 | `apply_patch` | Apply a unified or context diff | `git apply`, then `patch` fallback |
 | `search` | Search text with locations | `rg` |
 | `run_command` | Run builds, tests, and diagnostics | Approved `zsh -c` |

@@ -5,6 +5,7 @@ typeset -gr MCP_VERSION_MODERN="2026-07-28"
 typeset -g MCP_USER_CONFIG="${ZCODER_HOME}/mcp.json"
 typeset -g MCP_PROJECT_CONFIG=""
 typeset -g MCP_RUNTIME_ROOT=""
+typeset -gi MCP_RUNTIME_OWNED=0
 typeset -gi MCP_REQUEST_TIMEOUT="${MCP_REQUEST_TIMEOUT:-120}"
 typeset -gi MCP_STARTUP_TIMEOUT="${MCP_STARTUP_TIMEOUT:-20}"
 typeset -gi MCP_NEXT_ID=0
@@ -487,7 +488,11 @@ mcp_broker_start() {
   [[ -n "$cwd" ]] || cwd="$ZCODER_WORKSPACE"
   [[ "$cwd" == /* ]] || cwd="${ZCODER_WORKSPACE}/${cwd}"
   cwd="${cwd:A}"
-  MCP_RUNTIME_ROOT="${MCP_RUNTIME_ROOT:-${TMPDIR:-/tmp}/zcoder-mcp-${sysparams[pid]:-$$}}"
+  if [[ -z "$MCP_RUNTIME_ROOT" ]]; then
+    zcoder_runtime_init || { MCP_ERROR="Could not create private MCP runtime storage"; return 1; }
+    MCP_RUNTIME_ROOT="${ZCODER_RUNTIME_DIR}/mcp"
+    MCP_RUNTIME_OWNED=1
+  fi
   _mcp_runtime_name "$name"; runtime="$MCP_RUNTIME_ROOT/$REPLY"
   umask 077
   zf_mkdir -p "$runtime" 2>/dev/null || { umask "$old_umask"; MCP_ERROR="Could not create MCP runtime directory"; return 1; }
@@ -555,10 +560,12 @@ mcp_broker_stop() {
 mcp_shutdown_all() {
   local name=""
   for name in ${(k)MCP_BROKER_PID}; do mcp_broker_stop "$name"; done
-  if [[ -n "$MCP_RUNTIME_ROOT" && -d "$MCP_RUNTIME_ROOT" && "$MCP_RUNTIME_ROOT" == ${TMPDIR:-/tmp}/zcoder-mcp-* ]]; then
+  if (( MCP_RUNTIME_OWNED )) && [[ -n "$MCP_RUNTIME_ROOT" && -d "$MCP_RUNTIME_ROOT" && \
+        "${MCP_RUNTIME_ROOT:h:A}" == "${ZCODER_RUNTIME_DIR:A}" && "${MCP_RUNTIME_ROOT:t}" == mcp ]]; then
     zf_rm -rf -- "$MCP_RUNTIME_ROOT" 2>/dev/null
   fi
   MCP_RUNTIME_ROOT=""
+  MCP_RUNTIME_OWNED=0
 }
 
 _mcp_client_meta() {

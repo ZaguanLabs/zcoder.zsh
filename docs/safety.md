@@ -15,6 +15,12 @@ Read, search, and edit tools execute directly inside the boundary. This includes
 `search`. Tool output returned to the model is bounded to prevent uncontrolled
 context growth.
 
+Internal command output, patch, HTTP, delegate, and MCP exchange files live
+below one process-private runtime directory. The directory is created
+atomically with group and other access disabled, then removed during normal
+shutdown. Workspace writes reject dangling symlinks and open the validated
+final path without following a last-moment symlink replacement.
+
 `read_skill_resource` has a separate read-only boundary. It accepts only
 relative paths inside a discovered and activated Skill directory, rejects
 escaping symlinks, and cannot write.
@@ -35,6 +41,12 @@ Passing `--yes` selects the allow policy for that coding process. Passing
 Approval is not a substitute for reading the command. Pay particular attention
 to variables, interpreters, downloaded scripts, pipes, and commands that invoke
 another shell.
+
+Model, tool, and project text printed directly to a terminal renders control
+bytes visibly. This prevents OSC, escape, carriage-return, and backspace data
+from changing the apparent approval or transcript display. Redirected output
+remains exact for scripting, and persisted transcripts keep their original
+content.
 
 ## External coding workers
 

@@ -113,7 +113,7 @@ http_request() {
 "Content-Type: application/json"$'\r\n'"Accept: application/json"$'\r\n'\
 "${extra_headers}""Connection: close"$'\r\n'"Content-Length: ${payload_bytes}"$'\r\n\r\n'"${payload}"
 
-  if ! syswrite -o "$fd" "$request" 2>/dev/null; then
+  if ! zcoder_syswrite_all "$fd" "$request"; then
     HTTP_ERROR="failed to send request to Ollama"
     _http_close_active
     return 1
@@ -203,8 +203,7 @@ _http_close_inherited_fds() {
 # propagates cancellation through Ollama's HTTP request context.
 http_async_start() {
   local method="$1" endpoint_path="$2" payload="${3:-}" endpoint="${4:-$OLLAMA_HOST}"
-  local tmp_root="${TMPDIR:-/tmp}"
-  local base="${tmp_root%/}/zcoder_http_${$}_${EPOCHREALTIME//./_}_${RANDOM}"
+  local base=""
   shift 4
   local -a inherited_fds=("$@")
 
@@ -214,6 +213,8 @@ http_async_start() {
     return 1
   fi
   http_async_cleanup
+  zcoder_temp_path http || { HTTP_ERROR="could not create private temporary storage"; return 1; }
+  base="$REPLY"
   HTTP_ASYNC_BASE="$base"
   zcoder_debug http_async_start "method=$method path=${(qqq)endpoint_path} endpoint=${(qqq)endpoint}"
 

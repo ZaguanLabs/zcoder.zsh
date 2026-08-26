@@ -4,17 +4,132 @@ typeset -ga ZCODER_WRAPPED=()
 typeset -g ZCODER_DEBUG_LOG="${ZCODER_DEBUG_LOG:-}"
 typeset -gi ZCODER_DEBUG_ACTIVE=0
 typeset -gi ZCODER_DEBUG_MAX_CHARS="${ZCODER_DEBUG_MAX_CHARS:-16000}"
+typeset -gi ZCODER_DEBUG_FD=-1
+typeset -g ZCODER_RUNTIME_PARENT="" ZCODER_RUNTIME_DIR=""
+typeset -gi ZCODER_RUNTIME_SEQUENCE=0
+
+# syswrite(1) may successfully write only part of its input. Keep the byte
+# boundary explicit so large HTTP payloads and files cannot be silently
+# truncated. Callers own and close the descriptor.
+zcoder_syswrite_all() {
+  emulate -L zsh
+  setopt nomultibyte
+  local fd="$1" remaining="${2:-}"
+  local -i written=0
+  while (( ${#remaining} > 0 )); do
+    written=0
+    syswrite -c written -o "$fd" -- "$remaining" 2>/dev/null || return 1
+    (( written > 0 && written <= ${#remaining} )) || return 1
+    (( written == ${#remaining} )) && return 0
+    remaining="${remaining[$(( written + 1 )),-1]}"
+  done
+  return 0
+}
+
+# Create one private scratch directory for this process. Individual subsystems
+# allocate names below it, where another user cannot pre-create symlinks for
+# predictable output files. mkdir is the atomic capability check.
+zcoder_runtime_init() {
+  emulate -L zsh
+  if [[ -n "$ZCODER_RUNTIME_DIR" && -d "$ZCODER_RUNTIME_DIR" ]]; then
+    return 0
+  fi
+
+  local parent="${TMPDIR:-/tmp}" candidate="" old_umask="$(umask)"
+  local -i attempt
+  parent="${parent:A}"
+  [[ -d "$parent" && -w "$parent" ]] || return 1
+  umask 077
+  for (( attempt=1; attempt<=32; attempt++ )); do
+    candidate="${parent%/}/zcoder-${UID}-${sysparams[pid]:-$$}-${RANDOM}-${attempt}"
+    if zf_mkdir -- "$candidate" 2>/dev/null; then
+      ZCODER_RUNTIME_PARENT="$parent"
+      ZCODER_RUNTIME_DIR="$candidate"
+      ZCODER_RUNTIME_SEQUENCE=0
+      umask "$old_umask"
+      return 0
+    fi
+  done
+  umask "$old_umask"
+  return 1
+}
+
+zcoder_temp_path() {
+  emulate -L zsh
+  setopt extendedglob
+  local prefix="${1:-tmp}" suffix="${2:-}"
+  [[ "$prefix" == [A-Za-z0-9_.-]## ]] || prefix="tmp"
+  zcoder_runtime_init || return 1
+  (( ZCODER_RUNTIME_SEQUENCE++ ))
+  REPLY="${ZCODER_RUNTIME_DIR}/${prefix}.${sysparams[pid]:-$$}.${ZCODER_RUNTIME_SEQUENCE}${suffix}"
+}
+
+zcoder_runtime_cleanup() {
+  emulate -L zsh
+  local directory="$ZCODER_RUNTIME_DIR" parent="$ZCODER_RUNTIME_PARENT"
+  ZCODER_RUNTIME_DIR=""
+  ZCODER_RUNTIME_PARENT=""
+  ZCODER_RUNTIME_SEQUENCE=0
+  [[ -n "$directory" && -n "$parent" && -d "$directory" ]] || return 0
+  [[ "${directory:h:A}" == "$parent" && "${directory:t}" == zcoder-${UID}-* ]] || return 1
+  zf_rm -rf -- "$directory" 2>/dev/null
+}
+
+# Preserve newlines while rendering every other control character visibly.
+# This is for direct terminal output only; persisted transcripts remain exact.
+zcoder_terminal_safe() {
+  emulate -L zsh
+  local -a lines=("${(@ps:\n:)1}")
+  REPLY="${(F)${(@V)lines}}"
+}
+
+zcoder_fd_safe() {
+  emulate -L zsh
+  local fd="$1" value="${2:-}"
+  if [[ -t "$fd" ]]; then
+    zcoder_terminal_safe "$value"
+  else
+    REPLY="$value"
+  fi
+}
+
+# Open the final path without following a last-moment symlink and write its
+# complete text through the owned descriptor. New files use the caller's umask.
+zcoder_write_text_file() {
+  emulate -L zsh
+  local path="$1" content="${2:-}" options="create,excl,nofollow,cloexec" fd=""
+  local -i write_status=0
+  [[ -h "$path" && ! -e "$path" ]] && return 1
+  [[ -e "$path" && ! -f "$path" ]] && return 1
+  [[ -e "$path" ]] && options="truncate,nofollow,cloexec"
+  sysopen -w -m 0666 -o "$options" -u fd -- "$path" 2>/dev/null || return 1
+  {
+    [[ -z "$content" ]] || zcoder_syswrite_all "$fd" "$content" || write_status=$?
+  } always {
+    exec {fd}>&-
+  }
+  return "$write_status"
+}
 
 # Debugging must never write through curses. The opt-in logger appends escaped,
 # single-line records to a private file so a broken model turn can be inspected
 # after the UI returns to Ready.
 zcoder_debug_init() {
   [[ -n "$ZCODER_DEBUG_LOG" ]] || return 0
-  ZCODER_DEBUG_LOG="${ZCODER_DEBUG_LOG:A}"
-  local parent="${ZCODER_DEBUG_LOG:h}" old_umask="$(umask)"
-  zf_mkdir -p "$parent" 2>/dev/null || return 1
+  (( ZCODER_DEBUG_ACTIVE && ZCODER_DEBUG_FD >= 0 )) && return 0
+  local requested="$ZCODER_DEBUG_LOG" parent="${ZCODER_DEBUG_LOG:h:A}" old_umask="$(umask)"
+  ZCODER_DEBUG_LOG="${parent}/${requested:t}"
   umask 077
-  if print -r -- "[${EPOCHREALTIME:-0}] pid=$$ debug_start log=${ZCODER_DEBUG_LOG}" >> "$ZCODER_DEBUG_LOG" 2>/dev/null; then
+  zf_mkdir -p "$parent" 2>/dev/null || { umask "$old_umask"; return 1; }
+  if [[ ( ! -e "$ZCODER_DEBUG_LOG" || -O "$ZCODER_DEBUG_LOG" ) && ! -h "$ZCODER_DEBUG_LOG" ]] && \
+     sysopen -a -m 0600 -o creat,nofollow,cloexec -u ZCODER_DEBUG_FD -- "$ZCODER_DEBUG_LOG" 2>/dev/null; then
+    zf_chmod 600 "$ZCODER_DEBUG_LOG" 2>/dev/null || true
+    zcoder_syswrite_all "$ZCODER_DEBUG_FD" "[${EPOCHREALTIME:-0}] pid=$$ debug_start log=${ZCODER_DEBUG_LOG}"$'\n' || {
+      exec {ZCODER_DEBUG_FD}>&-
+      ZCODER_DEBUG_FD=-1
+      umask "$old_umask"
+      return 1
+    }
     ZCODER_DEBUG_ACTIVE=1
   fi
   umask "$old_umask"
@@ -30,7 +145,13 @@ zcoder_debug() {
   if (( ${#detail} > ZCODER_DEBUG_MAX_CHARS )); then
     detail="${detail[1,$ZCODER_DEBUG_MAX_CHARS]}...[debug record truncated]"
   fi
-  print -r -- "[${EPOCHREALTIME:-0}] pid=$$ ${event} ${detail}" >> "$ZCODER_DEBUG_LOG" 2>/dev/null || true
+  zcoder_syswrite_all "$ZCODER_DEBUG_FD" "[${EPOCHREALTIME:-0}] pid=$$ ${event} ${detail}"$'\n' || true
+}
+
+zcoder_debug_close() {
+  (( ZCODER_DEBUG_FD >= 0 )) && exec {ZCODER_DEBUG_FD}>&-
+  ZCODER_DEBUG_FD=-1
+  ZCODER_DEBUG_ACTIVE=0
 }
 
 # Wrap using a character array and index arithmetic: re-slicing the remaining

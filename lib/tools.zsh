@@ -91,9 +91,13 @@ _tool_resolve_write_target() {
   parent="${candidate:h:A}"
   _tool_is_inside_workspace "$parent" || { _tool_fail "path escapes the workspace: $requested"; return 1; }
   resolved="${parent}/${candidate:t}"
-  if [[ -e "$resolved" ]]; then
+  if [[ -h "$resolved" && ! -e "$resolved" ]]; then
+    _tool_fail "write target is a dangling symlink: $requested"
+    return 1
+  elif [[ -e "$resolved" ]]; then
     resolved="${resolved:A}"
     _tool_is_inside_workspace "$resolved" || { _tool_fail "path resolves outside the workspace: $requested"; return 1; }
+    [[ -f "$resolved" ]] || { _tool_fail "write target is not a regular file: $requested"; return 1; }
   fi
   REPLY="$resolved"
 }
@@ -101,7 +105,7 @@ _tool_resolve_write_target() {
 tool_list_files() {
   setopt localoptions extendedglob
   local requested="${1:-.}" max_entries="${2:-100}" base="" base_rel="" rel="" prefix="" line=""
-  local out_file="${TMPDIR:-/tmp}/zcoder_list_${$}_${RANDOM}.out" raw=""
+  local out_file="" raw=""
   local -a lines=() output=() segments=()
   local -A seen=()
   local -i count=0 truncated=0 exit_code=0 i j
@@ -110,6 +114,8 @@ tool_list_files() {
   base="$REPLY"
   [[ -d "$base" ]] || { _tool_fail "not a directory: $requested"; return 1; }
   (( $+commands[rg] )) || { _tool_fail "list_files requires ripgrep (rg) to honor ignore files"; return 1; }
+  zcoder_temp_path list .out || { _tool_fail "could not create private temporary storage"; return 1; }
+  out_file="$REPLY"
 
   # --no-require-git is the crucial bit: ripgrep otherwise discovers ignore
   # files only inside a repository. Zsh turns the resulting file paths back
@@ -201,7 +207,7 @@ tool_write_file() {
   resolved_path="$REPLY"
   parent="${resolved_path:h}"
   zf_mkdir -p "$parent" 2>/dev/null || { _tool_fail "could not create directory: ${parent#$ZCODER_WORKSPACE/}"; return 1; }
-  mapfile[$resolved_path]="$content" || { _tool_fail "could not write file: $requested"; return 1; }
+  zcoder_write_text_file "$resolved_path" "$content" || { _tool_fail "could not safely write file: $requested"; return 1; }
   _tool_succeed "Wrote ${#content} characters to ${resolved_path#$ZCODER_WORKSPACE/}"
 }
 
@@ -245,8 +251,7 @@ _tool_patch_strip_level() {
 }
 
 tool_apply_patch() {
-  local patch_text="$1" patch_file="${TMPDIR:-/tmp}/zcoder_patch_${$}_${RANDOM}.diff"
-  local out_file="${TMPDIR:-/tmp}/zcoder_patch_${$}_${RANDOM}.out"
+  local patch_text="$1" patch_file="" out_file=""
   local git_error="" patch_error="" output="" engine="" guidance="" success_message=""
   local -i exit_code=1 strip=0
   TOOL_PATCH_RETRY_REQUIRED=1
@@ -259,7 +264,11 @@ tool_apply_patch() {
   fi
   [[ "$patch_text" == *$'\n' ]] || patch_text+=$'\n'
   (( $+commands[git] || $+commands[patch] )) || { _tool_fail "apply_patch requires git or patch"; return 1; }
-  mapfile[$patch_file]="$patch_text"
+  zcoder_temp_path patch .diff || { _tool_fail "could not create private temporary storage"; return 1; }
+  patch_file="$REPLY"
+  zcoder_temp_path patch .out || { _tool_fail "could not create private temporary storage"; return 1; }
+  out_file="$REPLY"
+  zcoder_write_text_file "$patch_file" "$patch_text" || { _tool_fail "could not stage patch safely"; return 1; }
 
   if (( $+commands[git] )); then
     command git -C "$ZCODER_WORKSPACE" apply --check --recount --unidiff-zero --whitespace=nowarn "$patch_file" >| "$out_file" 2>&1
@@ -307,7 +316,7 @@ tool_apply_patch() {
 
 tool_search() {
   local query="$1" requested="${2:-.}" max_results="${3:-50}" resolved_path=""
-  local out_file="${TMPDIR:-/tmp}/zcoder_search_${$}_${RANDOM}.out" raw="" line=""
+  local out_file="" raw="" line=""
   local -a lines=() selected=()
   local -i i limit exit_code
   [[ -n "$query" ]] || { _tool_fail "query is required"; return 1; }
@@ -316,6 +325,8 @@ tool_search() {
   limit=$max_results
   _tool_resolve_existing "$requested" || return 1
   resolved_path="$REPLY"
+  zcoder_temp_path search .out || { _tool_fail "could not create private temporary storage"; return 1; }
+  out_file="$REPLY"
   command rg --line-number --column --color never --hidden --no-require-git \
     --glob '!.git/**' --glob '!.atlas/**' \
     --glob '!**/node_modules/**' --glob '!**/vendor/**' \
@@ -485,7 +496,7 @@ tool_sysadmin_command_guard() {
 }
 
 tool_approve_command() {
-  local command_text="$1" answer=""
+  local command_text="$1" answer="" display_command=""
   local -i per_command=0
   [[ "$ZCODER_PROFILE" == sysadmin ]] && per_command=1
   case "$ZCODER_COMMAND_POLICY" in
@@ -499,8 +510,9 @@ tool_approve_command() {
     ui_confirm_command "$command_text"
     answer="$REPLY"
   elif [[ -r /dev/tty && -w /dev/tty ]]; then
+    zcoder_terminal_safe "$command_text"; display_command="$REPLY"
     print -r -- $'\n'"Command approval requested:" > /dev/tty
-    print -r -- "  $command_text" > /dev/tty
+    print -r -- "  $display_command" > /dev/tty
     if (( per_command )); then
       print -rn -- "Allow this exact command once? [y/N]: " > /dev/tty
     else
@@ -523,7 +535,7 @@ tool_approve_command() {
 
 tool_run_command() {
   local command_text="$1" requested="${2:-.}" timeout_seconds="${3:-120}" cwd=""
-  local out_file="${TMPDIR:-/tmp}/zcoder_command_${$}_${RANDOM}.out" output="" exit_code=""
+  local out_file="" output="" exit_code=""
   [[ -n "$command_text" ]] || { _tool_fail "command is required"; return 1; }
   [[ "$timeout_seconds" == <1-3600> ]] || timeout_seconds=120
   _tool_resolve_existing "$requested" || return 1
@@ -537,6 +549,8 @@ tool_run_command() {
     _tool_fail "user denied command: $command_text"
     return 1
   fi
+  zcoder_temp_path command .out || { _tool_fail "could not create private temporary storage"; return 1; }
+  out_file="$REPLY"
 
   if (( $+commands[timeout] )); then
     command timeout --signal=TERM --kill-after=2 "$timeout_seconds" \

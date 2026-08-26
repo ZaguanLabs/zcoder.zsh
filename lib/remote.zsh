@@ -768,7 +768,7 @@ _remote_http_send() {
 "Cache-Control: no-store"$'\r\n'\
 "Connection: close"$'\r\n'\
 "Content-Length: ${body_bytes}"$'\r\n\r\n'"${body}"
-  syswrite -o "$fd" "$response" 2>/dev/null
+  zcoder_syswrite_all "$fd" "$response"
 }
 
 _remote_http_error() {

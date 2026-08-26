@@ -278,6 +278,7 @@ ui_copy_view() {
   (( $+functions[state_save_session] )) && state_save_session
   ui_plain_transcript
   transcript="$REPLY"
+  zcoder_terminal_safe "$transcript"; transcript="$REPLY"
   ui_end
   {
     print -rn -- $'\e[2J\e[H'
@@ -1121,14 +1122,15 @@ ui_select_opencode_model() {
 }
 
 ui_confirm_command() {
-  local command_text="$1" ch="" key="" mouse="" answer="n" line=""
+  local command_text="$1" ch="" key="" mouse="" answer="n" line="" display_command=""
   local -a wrapped=()
   local -i per_command=0
   [[ "$ZCODER_PROFILE" == sysadmin ]] && per_command=1
   if (( ! UI_ACTIVE )); then
     if [[ -r /dev/tty && -w /dev/tty ]]; then
+      zcoder_terminal_safe "$command_text"; display_command="$REPLY"
       print -r -- $'\n'"Command approval requested:" > /dev/tty
-      print -r -- "  $command_text" > /dev/tty
+      print -r -- "  $display_command" > /dev/tty
       if (( per_command )); then
         print -rn -- "Allow this exact command once? [y/N]: " > /dev/tty
       else

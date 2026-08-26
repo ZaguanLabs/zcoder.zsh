@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 
 setopt EXTENDED_GLOB NO_NOMATCH
-zmodload zsh/datetime zsh/files zsh/mapfile zsh/zselect
+zmodload zsh/datetime zsh/files zsh/mapfile zsh/stat zsh/system zsh/zselect
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -59,6 +59,8 @@ assert_failure() {
 }
 
 cleanup_tests() {
+  zcoder_debug_close 2>/dev/null || true
+  zcoder_runtime_cleanup 2>/dev/null || true
   [[ -n "$TEST_TMP" && -d "$TEST_TMP" ]] && zf_rm -rf -- "$TEST_TMP" 2>/dev/null
 }
 trap cleanup_tests EXIT INT TERM
@@ -67,7 +69,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..713"
+print -r -- "1..730"
 
 input_reset
 input_layout 20 4
@@ -119,6 +121,45 @@ for input_byte in ${(s::)input_sequence}; do input_decode_terminal_event "$input
 assert_eq "paste" "$INPUT_EVENT_ACTION" "bracketed paste produces one editor event"
 assert_eq $'alpha\nbeta' "$INPUT_EVENT_TEXT" "multiline paste preserves and normalizes formatting"
 
+terminal_sample=$'first\nsecond\t\e]52;c;clipboard\a\rthird'
+zcoder_terminal_safe "$terminal_sample"
+assert_eq $'first\nsecond\\t^[]52;c;clipboard^G^Mthird' "$REPLY" "terminal-safe rendering preserves lines and exposes controls"
+assert_not_contains "$REPLY" $'\e' "terminal-safe rendering removes literal escape bytes"
+
+typeset -g MOCK_SYSWRITE_OUTPUT=""
+typeset -gi MOCK_SYSWRITE_CALLS=0
+syswrite() {
+  local data="${argv[-1]}" chunk="${argv[-1][1,3]}"
+  (( MOCK_SYSWRITE_CALLS++ ))
+  MOCK_SYSWRITE_OUTPUT+="$chunk"
+  written=${#chunk}
+  return 0
+}
+zcoder_syswrite_all 9 "abcdefgh"
+assert_success "complete writes tolerate partial syswrite results" $?
+assert_eq "abcdefgh" "$MOCK_SYSWRITE_OUTPUT" "complete writes retain every byte in order"
+assert_eq "3" "$MOCK_SYSWRITE_CALLS" "complete writes retry only the unwritten suffix"
+unfunction syswrite
+
+zcoder_runtime_init
+assert_success "private runtime storage initializes" $?
+assert_eq "$ZCODER_RUNTIME_PARENT" "${ZCODER_RUNTIME_DIR:h:A}" "runtime storage stays below its validated parent"
+typeset -A runtime_stat=()
+zstat -H runtime_stat -- "$ZCODER_RUNTIME_DIR"
+assert_eq "0" "$(( runtime_stat[mode] & 8#77 ))" "runtime storage denies group and other access"
+zcoder_temp_path first .out; first_temp_path="$REPLY"
+zcoder_temp_path second .out; second_temp_path="$REPLY"
+assert_eq "$ZCODER_RUNTIME_DIR" "${first_temp_path:h}" "temporary files stay inside private runtime storage"
+if [[ "$first_temp_path" != "$second_temp_path" ]]; then temp_paths_unique=0; else temp_paths_unique=1; fi
+assert_success "temporary path allocation is unique" "$temp_paths_unique"
+
+mapfile[$TEST_TMP/debug-target.log]="unchanged"
+zf_ln -s "$TEST_TMP/debug-target.log" "$TEST_TMP/debug-link.log"
+ZCODER_DEBUG_LOG="$TEST_TMP/debug-link.log"
+zcoder_debug_init
+assert_failure "debug logging refuses a symlink target" $?
+assert_eq "unchanged" "${mapfile[$TEST_TMP/debug-target.log]}" "rejected debug symlinks leave their target untouched"
+
 ZCODER_DEBUG_LOG="$TEST_TMP/zcoder-debug.log"
 zcoder_debug_init
 assert_success "debug log initializes" $?
@@ -149,6 +190,19 @@ assert_eq $'2: two\n3: three' "$TOOL_RESULT" "read_file_range includes line numb
 tool_write_file "../escape.txt" "nope"
 assert_failure "write_file rejects parent traversal" $?
 assert_contains "$TOOL_RESULT" "escapes the workspace" "path rejection explains the boundary"
+
+dangling_target="${TEST_TMP:h}/zcoder-dangling-target-${RANDOM}"
+zf_ln -s "$dangling_target" "$TEST_TMP/dangling-link"
+tool_write_file "dangling-link" "nope"
+assert_failure "write_file rejects a dangling symlink" $?
+assert_contains "$TOOL_RESULT" "dangling symlink" "dangling-symlink rejection explains the boundary"
+if [[ -e "$dangling_target" ]]; then dangling_target_absent=1; else dangling_target_absent=0; fi
+assert_success "dangling symlinks cannot create an outside target" "$dangling_target_absent"
+
+zf_mkdir "$TEST_TMP/existing-directory"
+tool_write_file "existing-directory" "nope"
+assert_failure "write_file rejects a non-regular target" $?
+assert_contains "$TOOL_RESULT" "not a regular file" "non-regular write rejection is explicit"
 
 zf_mkdir -p "$TEST_TMP/node_modules/dependency"
 mapfile[$TEST_TMP/node_modules/dependency/index.js]="generated"

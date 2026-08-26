@@ -8,7 +8,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.7.2"
+typeset -gr ZCODER_VERSION="0.8.0"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -34,7 +34,10 @@ if [[ "${1:-}" == mcp ]]; then
   shift
   zcoder_require util json instructions mcp
   mcp_cli "$@"
-  exit $?
+  typeset -i mcp_status=$?
+  mcp_shutdown_all
+  zcoder_runtime_cleanup
+  exit "$mcp_status"
 fi
 
 zcoder_require util json mcp http instructions skills input ui tools compact agent state
@@ -187,18 +190,18 @@ fi
 
 if (( PRINT_INSTRUCTIONS )); then
   instructions_summary
-  print -r -- "$REPLY"
+  zcoder_fd_safe 1 "$REPLY"; print -r -- "$REPLY"
   if (( ${#INSTRUCTION_SOURCES} > 0 )); then
     print -r -- ""
     instructions_prompt_block
-    print -r -- "$REPLY"
+    zcoder_fd_safe 1 "$REPLY"; print -r -- "$REPLY"
   fi
   exit 0
 fi
 
 if (( PRINT_SKILLS )); then
   skills_summary
-  print -r -- "$REPLY"
+  zcoder_fd_safe 1 "$REPLY"; print -r -- "$REPLY"
   exit 0
 fi
 
@@ -212,6 +215,7 @@ fi
 
 cleanup() {
   local exit_status=$?
+  trap - INT TERM HUP
   zcoder_debug session_end "status=$exit_status running=$RUNNING async_pid=${HTTP_ASYNC_PID:-none} delegate_pid=${DELEGATE_PID:-none}"
   RUNNING=0
   [[ "$REMOTE_MODE" != server ]] && (( $+functions[state_save_session] )) && state_save_session
@@ -220,8 +224,13 @@ cleanup() {
   (( $+functions[remote_server_stop] )) && remote_server_stop
   mcp_shutdown_all
   ui_end
+  zcoder_debug_close
+  zcoder_runtime_cleanup
 }
-trap cleanup EXIT INT TERM HUP
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 zcoder_refresh_sessions() {
   if [[ "$REMOTE_MODE" == client && ${REMOTE_SESSIONS_SUPPORTED:-0} -eq 1 ]]; then
