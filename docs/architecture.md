@@ -57,6 +57,14 @@ Non-streaming does not flatten the reasoning lifecycle. zcoder stores each
 assistant's reasoning, content, and structured tool calls together, appends tool
 results, and returns that complete history on the next model step.
 
+Every Ollama chat payload has exactly one `system` record, at the beginning.
+Runtime recovery instructions and external-consultant results are added as
+clearly labelled user-role context without entering the exact-user ledger.
+When an older saved session contains a mid-conversation system record, the
+transport normalizes that record to a user role while building the request.
+This keeps persisted sessions compatible with strict model templates that
+reject system messages anywhere except the first position.
+
 Before the first local interactive turn, zcoder uses the same asynchronous HTTP
 worker for a disposable warm-up request. It includes the resolved system prompt
 and tool schema but excludes saved conversation history. The TUI polls that
@@ -89,19 +97,25 @@ Patch application does not require a Git repository. zcoder validates with
 `git apply --check`; if Git rejects an otherwise usable diff, it tries a
 workspace-confined `patch --dry-run`. After a rejected patch, `write_file` is
 removed for the rest of that user turn until a corrected patch succeeds.
+The system prompt, `apply_patch` tool schema, and rejection result all use the
+same unified-diff contract. It includes a valid and invalid example, explains
+numeric hunk counts and line prefixes, and explicitly rejects Markdown fences,
+bare `@@`, placeholders, and `*** Begin Patch`-style harness envelopes.
 
 ## Multiple tool calls
 
-One assistant response may contain multiple independent read-only built-ins or
-`run_command` calls. zcoder executes every accepted call sequentially and
-returns every result to Ollama, matching its parallel-tool-call protocol while
-preserving deterministic history. Each command independently passes workspace
-validation, safety guards, and the configured command approval policy before
-execution.
+One assistant response may contain multiple tool calls. zcoder executes them
+sequentially in the model's emitted order and returns every result to Ollama,
+matching its multi-call protocol while preserving deterministic history. Each
+call independently passes its normal argument validation, workspace boundary,
+safety guard, and approval policy. A failed or unknown call produces its own
+tool result without replacing the results of the other calls.
 
-A batch containing an edit, activation, `finish`, unknown tool, or MCP tool
-without explicit read-only metadata is rejected before any call runs. Dependent
-operations and state-changing commands still require separate reasoning cycles.
+This supports both independent reads and ordered sequences such as writing a
+file and then running its syntax check. `finish` remains a turn-control tool and
+must be the only call in its response; when mixed with work calls, only the
+`finish` call is rejected so the completed work and its results remain visible
+to the model.
 
 ## Loop detection and completion
 
@@ -118,6 +132,10 @@ When work is complete or genuinely blocked, the model may call `finish` as its
 only tool with a status and final response. A non-empty tool-free response is
 also accepted because some otherwise capable local models do not reliably call
 `finish`. Empty or malformed responses receive a bounded retry budget.
+Transient connection failures before an HTTP response receive one bounded
+replay of the unchanged model request. Response timeouts are reported
+separately and are not replayed, because restarting a long-running generation
+would discard work and repeat the same load.
 
 LFM-family models sometimes return their planner envelope as ordinary JSON
 content instead of using Ollama's native `tool_calls` field. For those models,

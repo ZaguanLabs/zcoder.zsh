@@ -129,9 +129,9 @@ eval_scenario_passed() {
 
 typeset -ga scenarios=(independent_reads dependent_search edit_verify failure_replan conversational)
 typeset -g model variant scenario run_dir request transcript baseline_prompt="" result="" tab=$'\t'
-typeset -gi repeat status passed calls unsafe_batches loops
+typeset -gi repeat status passed calls transport_retries loops
 
-print -r -- $'model\tvariant\tscenario\trepeat\tpass\tstatus\ttool_turns\tunsafe_batches\tloop_stopped\tprompt_tokens\toutput_tokens'
+print -r -- $'model\tvariant\tscenario\trepeat\tpass\tstatus\ttool_turns\ttransport_retry\tloop_stopped\tprompt_tokens\toutput_tokens'
 for model in "${eval_models[@]}"; do
   for variant in "${eval_variants[@]}"; do
     for scenario in "${scenarios[@]}"; do
@@ -155,13 +155,13 @@ for model in "${eval_models[@]}"; do
         status=$?
         eval_count_calls
         calls=$REPLY
-        unsafe_batches=0
-        eval_history_contains "Unsupported tool batch" && unsafe_batches=1
+        transport_retries=0
+        eval_history_contains "Ollama connection failed before a response" && transport_retries=1
         loops=0
         [[ -n "$AGENT_LOOP_REASON" && $status -ne 0 ]] && loops=1
         passed=0
         (( status == 0 )) && eval_scenario_passed "$scenario" "$run_dir" && passed=1
-        print -r -- "${model}${tab}${variant}${tab}${scenario}${tab}${repeat}${tab}${passed}${tab}${status}${tab}${calls}${tab}${unsafe_batches}${tab}${loops}${tab}${AGENT_LAST_PROMPT_TOKENS}${tab}${AGENT_LAST_OUTPUT_TOKENS}"
+        print -r -- "${model}${tab}${variant}${tab}${scenario}${tab}${repeat}${tab}${passed}${tab}${status}${tab}${calls}${tab}${transport_retries}${tab}${loops}${tab}${AGENT_LAST_PROMPT_TOKENS}${tab}${AGENT_LAST_OUTPUT_TOKENS}"
       done
     done
   done

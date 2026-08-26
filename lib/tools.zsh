@@ -8,8 +8,18 @@ typeset -gi TOOL_RESULT_OK=0
 typeset -g TOOL_SAFETY_REASON=""
 typeset -gi TOOL_PATCH_RETRY_REQUIRED=0
 
+_tool_patch_contract() {
+  REPLY=$'UNIFIED DIFF CONTRACT (the patch argument must follow this literally):\nGOOD (valid focused edit):\n--- a/lib/example.zsh\n+++ b/lib/example.zsh\n@@ -10,3 +10,3 @@\n context before\n-old value\n+new value\n context after\nThe old count is 3: two context lines plus one removed line. The new count is 3: two context lines plus one added line.\nBAD (invalid in this harness):\n*** Begin Patch\n*** Update File: lib/example.zsh\n@@\n-old value\n+new value\n*** End Patch\nThe bad form uses an unsupported wrapper and a bare @@ without numeric ranges.\nRules:\n1. Begin each file section with literal --- a/relative/path and +++ b/relative/path lines.\n2. Every hunk needs numeric old and new ranges: @@ -OLD_START,OLD_COUNT +NEW_START,NEW_COUNT @@. Counts describe hunk body lines, not total file length: context counts on both sides, - only on the old side, and + only on the new side.\n3. Every hunk body line starts with exactly one prefix character: space for unchanged context, - for removal, or + for addition. Copy context and removed text exactly from the latest read; never use ellipses or placeholders.\n4. Supply only unified diff text. Do not add Markdown fences, prose, JSON text inside the patch value, *** Begin Patch, *** Update File, or *** End Patch markers.'
+}
+
 tools_schema_json() {
-  local output='[' mcp_schemas=""
+  local output='[' mcp_schemas="" patch_contract="" patch_description="" patch_argument_description=""
+  _tool_patch_contract
+  patch_contract="$REPLY"
+  json_quote $'Apply a focused workspace edit using a raw standard unified diff.\n'"${patch_contract}"$'\nIf rejected, re-read the exact target lines and retry apply_patch. write_file remains unavailable until the corrected patch succeeds or a new user request begins.'
+  patch_description="$REPLY"
+  json_quote "Raw unified diff text satisfying the complete contract in the tool description."
+  patch_argument_description="$REPLY"
   # Put installed MCP capabilities first. Smaller local models strongly weight
   # tool order, and project-designated navigation must not be shadowed by the
   # generic built-ins that follow it.
@@ -27,7 +37,7 @@ tools_schema_json() {
 {"type":"function","function":{"name":"write_file","description":"Create a new workspace text file or deliberately replace a complete file. Never use this as a fallback after a focused apply_patch failure.","parameters":{"type":"object","required":["path","content"],"properties":{"path":{"type":"string"},"content":{"type":"string"}}}}}'
   fi
   output+=',
-{"type":"function","function":{"name":"apply_patch","description":"Apply a complete standard unified diff rooted at the workspace using git apply or patch. Include --- a/path, +++ b/path, and @@ line-range headers. Do not use *** Begin Patch markers. If rejected, re-read the target lines and retry apply_patch; write_file is unavailable until the corrected patch succeeds or a new user request begins.","parameters":{"type":"object","required":["patch"],"properties":{"patch":{"type":"string","description":"Raw unified diff only. Example: --- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new"}}}}},
+{"type":"function","function":{"name":"apply_patch","description":'"${patch_description}"',"parameters":{"type":"object","required":["patch"],"properties":{"patch":{"type":"string","description":'"${patch_argument_description}"'}}}}},
 {"type":"function","function":{"name":"search","description":"Search workspace text with ripgrep for literals, regular expressions, or unmodeled text. Use it as the first inspection tool only when project instructions do not designate an MCP navigation tool. After finding a usable location, read its range instead of rephrasing the same search.","parameters":{"type":"object","required":["query"],"properties":{"query":{"type":"string","description":"Focused regular expression"},"path":{"type":"string","description":"Narrow workspace-relative search root; defaults to ."},"max_results":{"type":"integer","description":"Maximum matching lines; defaults to 50"}}}}},
 {"type":"function","function":{"name":"run_command","description":"Run a shell command in the workspace after explicit user approval. Use for tests, builds, formatting, git status, and diagnostics.","parameters":{"type":"object","required":["command"],"properties":{"command":{"type":"string"},"cwd":{"type":"string","description":"Workspace-relative working directory; defaults to ."},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600}}}}}'
   if (( $+functions[skills_tools_schema_json] && ${#SKILL_CATALOG_NAMES} > 0 )); then
@@ -242,7 +252,9 @@ tool_apply_patch() {
   TOOL_PATCH_RETRY_REQUIRED=1
   [[ -n "$patch_text" ]] || { _tool_fail "patch is empty"; return 1; }
   if [[ "$patch_text" == *'*** Begin Patch'* ]]; then
-    _tool_fail $'unsupported patch envelope: send a complete standard unified diff without *** Begin Patch markers\nRequired form:\n--- a/path\n+++ b/path\n@@ -OLD_START,OLD_COUNT +NEW_START,NEW_COUNT @@\n-old line\n+new line'
+    _tool_patch_contract
+    guidance="$REPLY"
+    _tool_fail $'unsupported patch envelope: this harness accepts unified diff syntax, not *** Begin Patch syntax.\n'"$guidance"
     return 1
   fi
   [[ "$patch_text" == *$'\n' ]] || patch_text+=$'\n'
@@ -282,7 +294,8 @@ tool_apply_patch() {
 
   zf_rm -f "$patch_file" "$out_file" 2>/dev/null
   if [[ -z "$engine" ]]; then
-    guidance=$'PATCH RETRY REQUIRED: re-read the exact current lines, then send a corrected complete unified diff with ---/+++/@@ headers. write_file is unavailable for this focused edit until apply_patch succeeds.'
+    _tool_patch_contract
+    guidance=$'PATCH RETRY REQUIRED: re-read the exact current lines and correct the patch using this contract.\n'"${REPLY}"$'\nwrite_file is unavailable for this focused edit until apply_patch succeeds.'
     _tool_fail "patch rejected"$'\n'"${git_error:+git apply: ${git_error}}"$'\n'"${patch_error:+patch: ${patch_error}}"$'\n'"$guidance"
     return 1
   fi
@@ -565,18 +578,5 @@ tool_dispatch() {
     activate_skill) skills_activate "${JSON_OBJECT[name]:-}" ;;
     read_skill_resource) skills_read_resource "${JSON_OBJECT[name]:-}" "${JSON_OBJECT[path]:-}" ;;
     *) _tool_fail "unknown tool: $name" ;;
-  esac
-}
-
-# Multiple calls in one assistant response are supported for known read-only
-# built-ins and run_command. Calls are dispatched serially, so each command
-# still passes workspace validation, safety guards, and the configured command
-# approval policy.
-# MCP calls remain conservative until their schemas carry trustworthy
-# side-effect metadata.
-tool_supports_multi_call() {
-  case "$1" in
-    list_files|read_file|read_file_range|search|read_skill_resource|run_command) return 0 ;;
-    *) return 1 ;;
   esac
 }

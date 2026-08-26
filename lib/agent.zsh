@@ -7,6 +7,7 @@ typeset -g AGENT_SYSTEM_PROMPT="${AGENT_SYSTEM_PROMPT:-}"
 typeset -gi AGENT_LOOP_REPEAT_LIMIT="${ZCODER_LOOP_REPEAT_LIMIT:-3}"
 typeset -gi AGENT_LOOP_MAX_CYCLE="${ZCODER_LOOP_MAX_CYCLE:-4}"
 typeset -gi AGENT_INCOMPLETE_RETRY_LIMIT="${ZCODER_INCOMPLETE_RETRY_LIMIT:-3}"
+typeset -gi AGENT_TRANSPORT_RETRY_LIMIT="${ZCODER_TRANSPORT_RETRY_LIMIT:-1}"
 typeset -gi AGENT_REQUIRE_FINISH_TOOL="${ZCODER_REQUIRE_FINISH_TOOL:-0}"
 typeset -g AGENT_CONTINUATION_REASON=""
 typeset -g AGENT_FINISH_STATUS=""
@@ -31,6 +32,7 @@ typeset -g AGENT_COMPAT_TOOL_ARGS="{}"
 (( AGENT_LOOP_REPEAT_LIMIT >= 2 )) || AGENT_LOOP_REPEAT_LIMIT=3
 (( AGENT_LOOP_MAX_CYCLE > 0 )) || AGENT_LOOP_MAX_CYCLE=4
 (( AGENT_INCOMPLETE_RETRY_LIMIT >= 0 )) || AGENT_INCOMPLETE_RETRY_LIMIT=3
+(( AGENT_TRANSPORT_RETRY_LIMIT >= 0 )) || AGENT_TRANSPORT_RETRY_LIMIT=1
 (( AGENT_REQUIRE_FINISH_TOOL == 0 || AGENT_REQUIRE_FINISH_TOOL == 1 )) || AGENT_REQUIRE_FINISH_TOOL=0
 
 agent_select_profile() {
@@ -56,11 +58,14 @@ agent_completion_instructions() {
 }
 
 agent_operating_loop_instructions() {
-  REPLY=$'Reasoning and execution protocol:\nFor each user request, follow this cycle: OBSERVE → DECIDE → ACT → CHECK.\nBefore the first action, reason privately:\n- Define the requested outcome and applicable constraints.\n- Identify the evidence needed before modifying anything.\n- Choose the smallest useful next action and how its result will be verified.\nDo not emit this private plan as a tool-free preamble.\nExecution rules:\n- Inspect only until enough evidence exists, then act.\n- After each tool result, update the plan from the observed evidence. Re-plan only when a result is unexpected, incomplete, or unsuccessful.\n- On failure, analyze the exact error before choosing the next action. Never repeat an unchanged failed call or bypass a failed focused operation with a broader operation.\n- Batch independent read-only calls or independent diagnostic run_command calls. zcoder serializes every call and applies workspace, safety, and approval checks to each command. Wait for results before dependent calls, edits, or state-changing commands.\n- Make at most one state-changing tool call per reasoning cycle.\n- After changing code or configuration, run the smallest meaningful syntax, test, build, or read-back verification. Broaden verification when the change carries wider risk.\n- Never claim verification that was not actually observed.\n- Before completing, confirm that the requested outcome was addressed, relevant verification passed, and any remaining limitation is stated.'
+  REPLY=$'Reasoning and execution protocol:\nFor each user request, follow this cycle: OBSERVE → DECIDE → ACT → CHECK.\nBefore the first action, reason privately:\n- Define the requested outcome and applicable constraints.\n- Identify the evidence needed before modifying anything.\n- Choose the smallest useful next action and how its result will be verified.\nDo not emit this private plan as a tool-free preamble.\nExecution rules:\n- Inspect only until enough evidence exists, then act.\n- After each tool result, update the plan from the observed evidence. Re-plan only when a result is unexpected, incomplete, or unsuccessful.\n- On failure, analyze the exact error before choosing the next action. Never repeat an unchanged failed call or bypass a failed focused operation with a broader operation.\n- You may return multiple tool calls in one response. zcoder serializes them in emitted order and applies normal validation, safety, and approval checks to every tool. Put a prerequisite before the call that depends on it. Do not call finish alongside another tool.\n- After changing code or configuration, run the smallest meaningful syntax, test, build, or read-back verification. Broaden verification when the change carries wider risk.\n- Never claim verification that was not actually observed.\n- Before completing, confirm that the requested outcome was addressed, relevant verification passed, and any remaining limitation is stated.'
 }
 
 agent_patch_instructions() {
-  REPLY=$'Patch protocol for focused edits:\n- apply_patch accepts raw standard unified diff text only. Copy unchanged context and removed lines exactly from the latest file read. Every hunk needs a real line-range header; never use a bare @@.\n- Good example:\n--- a/lib/example.zsh\n+++ b/lib/example.zsh\n@@ -10,3 +10,3 @@\n context before\n-old value\n+new value\n context after\n- Bad example (unsupported envelope and missing line ranges):\n*** Begin Patch\n*** Update File: lib/example.zsh\n@@\n-old value\n+new value\n*** End Patch\n- Put only the diff in the patch argument, with no Markdown fence or explanation. If rejected, read the reported error, re-read the exact target range, correct the diff, and call apply_patch again. Never bypass a focused patch failure with write_file.'
+  local patch_contract=""
+  _tool_patch_contract
+  patch_contract="$REPLY"
+  REPLY=$'Patch protocol for focused edits:\n'"${patch_contract}"$'\nIf rejected, read the exact error, re-read the latest target range, recalculate every hunk header, and call apply_patch with a corrected diff. Never bypass a focused patch failure with write_file.'
 }
 
 agent_coding_system_prompt() {
@@ -315,6 +320,32 @@ agent_add_message() {
   [[ "$role" == user ]] && AGENT_USER_MESSAGES+=("$content")
 }
 
+# Ollama model templates commonly require the system message to be the first
+# and only system-role record. Harness-generated context added after a turn
+# therefore travels as a user-role record, but is deliberately excluded from
+# AGENT_USER_MESSAGES: that ledger contains only the user's exact requests.
+agent_add_context_message() {
+  local content="$1" content_json=""
+  json_quote "$content"; content_json="$REPLY"
+  AGENT_MESSAGES+=("{\"role\":\"user\",\"content\":${content_json}}")
+}
+
+# Sessions written by older releases may contain mid-conversation system
+# records (notably delegated-consultant results and retry instructions).
+# Normalize those records at the transport boundary so resuming an existing
+# session cannot violate a strict Ollama chat template.
+agent_history_payload_json() {
+  local message=""
+  local -a transport_messages=()
+  for message in "${AGENT_MESSAGES[@]}"; do
+    if [[ "$message" == '{"role":"system",'* ]]; then
+      message='{"role":"user",'"${message#\{\"role\":\"system\",}"
+    fi
+    transport_messages+=("$message")
+  done
+  REPLY="${(j:,:)transport_messages}"
+}
+
 agent_add_assistant_message() {
   local content="$1" thinking="$2" tool_calls="$3"
   local content_json="" thinking_json="" message=""
@@ -351,7 +382,7 @@ agent_resolve_system_prompt() {
 }
 
 agent_build_payload() {
-  local model_json="" system_json="" messages="[" think="true" tools="" options="" prompt=""
+  local model_json="" system_json="" messages="[" history="" think="true" tools="" options="" prompt=""
   # MCP discovery must precede prompt assembly. Besides producing Ollama's
   # schemas, it gives small models an exact short-name -> function-name map.
   tools_schema_json
@@ -363,7 +394,11 @@ agent_build_payload() {
   messages+="{\"role\":\"system\",\"content\":${system_json}}"
   # Join at C speed; appending message by message re-copies the growing
   # payload and is quadratic for long histories.
-  (( ${#AGENT_MESSAGES} > 0 )) && messages+=",${(j:,:)AGENT_MESSAGES}"
+  if (( ${#AGENT_MESSAGES} > 0 )); then
+    agent_history_payload_json
+    history="$REPLY"
+    messages+=",${history}"
+  fi
   messages+="]"
   agent_context_options_json
   options="${REPLY%,}"
@@ -747,6 +782,13 @@ agent_ollama_chat() {
   ollama_chat "$payload" "$host"
 }
 
+agent_transport_error_is_retryable() {
+  case "$1" in
+    "cannot connect to Ollama at "*|"failed to send request to Ollama"|"Ollama closed the connection before returning an HTTP response"|"Ollama closed the connection after "*|"incomplete chunk header"|"incomplete HTTP chunk"|"Ollama request worker exited before returning a result") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 agent_user_turn() {
   if [[ "${REMOTE_MODE:-local}" == client ]] && (( $+functions[remote_client_user_turn] )); then
     remote_client_user_turn "$1"
@@ -754,9 +796,9 @@ agent_user_turn() {
   fi
   local user_content="$1" payload="" response="" content="" thinking="" calls_json="[]"
   local tool_name="" tool_args="" result="" summary="" display_result=""
-  local request_signature="" outcome_signature="" loop_notice="" continuation_notice="" batch_error=""
+  local request_signature="" outcome_signature="" loop_notice="" continuation_notice=""
   local -a call_names=() call_args=()
-  local -i step i request_status prepare_status incomplete_retries=0 needs_continuation=0 lfm_command_plan=0 lfm_tool_refusal=0 lfm_plan_only=0 loop_cycle=0 loop_count=0
+  local -i step i request_status prepare_status incomplete_retries=0 transport_retries=0 needs_continuation=0 lfm_command_plan=0 lfm_tool_refusal=0 lfm_plan_only=0 loop_cycle=0 loop_count=0
 
   (( AGENT_WARMUP_ACTIVE )) && agent_warmup_cancel "user prompt submitted"
   AGENT_LAST_RESPONSE=""
@@ -795,10 +837,21 @@ agent_user_turn() {
       return 1
     fi
     payload="$REPLY"
-    agent_set_status "Thinking ${step}"
-    agent_ollama_chat "$payload" "$OLLAMA_HOST"
-    request_status=$?
-    zcoder_debug ollama_result "step=$step status=$request_status body_chars=${#HTTP_BODY} error=${(qqq)HTTP_ERROR}"
+    transport_retries=0
+    while true; do
+      agent_set_status "Thinking ${step}"
+      agent_ollama_chat "$payload" "$OLLAMA_HOST"
+      request_status=$?
+      zcoder_debug ollama_result "step=$step attempt=$(( transport_retries + 1 )) status=$request_status body_chars=${#HTTP_BODY} error=${(qqq)HTTP_ERROR}"
+      (( request_status == 0 || AGENT_CANCELLED )) && break
+      if (( transport_retries < AGENT_TRANSPORT_RETRY_LIMIT )) && agent_transport_error_is_retryable "$HTTP_ERROR"; then
+        (( transport_retries++ ))
+        zcoder_debug transport_retry "step=$step retry=$transport_retries limit=$AGENT_TRANSPORT_RETRY_LIMIT error=${(qqq)HTTP_ERROR}"
+        agent_emit system "↻ Ollama connection failed before a response; retrying (${transport_retries}/${AGENT_TRANSPORT_RETRY_LIMIT})."
+        continue
+      fi
+      break
+    done
     if (( request_status != 0 )); then
       if (( AGENT_CANCELLED )); then
         agent_add_message assistant "[Response generation stopped by user.]"
@@ -827,7 +880,7 @@ agent_user_turn() {
         else
           continuation_notice="The previous model response could not be parsed as a valid Ollama chat response. Retry the response now. If work remains, call the next work tool; otherwise call finish or return one complete non-empty final answer."
         fi
-        agent_add_message system "$continuation_notice"
+        agent_add_context_message "$continuation_notice"
         agent_emit system "↻ Model returned a malformed response; retrying (${incomplete_retries}/${AGENT_INCOMPLETE_RETRY_LIMIT})."
         zcoder_debug continuation_decision "step=$step retry=$incomplete_retries limit=$AGENT_INCOMPLETE_RETRY_LIMIT reason=malformed_model_response"
         continue
@@ -898,7 +951,7 @@ agent_user_turn() {
       zcoder_debug continuation_decision "step=$step retry=$(( incomplete_retries + 1 )) limit=$AGENT_INCOMPLETE_RETRY_LIMIT reason=${(qqq)AGENT_CONTINUATION_REASON} content=${(qqq)content}"
       if (( incomplete_retries < AGENT_INCOMPLETE_RETRY_LIMIT )); then
         (( incomplete_retries++ ))
-        agent_add_message system "$continuation_notice"
+        agent_add_context_message "$continuation_notice"
         if (( lfm_command_plan || lfm_tool_refusal )); then
           agent_emit system "↻ LFM returned a non-action response; requesting tool use or a final answer (${incomplete_retries}/${AGENT_INCOMPLETE_RETRY_LIMIT})."
         elif [[ -z "$content" ]]; then
@@ -975,16 +1028,6 @@ agent_user_turn() {
       AGENT_LOOP_REASON=""
       AGENT_LOOP_FORBIDDEN_REQUEST=""
     fi
-    batch_error=""
-    if (( ${#call_names} > 1 )); then
-      for tool_name in "${call_names[@]}"; do
-        if ! tool_supports_multi_call "$tool_name"; then
-          batch_error="Unsupported tool batch: multiple calls are accepted only for independent read-only built-ins and run_command. Commands are serialized and approved individually. Resend edits, activation, finish, unknown, or MCP calls one at a time; '${tool_name}' cannot be used in a batch."
-          zcoder_debug tool_batch_rejected "step=$step calls=${(j:,:)call_names} reason=${(qqq)batch_error}"
-          break
-        fi
-      done
-    fi
     outcome_signature="$request_signature"
     for (( i=1; i<=${#call_names}; i++ )); do
       tool_name="${call_names[i]}"
@@ -995,10 +1038,7 @@ agent_user_turn() {
         agent_emit tool "→ $summary"
       fi
       agent_set_status "Tool: $tool_name"
-      if [[ -n "$batch_error" ]]; then
-        TOOL_RESULT_OK=0
-        TOOL_RESULT="Error: $batch_error"
-      elif [[ "$tool_name" == finish ]]; then
+      if [[ "$tool_name" == finish ]]; then
         TOOL_RESULT_OK=0
         TOOL_RESULT="Error: finish must be the only tool call in its response"
       else

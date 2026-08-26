@@ -67,7 +67,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..640"
+print -r -- "1..661"
 
 input_reset
 input_layout 20 4
@@ -203,7 +203,10 @@ fi
 
 tool_apply_patch $'*** Begin Patch\n*** Update File: src/note.txt\n@@\n-TWO\n+two\n*** End Patch\n'
 assert_failure "apply_patch rejects unsupported patch envelopes clearly" $?
-assert_contains "$TOOL_RESULT" "complete standard unified diff" "patch errors teach the model the accepted format"
+assert_contains "$TOOL_RESULT" "UNIFIED DIFF CONTRACT" "patch errors teach the canonical accepted format"
+assert_contains "$TOOL_RESULT" "GOOD (valid focused edit)" "patch errors repeat a valid example"
+assert_contains "$TOOL_RESULT" "BAD (invalid in this harness)" "patch errors contrast the unsupported envelope"
+assert_contains "$TOOL_RESULT" "Counts describe hunk body lines" "patch errors explain numeric hunk counts"
 tools_schema_json
 assert_not_contains "$REPLY" '"name":"write_file"' "write_file is hidden after a rejected patch"
 tool_write_file "src/note.txt" "destructive fallback"
@@ -275,6 +278,21 @@ assert_success "connected MCP tools precede generic built-ins" $?
 assert_contains "$REPLY" "only when project instructions do not designate an MCP navigation tool" "search schema defers to project-designated MCP navigation"
 agent_build_payload
 assert_contains "$REPLY" 'modern/find-symbol -> mcp__modern__find_symbol' "regular Ollama payloads include connected MCP routing"
+saved_agent_messages=("${AGENT_MESSAGES[@]}")
+saved_agent_user_messages=("${AGENT_USER_MESSAGES[@]}")
+AGENT_MESSAGES=()
+AGENT_USER_MESSAGES=("exact user request")
+agent_add_context_message "runtime recovery instruction"
+assert_eq "1" "${#AGENT_MESSAGES}" "harness context is added to model history"
+assert_contains "${AGENT_MESSAGES[1]}" '"role":"user"' "harness context uses a template-safe user role"
+assert_eq "1" "${#AGENT_USER_MESSAGES}" "harness context stays out of the exact-user ledger"
+AGENT_MESSAGES+=('{"role":"system","content":"legacy retry instruction"}')
+agent_build_payload
+assert_not_contains "$REPLY" ',{"role":"system"' "Ollama payloads never contain a mid-conversation system role"
+assert_contains "$REPLY" ',{"role":"user","content":"legacy retry instruction"}' "legacy system records are normalized at the transport boundary"
+assert_contains "$REPLY" "runtime recovery instruction" "template-safe payloads retain current harness context"
+AGENT_MESSAGES=("${saved_agent_messages[@]}")
+AGENT_USER_MESSAGES=("${saved_agent_user_messages[@]}")
 tool_dispatch mcp__modern__echo_data '{"payload":{"nested":true}}'
 assert_success "nested MCP tool arguments bypass the flat built-in decoder" $?
 assert_contains "$TOOL_RESULT" "fixture call completed" "MCP tool results return to the model context"
@@ -1156,9 +1174,9 @@ assert_contains "$REPLY" "use set -o pipefail" "sysadmin prompt prevents hidden 
 assert_contains "$REPLY" "Use mktemp for temporary files" "sysadmin prompt rejects predictable temporary paths"
 assert_contains "$REPLY" "replace the entire stored state" "sysadmin prompt identifies replacement-style command risk"
 assert_contains "$REPLY" "crontab -l > /tmp/file; append content; crontab /tmp/file" "sysadmin prompt names the unsafe crontab pattern"
-assert_contains "$REPLY" "Good example:" "sysadmin prompt also teaches the workspace patch protocol"
+assert_contains "$REPLY" "UNIFIED DIFF CONTRACT" "sysadmin prompt also teaches the workspace patch contract"
 assert_contains "$REPLY" "OBSERVE → DECIDE → ACT → CHECK" "sysadmin prompt includes the shared operating loop"
-assert_contains "$REPLY" "Make at most one state-changing tool call per reasoning cycle" "sysadmin prompt serializes host mutations"
+assert_contains "$REPLY" "Do not combine unrelated operations or multiple mutating steps" "sysadmin prompt keeps host mutations reviewable"
 assert_contains "$REPLY" "Never claim verification that was not actually observed" "sysadmin prompt requires observed verification"
 assert_contains "$REPLY" "Never bypass built-in tool workspace confinement or run_command approval" "sysadmin prompt preserves its approved host-operation boundary"
 assert_not_contains "$REPLY" "Never operate outside the permitted workspace" "sysadmin prompt does not contradict approved host operations"
@@ -1178,8 +1196,8 @@ assert_contains "$REPLY" "reason privately" "system prompt assigns planning to p
 assert_contains "$REPLY" "Do not emit this private plan as a tool-free preamble" "system prompt prevents visible plan-only turns"
 assert_contains "$REPLY" "analyze the exact error" "system prompt requires evidence-based failure recovery"
 assert_contains "$REPLY" "Never repeat an unchanged failed call" "system prompt prevents unchanged retries"
-assert_contains "$REPLY" "independent diagnostic run_command calls" "system prompt permits serialized diagnostic command batches"
-assert_contains "$REPLY" "Make at most one state-changing tool call per reasoning cycle" "system prompt serializes mutations"
+assert_contains "$REPLY" "multiple tool calls in one response" "system prompt permits serialized multi-call responses"
+assert_contains "$REPLY" "serializes them in emitted order" "system prompt defines deterministic tool ordering"
 assert_contains "$REPLY" "smallest meaningful syntax, test, build, or read-back verification" "system prompt requires proportionate verification"
 assert_contains "$REPLY" "Never claim verification that was not actually observed" "system prompt prohibits invented checks"
 assert_contains "$REPLY" "If work remains, call the next appropriate work tool" "system prompt requires action instead of a preamble"
@@ -1190,9 +1208,10 @@ assert_contains "$REPLY" "Stop inspecting once you have enough evidence" "system
 assert_contains "$REPLY" "do not repeat discovery with minor query variations" "system prompt prevents redundant discovery searches"
 assert_contains "$REPLY" "non-empty plain assistant response is also accepted as final" "default prompt permits compatible tool-free completion"
 assert_contains "$REPLY" "Never use a tool-free response as a preamble" "default prompt still requires tools while work remains"
-assert_contains "$REPLY" "Good example:" "coding prompt includes a valid unified-diff example"
+assert_contains "$REPLY" "GOOD (valid focused edit)" "coding prompt includes a valid unified-diff example"
 assert_contains "$REPLY" "@@ -10,3 +10,3 @@" "valid patch example includes concrete hunk ranges"
-assert_contains "$REPLY" "Bad example" "coding prompt contrasts an unsupported patch envelope"
+assert_contains "$REPLY" "BAD (invalid in this harness)" "coding prompt contrasts an unsupported patch envelope"
+assert_contains "$REPLY" "exactly one prefix character" "coding prompt explains unified-diff line prefixes"
 assert_contains "$REPLY" "Never bypass a focused patch failure with write_file" "coding prompt requires patch retry instead of replacement"
 
 saved_context_window_setting="$ZCODER_CONTEXT_WINDOW"
@@ -1277,16 +1296,21 @@ agent_reset
 tools_schema_json
 assert_contains "$REPLY" "defaults to 100" "list_files schema advertises its conservative default"
 assert_contains "$REPLY" "defaults to 50" "search schema advertises its conservative default"
-tool_supports_multi_call read_file
-assert_success "read_file is supported in a multi-call response" $?
-tool_supports_multi_call read_skill_resource
-assert_success "skill resource reads are supported in a multi-call response" $?
-tool_supports_multi_call apply_patch
-assert_failure "apply_patch is not supported in a multi-call response" $?
-tool_supports_multi_call run_command
-assert_success "run_command is supported with serialized dispatch" $?
-tool_supports_multi_call mcp__example__inspect
-assert_failure "MCP tools default to non-batchable" $?
+assert_contains "$REPLY" "GOOD (valid focused edit)" "apply_patch schema includes the valid example"
+assert_contains "$REPLY" "BAD (invalid in this harness)" "apply_patch schema includes the invalid example"
+assert_contains "$REPLY" "Counts describe hunk body lines" "apply_patch schema explains hunk counts"
+agent_transport_error_is_retryable "Ollama closed the connection before returning an HTTP response"
+assert_success "premature Ollama disconnects are retryable" $?
+agent_transport_error_is_retryable "cannot connect to Ollama at mock.invalid:11434"
+assert_success "Ollama connection failures are retryable" $?
+agent_transport_error_is_retryable "Ollama closed the connection after 128/512 response bytes"
+assert_success "truncated Ollama response bodies are retryable" $?
+agent_transport_error_is_retryable "timed out waiting 900s for Ollama to begin its response"
+assert_failure "long generation timeouts are not replayed" $?
+agent_transport_error_is_retryable "Ollama HTTP error: HTTP/1.1 500 Internal Server Error"
+assert_failure "HTTP error responses are not replayed" $?
+agent_transport_error_is_retryable "Ollama request cancelled: Escape pressed"
+assert_failure "intentional cancellation is not replayed" $?
 
 agent_format_tool_ui_result read_file '{"path":"src/note.txt"}' $'one\ntwo\nthree' 1
 assert_eq "Read(src/note.txt)" "$REPLY" "UI summarizes a complete file read"
@@ -1514,7 +1538,7 @@ assert_eq "run_command,run_command" "${(j:,:)MOCK_BATCH_NAMES}" "command batch p
 assert_contains "$MOCK_BATCH_SECOND_PAYLOAD" "batch result 1" "first command result returns to the model"
 assert_contains "$MOCK_BATCH_SECOND_PAYLOAD" "batch result 2" "second command result returns to the model"
 
-# Unsupported mutations still reject the whole batch before partial dispatch.
+# Ordered edit-and-verify calls are dispatched through their normal handlers.
 MOCK_BATCH_TURNS=0
 MOCK_BATCH_DISPATCHES=0
 MOCK_BATCH_NAMES=()
@@ -1522,22 +1546,58 @@ MOCK_BATCH_SECOND_PAYLOAD=""
 agent_ollama_chat() {
   (( MOCK_BATCH_TURNS++ ))
   if (( MOCK_BATCH_TURNS == 1 )); then
-    HTTP_BODY='{"message":{"content":"","thinking":"attempt mixed edits","tool_calls":[{"type":"function","function":{"name":"read_file","arguments":{"path":"reasoning.txt"}}},{"type":"function","function":{"name":"apply_patch","arguments":{"patch":"--- a/a\\n+++ b/a\\n"}}}]}}'
+    HTTP_BODY='{"message":{"content":"","thinking":"write then verify","tool_calls":[{"type":"function","function":{"name":"write_file","arguments":{"path":"generated.py","content":"print(1)"}}},{"type":"function","function":{"name":"run_command","arguments":{"command":"python3 -m py_compile generated.py"}}}]}}'
   else
     MOCK_BATCH_SECOND_PAYLOAD="$1"
-    HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"blocked","response":"Unsupported batch was rejected."}}}]}}'
+    HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"complete","response":"Edit and verification completed."}}}]}}'
   fi
   HTTP_ERROR=""
   return 0
 }
 agent_reset
-agent_user_turn "attempt unsupported mixed edits" >/dev/null 2>&1
-unsupported_batch_status=$?
-assert_success "rejected unsupported batch returns control to the model" "$unsupported_batch_status"
-assert_eq "0" "$MOCK_BATCH_DISPATCHES" "unsupported batch dispatches no calls"
-assert_contains "$MOCK_BATCH_SECOND_PAYLOAD" "Unsupported tool batch" "unsupported batch error returns to the model"
-assert_contains "$MOCK_BATCH_SECOND_PAYLOAD" "apply_patch" "unsupported batch error identifies the rejected tool"
-assert_contains "${mapfile[$ZCODER_DEBUG_LOG]}" "tool_batch_rejected" "debug log records rejected batches"
+agent_user_turn "write then verify" >/dev/null 2>&1
+ordered_batch_status=$?
+assert_success "ordered edit-and-verify batch completes" "$ordered_batch_status"
+assert_eq "2" "$MOCK_BATCH_DISPATCHES" "edit-and-verify batch dispatches every call"
+assert_eq "write_file,run_command" "${(j:,:)MOCK_BATCH_NAMES}" "edit-and-verify batch preserves dependency order"
+assert_contains "$MOCK_BATCH_SECOND_PAYLOAD" "batch result 1" "edit result returns to the model"
+assert_contains "$MOCK_BATCH_SECOND_PAYLOAD" "batch result 2" "verification result returns to the model"
+
+# A disconnect before any HTTP response is retried with the unchanged payload.
+typeset -gi MOCK_TRANSPORT_TURNS=0
+agent_ollama_chat() {
+  (( MOCK_TRANSPORT_TURNS++ ))
+  if (( MOCK_TRANSPORT_TURNS == 1 )); then
+    HTTP_BODY=""
+    HTTP_ERROR="Ollama closed the connection before returning an HTTP response"
+    return 1
+  fi
+  HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"complete","response":"Recovered after disconnect."}}}]}}'
+  HTTP_ERROR=""
+  return 0
+}
+agent_reset
+agent_user_turn "recover a disconnected request" >/dev/null 2>&1
+transport_retry_status=$?
+assert_success "transient Ollama disconnect recovers" "$transport_retry_status"
+assert_eq "2" "$MOCK_TRANSPORT_TURNS" "transient disconnect receives one replay"
+assert_eq "Recovered after disconnect." "$AGENT_LAST_RESPONSE" "transport replay retains the completed response"
+assert_contains "${mapfile[$ZCODER_DEBUG_LOG]}" "transport_retry" "transport replay is recorded in the debug log"
+
+# A response timeout represents an expensive generation already in progress and
+# must not be restarted automatically.
+MOCK_TRANSPORT_TURNS=0
+agent_ollama_chat() {
+  (( MOCK_TRANSPORT_TURNS++ ))
+  HTTP_BODY=""
+  HTTP_ERROR="timed out waiting 900s for Ollama to begin its response"
+  return 1
+}
+agent_reset
+agent_user_turn "do not replay a timed-out generation" >/dev/null 2>&1
+transport_timeout_status=$?
+assert_failure "Ollama response timeout remains an error" "$transport_timeout_status"
+assert_eq "1" "$MOCK_TRANSPORT_TURNS" "timed-out generation is not replayed"
 
 functions[agent_ollama_chat]="${functions[_test_real_agent_ollama_chat]}"
 functions[tool_dispatch]="${functions[_test_real_tool_dispatch]}"
@@ -1971,6 +2031,7 @@ AGENT_MESSAGES=()
 ZCODER_DELEGATE_HISTORY_CHARS=12
 delegate_remember claude claude-opus-5 "review this" "a deliberately long consultant result"
 assert_eq "1" "${#AGENT_MESSAGES}" "successful consultations add one bounded context record"
+assert_contains "${AGENT_MESSAGES[1]}" '"role":"user"' "consultant context uses a template-safe user role"
 assert_contains "${AGENT_MESSAGES[1]}" "untrusted quoted reference material" "delegate context labels external output as untrusted"
 ZCODER_DELEGATE_HISTORY_CHARS=12000
 

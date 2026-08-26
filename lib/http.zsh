@@ -8,8 +8,11 @@ typeset -g HTTP_NET_PORT="11434"
 typeset -g HTTP_ACTIVE_FD=""
 typeset -g HTTP_ASYNC_PID=""
 typeset -g HTTP_ASYNC_BASE=""
+typeset -gi HTTP_READ_TIMEOUT="${ZCODER_HTTP_READ_TIMEOUT:-900}"
 typeset -gi OLLAMA_RUNNING_CONTEXT=0
 typeset -ga OLLAMA_MODELS=()
+
+(( HTTP_READ_TIMEOUT > 0 )) || HTTP_READ_TIMEOUT=900
 
 ollama_normalize_host() {
   local endpoint="$1"
@@ -87,7 +90,8 @@ http_request() {
   setopt localoptions nomultibyte
   local method="$1" endpoint_path="$2" payload="${3:-}" endpoint="${4:-$OLLAMA_HOST}"
   local extra_headers="${5:-}" fd="" request="" chunk="" raw="" header="" body="" status_line=""
-  local -i payload_bytes
+  local header_line="" header_key="" header_value="" content_length=""
+  local -i payload_bytes body_bytes read_status=5
   HTTP_BODY=""
   HTTP_ERROR=""
 
@@ -114,12 +118,24 @@ http_request() {
     _http_close_active
     return 1
   fi
-  while sysread -i "$fd" -s 32768 -t 300 chunk 2>/dev/null; do
+  while true; do
+    sysread -i "$fd" -s 32768 -t "$HTTP_READ_TIMEOUT" chunk 2>/dev/null
+    read_status=$?
+    (( read_status == 0 )) || break
     raw+="$chunk"
   done
   _http_close_active
 
-  [[ "$raw" == *$'\r\n\r\n'* ]] || { HTTP_ERROR="Ollama returned an incomplete HTTP response"; return 1; }
+  if [[ "$raw" != *$'\r\n\r\n'* ]]; then
+    if (( read_status == 4 )); then
+      HTTP_ERROR="timed out waiting ${HTTP_READ_TIMEOUT}s for Ollama to begin its response"
+    elif (( read_status == 2 )); then
+      HTTP_ERROR="failed while reading the Ollama response"
+    else
+      HTTP_ERROR="Ollama closed the connection before returning an HTTP response"
+    fi
+    return 1
+  fi
   header="${raw%%$'\r\n\r\n'*}"
   body="${raw[$(( ${#header} + 5 )),-1]}"
   status_line="${header%%$'\r\n'*}"
@@ -129,9 +145,37 @@ http_request() {
     return 1
   fi
   if [[ "${(L)header}" == *$'transfer-encoding: chunked'* ]]; then
-    _http_dechunk "$body" || return 1
+    if ! _http_dechunk "$body"; then
+      (( read_status == 4 )) && HTTP_ERROR="timed out waiting ${HTTP_READ_TIMEOUT}s for Ollama to finish its response"
+      return 1
+    fi
     HTTP_BODY="$REPLY"
   else
+    for header_line in "${(@f)${header//$'\r'/}}"; do
+      [[ "$header_line" == *:* ]] || continue
+      header_key="${(L)${header_line%%:*}}"
+      [[ "$header_key" == content-length ]] || continue
+      header_value="${header_line#*:}"
+      header_value="${header_value##[[:space:]]#}"
+      header_value="${header_value%%[[:space:]]#}"
+      [[ "$header_value" == <0-> ]] && content_length="$header_value"
+      break
+    done
+    if [[ -n "$content_length" ]]; then
+      body_bytes=${#body}
+      if (( body_bytes < content_length )); then
+        if (( read_status == 4 )); then
+          HTTP_ERROR="timed out waiting ${HTTP_READ_TIMEOUT}s for Ollama to finish its response (${body_bytes}/${content_length} bytes received)"
+        else
+          HTTP_ERROR="Ollama closed the connection after ${body_bytes}/${content_length} response bytes"
+        fi
+        return 1
+      fi
+      (( body_bytes > content_length )) && body="${body[1,$content_length]}"
+    elif (( read_status == 4 )); then
+      HTTP_ERROR="timed out waiting ${HTTP_READ_TIMEOUT}s for Ollama to finish its response"
+      return 1
+    fi
     HTTP_BODY="$body"
   fi
 }

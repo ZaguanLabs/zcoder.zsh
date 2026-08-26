@@ -19,7 +19,7 @@ then runs the shell-level suite. The suite covers:
 - both supported MCP protocol generations
 - paginated MCP discovery and nested tool calls
 - reasoning and tool history
-- multi-tool responses and serialized command dispatch
+- serialized per-call dispatch and transport recovery
 - context accounting and compaction
 - path and symlink confinement
 - file reads, writes, search, and patch fallback

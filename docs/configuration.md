@@ -16,6 +16,7 @@ Run `./zcoder.zsh --help` for the complete CLI reference.
 | `ZCODER_COMMAND_POLICY` | `ask` | `ask`, `allow`, or `deny` |
 | `ZCODER_THINK` | `true` | Request model reasoning |
 | `ZCODER_WARMUP` | `true` | Warm the selected model and stable prompt context before interactive work |
+| `ZCODER_HTTP_READ_TIMEOUT` | 900 | Idle seconds allowed while waiting for Ollama response data |
 | `ZCODER_MAX_TOOL_OUTPUT` | 32768 | Maximum returned tool-output characters |
 | `ZCODER_HOME` | `${XDG_CONFIG_HOME:-$HOME/.config}/zcoder` | User configuration and sessions |
 
@@ -123,9 +124,13 @@ Relevant settings:
 | `ZCODER_LOOP_REPEAT_LIMIT` | 3 | Repetition threshold before recovery |
 | `ZCODER_LOOP_MAX_CYCLE` | 4 | Longest alternating cycle inspected |
 | `ZCODER_INCOMPLETE_RETRY_LIMIT` | 3 | Empty or malformed response retries |
+| `ZCODER_TRANSPORT_RETRY_LIMIT` | 1 | Retries after a transient failure before any Ollama response |
 | `ZCODER_REQUIRE_FINISH_TOOL` | 0 | Require structural `finish` completion when set to 1 |
 
 See [Architecture](architecture.md) for how these controls affect the agent loop.
+Response timeouts are not retried: replaying a generation that already consumed
+the full timeout would restart the same expensive work. Increase
+`ZCODER_HTTP_READ_TIMEOUT` for slower hardware or very large contexts.
 
 ## Debug logs
 
