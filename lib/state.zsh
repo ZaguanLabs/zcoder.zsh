@@ -267,7 +267,8 @@ state_load_session() {
 }
 
 state_init() {
-  local old_umask="$(umask)"
+  local start_mode="${1:-new}" session_id="" session_dir="" old_umask="$(umask)"
+  local -i agent_count=0 ui_count=0
   umask 077
   if ! zf_mkdir -p "$ZCODER_SESSIONS_DIR" 2>/dev/null; then
     umask "$old_umask"
@@ -278,8 +279,19 @@ state_init() {
   umask "$old_umask"
   STATE_ENABLED=1
   state_refresh_sessions_list
-  if (( ${#SESSION_IDS} > 0 )); then
+  if [[ "$start_mode" == resume ]] && (( ${#SESSION_IDS} > 0 )); then
     state_load_session "${SESSION_IDS[1]}" || state_new_session
+  elif (( ${#SESSION_IDS} > 0 )); then
+    for session_id in "${SESSION_IDS[@]}"; do
+      session_dir="$ZCODER_SESSIONS_DIR/${session_id}.session"
+      _state_nonnegative "${mapfile[$session_dir/agent_message_count]:-0}"; agent_count=$REPLY
+      _state_nonnegative "${mapfile[$session_dir/ui_event_count]:-0}"; ui_count=$REPLY
+      if (( agent_count == 0 && ui_count == 0 )); then
+        state_load_session "$session_id" || state_new_session
+        return $?
+      fi
+    done
+    state_new_session
   else
     state_new_session
   fi

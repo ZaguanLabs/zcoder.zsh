@@ -65,8 +65,8 @@ delegate_build_command() {
       ;;
     codex)
       model="$ZCODER_CODEX_MODEL"
-      DELEGATE_COMMAND=(codex exec -m "$model" -c 'model_reasoning_effort="medium"'
-        -C "${ZCODER_WORKSPACE:A}" -s read-only -a never --ephemeral --json
+      DELEGATE_COMMAND=(codex --ask-for-approval never exec -m "$model" -c 'model_reasoning_effort="medium"'
+        -C "${ZCODER_WORKSPACE:A}" -s read-only --ephemeral --json
         --skip-git-repo-check -)
       DELEGATE_STDIN_PROMPT=1
       ;;

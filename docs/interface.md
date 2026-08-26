@@ -23,8 +23,11 @@ to `[ Ready ]` after a successful warm-up.
 ## Saved sessions
 
 Interactive jobs are stored under `${ZCODER_HOME}/sessions`, normally
-`${XDG_CONFIG_HOME:-$HOME/.config}/zcoder/sessions`. The most recently updated
-job matching the workspace and profile resumes at startup.
+`${XDG_CONFIG_HOME:-$HOME/.config}/zcoder/sessions`. Each interactive launch
+starts a fresh job. Earlier jobs matching the workspace and profile remain in
+the sidebar and can be resumed explicitly. An already-empty latest job is
+reused so repeatedly opening and closing zcoder does not accumulate blank
+entries.
 
 A session retains:
 
@@ -42,8 +45,8 @@ Press Tab to focus the sidebar, use Up or Down to choose a job, and press Enter
 to return to the prompt. Ctrl+N starts a new job without deleting earlier ones.
 `/sessions` focuses the same list.
 
-Remote mode currently keeps one persistent server session and does not expose
-session browsing or reset. See [Remote-agent server](remote.md).
+Remote sessions use the same sidebar controls but remain stored on the named
+server. See [Remote-agent server](remote.md).
 
 ## Copy the transcript
 

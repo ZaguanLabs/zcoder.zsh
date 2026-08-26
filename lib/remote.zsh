@@ -15,6 +15,7 @@ typeset -g REMOTE_ERROR=""
 typeset -g REMOTE_MODEL_STATUS="unknown"
 typeset -g REMOTE_MODEL_ERROR=""
 typeset -gi REMOTE_SESSIONS_SUPPORTED=0
+typeset -gi REMOTE_SESSION_EMPTY=0
 typeset -gi REMOTE_SERVER_WORKER=0
 typeset -gi REMOTE_MAX_REQUEST_BYTES="${ZCODER_REMOTE_MAX_REQUEST_BYTES:-1048576}"
 typeset -gi REMOTE_APPROVAL_TIMEOUT="${ZCODER_REMOTE_APPROVAL_TIMEOUT:-300}"
@@ -129,17 +130,26 @@ remote_client_handshake() {
   REMOTE_MODEL_ERROR="${JSON_OBJECT[model_error]:-}"
   if [[ "$sessions" == true ]]; then
     REMOTE_SESSIONS_SUPPORTED=1
-    remote_client_refresh_sessions || return 1
-    [[ -z "$CURRENT_SESSION_ID" ]] || remote_client_load_session "$CURRENT_SESSION_ID" || return 1
+    remote_client_start_session || return 1
   else
     REMOTE_SESSIONS_SUPPORTED=0
   fi
 }
 
+remote_client_start_session() {
+  remote_client_refresh_sessions || return 1
+  if [[ -n "$CURRENT_SESSION_ID" && $REMOTE_SESSION_EMPTY -eq 1 ]]; then
+    remote_client_load_session "$CURRENT_SESSION_ID"
+  else
+    remote_client_new_session
+  fi
+}
+
 remote_client_refresh_sessions() {
-  local event="" id="" title="" model="" current="0"
+  local event="" id="" title="" model="" current="0" empty="0"
   local -i cursor=0 next_cursor=0
   local current_id="$CURRENT_SESSION_ID"
+  local -i current_empty=0
   local -a ids=() titles=() models=()
   while true; do
     remote_client_request GET "/v1/sessions?after=${cursor}" || return 1
@@ -161,10 +171,14 @@ remote_client_refresh_sessions() {
     title="${JSON_OBJECT[title]:-Untitled}"
     model="${JSON_OBJECT[model]:-unknown}"
     current="${JSON_OBJECT[current]:-0}"
+    empty="${JSON_OBJECT[empty]:-0}"
     ids+=("$id")
     titles+=("$title")
     models+=("$model")
-    [[ "$current" == 1 ]] && current_id="$id"
+    if [[ "$current" == 1 ]]; then
+      current_id="$id"
+      [[ "$empty" == 1 ]] && current_empty=1 || current_empty=0
+    fi
   done
   SESSION_IDS=("${ids[@]}")
   SESSION_TITLES=("${titles[@]}")
@@ -172,13 +186,16 @@ remote_client_refresh_sessions() {
   if (( ${#SESSION_IDS} == 0 )); then
     CURRENT_SESSION_ID=""
     SESSION_TITLE="New Job"
+    REMOTE_SESSION_EMPTY=1
   elif (( ! ${SESSION_IDS[(Ie)$current_id]} )); then
     CURRENT_SESSION_ID="${SESSION_IDS[1]}"
     SESSION_TITLE="${SESSION_TITLES[1]}"
+    REMOTE_SESSION_EMPTY=0
   else
     CURRENT_SESSION_ID="$current_id"
     local -i current_index=${SESSION_IDS[(Ie)$current_id]}
     SESSION_TITLE="${SESSION_TITLES[current_index]}"
+    REMOTE_SESSION_EMPTY=$current_empty
   fi
 }
 
@@ -637,8 +654,8 @@ _remote_server_refresh_sessions() {
 }
 
 _remote_server_session_summary() {
-  local after="$1" id="" title_json="" id_json="" model_json="" current=0
-  local -i index
+  local after="$1" id="" session_dir="" title_json="" id_json="" model_json="" current=0
+  local -i index agent_count=0 ui_count=0 empty=0
   [[ "$after" == <0-> ]] || after=0
   _remote_server_refresh_sessions
   index=$(( after + 1 ))
@@ -647,11 +664,15 @@ _remote_server_session_summary() {
     return 1
   fi
   id="${SESSION_IDS[index]}"
+  session_dir="$ZCODER_SESSIONS_DIR/${id}.session"
   [[ "$id" == "$REMOTE_SESSION_ID" ]] && current=1
+  _state_nonnegative "${mapfile[$session_dir/agent_message_count]:-0}"; agent_count=$REPLY
+  _state_nonnegative "${mapfile[$session_dir/ui_event_count]:-0}"; ui_count=$REPLY
+  (( agent_count == 0 && ui_count == 0 )) && empty=1
   json_quote "$id"; id_json="$REPLY"
   json_quote "${SESSION_TITLES[index]:-Untitled}"; title_json="$REPLY"
   json_quote "${SESSION_MODELS[index]:-unknown}"; model_json="$REPLY"
-  REPLY="{\"event\":\"session\",\"seq\":${index},\"id\":${id_json},\"title\":${title_json},\"model\":${model_json},\"current\":${current}}"
+  REPLY="{\"event\":\"session\",\"seq\":${index},\"id\":${id_json},\"title\":${title_json},\"model\":${model_json},\"current\":${current},\"empty\":${empty}}"
 }
 
 _remote_server_session_event() {
@@ -1105,7 +1126,7 @@ remote_server_main() {
     return 1
   }
   ZCODER_SESSIONS_DIR="$REMOTE_RUNTIME_DIR/sessions"
-  if ! state_init; then
+  if ! state_init resume; then
     print -u2 -- "Error: could not initialize remote session storage"
     return 1
   fi

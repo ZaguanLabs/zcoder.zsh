@@ -67,7 +67,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..621"
+print -r -- "1..635"
 
 input_reset
 input_layout 20 4
@@ -551,12 +551,14 @@ json_parse_flat_object "$REPLY"
 assert_success "remote session summaries remain flat valid JSON" $?
 assert_eq "$remote_newer_id" "${JSON_OBJECT[id]}" "remote session listing is ordered by recent activity"
 assert_eq "0" "${JSON_OBJECT[current]}" "remote session summaries distinguish inactive jobs"
+assert_eq "1" "${JSON_OBJECT[empty]}" "remote session summaries identify untouched jobs"
 assert_eq "Remote ${remote_newer_id}" "${JSON_OBJECT[title]}" "remote session summaries preserve titles"
 _remote_server_session_summary 1
 assert_success "remote session listing advances by cursor" $?
 json_parse_flat_object "$REPLY"
 assert_eq "$remote_current_id" "${JSON_OBJECT[id]}" "remote session listing returns every scoped job"
 assert_eq "1" "${JSON_OBJECT[current]}" "remote session summaries identify the selected job"
+assert_eq "0" "${JSON_OBJECT[empty]}" "remote session summaries identify jobs with persisted events"
 _remote_server_session_summary 2
 assert_failure "remote session listing reports an empty tail" $?
 assert_eq '{"event":"none"}' "$REPLY" "empty remote session lists return a stable envelope"
@@ -736,11 +738,11 @@ remote_client_request() {
   case "$1:$2" in
     GET:/v1/sessions\?after=0)
       [[ "$MOCK_REMOTE_SELECTED_SESSION" == "3000000000_3" ]] && mock_current=1
-      HTTP_BODY="{\"event\":\"session\",\"seq\":1,\"id\":\"3000000000_3\",\"title\":\"Current remote job\",\"model\":\"remote-model\",\"current\":${mock_current}}"
+      HTTP_BODY="{\"event\":\"session\",\"seq\":1,\"id\":\"3000000000_3\",\"title\":\"Current remote job\",\"model\":\"remote-model\",\"current\":${mock_current},\"empty\":0}"
       ;;
     GET:/v1/sessions\?after=1)
       [[ "$MOCK_REMOTE_SELECTED_SESSION" == "2000000000_2" ]] && mock_current=1
-      HTTP_BODY="{\"event\":\"session\",\"seq\":2,\"id\":\"2000000000_2\",\"title\":\"Older remote job\",\"model\":\"remote-model\",\"current\":${mock_current}}"
+      HTTP_BODY="{\"event\":\"session\",\"seq\":2,\"id\":\"2000000000_2\",\"title\":\"Older remote job\",\"model\":\"remote-model\",\"current\":${mock_current},\"empty\":1}"
       ;;
     GET:/v1/sessions\?after=2) HTTP_BODY='{"event":"none"}' ;;
     GET:/v1/session\?id=3000000000_3\&after=0)
@@ -768,6 +770,7 @@ assert_success "remote clients load the server-owned session list" $?
 assert_eq "2" "${#SESSION_IDS}" "remote clients retain every listed server session"
 assert_eq "3000000000_3" "$CURRENT_SESSION_ID" "remote clients adopt the server-selected session"
 assert_eq "Current remote job" "$SESSION_TITLE" "remote clients retain the selected session title"
+assert_eq "0" "$REMOTE_SESSION_EMPTY" "remote clients detect a previously used selected session"
 assert_contains "${(j: :)MOCK_REMOTE_SESSION_REQUESTS}" "GET:/v1/sessions?after=2" "remote clients paginate through the session-list tail"
 remote_client_load_session "$CURRENT_SESSION_ID"
 assert_success "remote clients load the selected transcript" $?
@@ -780,6 +783,33 @@ remote_client_select_session "2000000000_2"
 assert_success "remote clients can select another server-owned session" $?
 assert_contains "$MOCK_REMOTE_SELECT_PAYLOAD" '"id":"2000000000_2"' "remote session selection sends the exact safe identifier"
 assert_eq "2000000000_2" "$CURRENT_SESSION_ID" "remote session selection updates the active client job"
+assert_eq "1" "$REMOTE_SESSION_EMPTY" "remote clients detect a selected session that is still empty"
+
+saved_remote_session_refresh="${functions[remote_client_refresh_sessions]}"
+saved_remote_session_load="${functions[remote_client_load_session]}"
+saved_remote_session_new="${functions[remote_client_new_session]}"
+typeset -gi MOCK_REMOTE_START_LOADS=0 MOCK_REMOTE_START_NEWS=0
+typeset -g MOCK_REMOTE_START_LOADED_ID=""
+remote_client_refresh_sessions() { return 0; }
+remote_client_load_session() { (( MOCK_REMOTE_START_LOADS++ )); MOCK_REMOTE_START_LOADED_ID="$1"; return 0; }
+remote_client_new_session() { (( MOCK_REMOTE_START_NEWS++ )); return 0; }
+CURRENT_SESSION_ID="3000000000_3"
+REMOTE_SESSION_EMPTY=0
+remote_client_start_session
+assert_success "remote client startup prepares a fresh job after a used session" $?
+assert_eq "1" "$MOCK_REMOTE_START_NEWS" "remote client startup does not resume a used session"
+assert_eq "0" "$MOCK_REMOTE_START_LOADS" "remote client startup leaves prior transcript loading explicit"
+MOCK_REMOTE_START_LOADS=0
+MOCK_REMOTE_START_NEWS=0
+CURRENT_SESSION_ID="2000000000_2"
+REMOTE_SESSION_EMPTY=1
+remote_client_start_session
+assert_success "remote client startup accepts an already-empty selected job" $?
+assert_eq "0" "$MOCK_REMOTE_START_NEWS" "remote client startup avoids duplicate blank sessions"
+assert_eq "2000000000_2" "$MOCK_REMOTE_START_LOADED_ID" "remote client startup loads the existing empty job"
+functions[remote_client_refresh_sessions]="$saved_remote_session_refresh"
+functions[remote_client_load_session]="$saved_remote_session_load"
+functions[remote_client_new_session]="$saved_remote_session_new"
 
 functions[remote_client_request]="$saved_remote_client_request"
 functions[agent_set_status]="$saved_remote_status_setter"
@@ -1021,6 +1051,15 @@ skills_activate folded-skill >/dev/null
 state_save_and_refresh
 assert_eq "Repair the deployment without losing conte" "$SESSION_TITLE" "first user request becomes a bounded resumable session title"
 assert_contains "${(j:,:)SESSION_IDS}" "$saved_session_id" "saved sessions appear in the sidebar cache"
+
+state_init
+launch_session_id="$CURRENT_SESSION_ID"
+[[ "$launch_session_id" != "$saved_session_id" ]]
+assert_success "interactive startup creates a fresh session instead of resuming the latest one" $?
+assert_eq "0" "${#AGENT_MESSAGES}" "fresh startup sessions begin without prior model history"
+assert_contains "${(j:,:)SESSION_IDS}" "$saved_session_id" "fresh startup keeps older sessions available for selection"
+state_init
+assert_eq "$launch_session_id" "$CURRENT_SESSION_ID" "interactive startup reuses an untouched blank job instead of duplicating it"
 
 foreign_profile_id="9999999999_101"
 foreign_workspace_id="9999999999_102"
@@ -1865,7 +1904,7 @@ assert_contains "${DELEGATE_COMMAND[-1]}" '$(touch should-not-run)' "delegate pr
 delegate_build_command codex "review this"
 assert_success "Codex consultation command builds" $?
 delegate_command_text="${(j: :)DELEGATE_COMMAND}"
-assert_contains "$delegate_command_text" "codex exec" "Codex uses its noninteractive exec command"
+assert_contains "$delegate_command_text" "codex --ask-for-approval never exec" "Codex applies approval policy before its noninteractive exec command"
 assert_contains "$delegate_command_text" "-s read-only" "Codex receives a read-only sandbox"
 assert_eq "1" "$DELEGATE_STDIN_PROMPT" "Codex receives the consultation over stdin"
 

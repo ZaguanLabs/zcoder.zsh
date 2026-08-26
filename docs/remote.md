@@ -125,11 +125,11 @@ and reaps its worker before accepting another turn.
 ## Sessions and current limitations
 
 Sessions belong to the named server and survive server and client restarts. The
-client loads the server's session list and selected transcript during the
-handshake. Use Ctrl+N or `/new` to create a remote job, and focus the Sessions
-sidebar with Tab or `/sessions` to resume another one. Selecting a job changes
-the server-side conversation; no duplicate session state is stored on the
-workstation.
+client starts a fresh server-side job during the handshake, unless the selected
+job is already empty. Use Ctrl+N or `/new` to create another remote job, and
+focus the Sessions sidebar with Tab or `/sessions` to resume an older one.
+Selecting a job changes the server-side conversation; no duplicate session
+state is stored on the workstation.
 
 The server accepts one active turn at a time. A concurrent turn receives a busy
 response instead of running alongside it. Session creation and switching are
