@@ -11,7 +11,7 @@ zcoder.zsh              CLI and curses event loop
 lib/
   agent.zsh             Ollama messages and iterative tool loop
   compact.zsh           token accounting and conversation checkpoints
-  delegate.zsh          read-only external harness consultations
+  delegate.zsh          external harness consultations and editing workers
   http.zsh              native TCP/HTTP client
   input.zsh             multiline editor, viewport, and history
   instructions.zsh      AGENTS.md discovery and prompt assembly
@@ -30,8 +30,8 @@ tests/run.zsh           shell-level unit and integration tests
 
 `zcoder_require` sources each library at most once. The core libraries load at
 startup; `remote.zsh` loads only when a remote mode is selected, and
-`delegate.zsh` loads on the first external-consultation command. The `mcp`
-maintenance CLI loads only the configuration and protocol libraries. Every
+`delegate.zsh` loads on the first external consultation or worker command. The
+`mcp` maintenance CLI loads only the configuration and protocol libraries. Every
 cross-library call into an optionally loaded library is guarded with
 `$+functions`. `make compile` optionally precompiles the libraries to `.zwc`
 wordcode, roughly halving launch time; a stale `.zwc` is ignored by zsh, so
@@ -58,8 +58,8 @@ assistant's reasoning, content, and structured tool calls together, appends tool
 results, and returns that complete history on the next model step.
 
 Every Ollama chat payload has exactly one `system` record, at the beginning.
-Runtime recovery instructions and external-consultant results are added as
-clearly labelled user-role context without entering the exact-user ledger.
+Runtime recovery instructions and external-harness results are added as clearly
+labelled user-role context without entering the exact-user ledger.
 When an older saved session contains a mid-conversation system record, the
 transport normalizes that record to a user role while building the request.
 This keeps persisted sessions compatible with strict model templates that
@@ -72,6 +72,30 @@ request from its normal input loop, so editing remains responsive. A real user
 turn supersedes an unfinished warm-up because the HTTP worker deliberately owns
 only one Ollama request at a time. Warm-up output is validated and discarded;
 it never enters agent or session state.
+
+## External harnesses
+
+Plain provider commands run read-only consultations. A bang command selects an
+explicit execution mode for that invocation: Codex `workspace-write`, Claude
+`acceptEdits` with focused coding tools, Antigravity `accept-edits` plus its
+sandbox, or OpenCode's `build` agent. Both modes share the asynchronous process,
+timeout, cancellation, JSON/JSONL decoding, and output-bounding pipeline.
+
+Consultant output is retained as untrusted reference material. Execution output
+uses a distinct worker transcript role and is retained as an untrusted report
+which tells the Ollama agent that the workspace may have changed. The report is
+context, not proof: follow-up work must inspect current files and Git state.
+External workers use their harness's permission system rather than zcoder's
+`run_command` approval path, and interrupted runs do not roll back completed
+edits. Execution mode is rejected in the `sysadmin` profile because its
+per-command approval invariant cannot be delegated to those harnesses.
+
+Availability is a fixed provider catalog backed by Zsh's command table. Local
+invocations refresh it before dispatch. Remote servers serialize the installed
+provider names as a stable comma-separated handshake field, which the client
+restores without consulting its own `PATH`. Both modes use one formatter for
+help text and unavailable-command errors. Protocol-1 peers that omit the field
+remain compatible and are treated as availability unknown.
 
 ## Built-in tools
 

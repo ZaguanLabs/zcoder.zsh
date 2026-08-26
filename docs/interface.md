@@ -64,7 +64,7 @@ the TUI.
 | --- | --- |
 | Enter | Send the prompt |
 | Shift+Enter | Insert a newline; Alt+Enter is the fallback |
-| Escape | Stop the active model response, consultation, or remote turn |
+| Escape | Stop the active model response, external delegate, or remote turn |
 | Tab | Move focus between prompt, sidebar, and transcript |
 | Ctrl+O | Open the Ollama model picker |
 | Ctrl+R | Toggle the latest reasoning block |
@@ -98,7 +98,7 @@ the TUI.
 Some controls are intentionally unavailable in remote-client mode because the
 server owns that state.
 
-## External consultants
+## External harnesses
 
 If their CLIs are installed, zcoder can ask other coding harnesses for a
 read-only second opinion:
@@ -115,6 +115,24 @@ read-only sandbox. Antigravity uses plan and sandbox mode. OpenCode uses its pla
 agent and a selected `provider/model`; run `/opencode` without a request to open
 the picker, or use `/opencode-model PROVIDER/MODEL`.
 
+Add `!` to run the same provider as a coding worker that may edit the selected
+workspace:
+
+```text
+/claude! Implement the reviewed authentication fix and run focused tests
+/codex! Fix the failing parser test
+/agy! Apply the smallest safe refactor
+/opencode! Implement the selected approach
+```
+
+The bang is explicit mutation authority for that invocation. Codex uses its
+`workspace-write` sandbox, Claude uses `acceptEdits` with focused coding tools,
+Antigravity uses `accept-edits` with terminal sandboxing, and OpenCode uses its
+`build` agent without `--auto`. Workers are told to stay inside the workspace
+and not install, deploy, commit, push, or publish unless the request explicitly
+requires that action. Each bang command starts a fresh harness invocation; it
+does not resume an earlier consultation.
+
 Default models and limits:
 
 | Setting | Default |
@@ -129,11 +147,28 @@ Default models and limits:
 | `ZCODER_DELEGATE_REQUEST_CHARS` | 2000 characters |
 
 `ZCODER_OPENCODE_VARIANT` supplies an optional OpenCode variant. Escape cancels
-an active consultant and discards its result.
+an active external invocation. Cancelling or timing out a worker does not roll
+back edits it already made, so inspect the workspace afterward.
 
-Successful output is decoded from JSON or JSONL, shown in the transcript, and
-retained as explicitly untrusted reference material for later Ollama turns. A
-consultant is never invoked through `run_command`, never inherits its approval
-override, and cannot edit through zcoder.
+Successful output is decoded from JSON or JSONL and shown in the transcript.
+Consultations are retained as explicitly untrusted reference material for later
+Ollama turns. Worker reports are retained separately with a warning that the
+workspace may have changed and must be inspected before follow-up work.
+
+External harnesses are not invoked through `run_command` and do not use
+zcoder's shell-command approval modal. Their own sandbox, tool permissions,
+project instructions, and user configuration govern their internal actions.
+Use the plain command when you only want advice; use the bang form only when you
+intend to authorize workspace changes. Bang commands are disabled in the
+`sysadmin` profile because external harness commands cannot participate in its
+mandatory per-command approval flow.
+
+zcoder checks `PATH` on the host responsible for the workspace. `/help` reports
+which of the four harness commands are available. Invoking a missing plain or
+bang command returns the same host-specific message, names the missing binary,
+and suggests the installed alternatives. A remote server publishes its own
+snapshot during the authenticated handshake, so a workstation does not mistake
+its locally installed CLIs for commands present on the server. Older servers
+that do not publish this field are reported as availability unknown.
 
 [Documentation index](README.md) · [Configuration](configuration.md) · [Project README](../README.md)

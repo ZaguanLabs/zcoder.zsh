@@ -8,7 +8,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.7.1"
+typeset -gr ZCODER_VERSION="0.7.2"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -231,14 +231,56 @@ zcoder_refresh_sessions() {
   fi
 }
 
+zcoder_delegate_host_label() {
+  if [[ "$REMOTE_MODE" == client ]]; then
+    REPLY="remote server '${REMOTE_SERVER_NAME:-unknown}'"
+  else
+    REPLY="this zcoder host"
+  fi
+}
+
+zcoder_delegate_require_available() {
+  local provider="$1" host_label=""
+  if [[ "$REMOTE_MODE" == client ]]; then
+    (( ${REMOTE_HARNESS_DISCOVERY_SUPPORTED:-0} )) || return 0
+  else
+    delegate_refresh_availability
+  fi
+  zcoder_delegate_host_label; host_label="$REPLY"
+  delegate_require_available "$provider" "$host_label"
+}
+
+zcoder_delegate_availability_summary() {
+  local host_label=""
+  if [[ "$REMOTE_MODE" == client && ${REMOTE_HARNESS_DISCOVERY_SUPPORTED:-0} -ne 1 ]]; then
+    REPLY="External harness availability is not reported by this remote server."
+    return 0
+  fi
+  [[ "$REMOTE_MODE" == client ]] || delegate_refresh_availability
+  zcoder_delegate_host_label; host_label="$REPLY"
+  delegate_availability_summary "$host_label"
+}
+
 handle_slash_command() {
-  local text="$1" value="" provider="" previous_value=""
+  local text="$1" value="" provider="" command_name="" previous_value=""
   local -i delegate_status=0
   case "$text" in
-    /claude|/claude\ *|/codex|/codex\ *|/agy|/agy\ *|/opencode*)
+    /claude|/claude\ *|/claude!|/claude!\ *|/codex|/codex\ *|/codex!|/codex!\ *|/agy|/agy\ *|/agy!|/agy!\ *|/opencode*|/help|/\?)
       zcoder_require delegate
       ;;
   esac
+  provider=""
+  case "$text" in
+    /claude|/claude\ *|/claude!|/claude!\ *) provider="claude" ;;
+    /codex|/codex\ *|/codex!|/codex!\ *) provider="codex" ;;
+    /agy|/agy\ *|/agy!|/agy!\ *) provider="agy" ;;
+    /opencode|/opencode\ *|/opencode!|/opencode!\ *|/opencode-model|/opencode-model\ *) provider="opencode" ;;
+  esac
+  if [[ -n "$provider" ]] && ! zcoder_delegate_require_available "$provider"; then
+    ui_append_message error "$DELEGATE_ERROR"
+    ui_refresh_all
+    return 0
+  fi
   case "$text" in
     /new|/clear)
       if [[ "$REMOTE_MODE" == client ]]; then
@@ -419,6 +461,30 @@ handle_slash_command() {
         ui_append_message error "${DELEGATE_ERROR:-${provider} consultation failed}"
       fi
       ;;
+    /claude!|/codex!|/agy!|/opencode!)
+      provider="${text#/}"; provider="${provider%!}"
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "External workers are not exposed by the remote server."
+        return 0
+      fi
+      ui_append_message error "/${provider}! requires a request"
+      ;;
+    /claude!\ *|/codex!\ *|/agy!\ *|/opencode!\ *)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "External workers are not exposed by the remote server."
+        return 0
+      fi
+      command_name="${text%% *}"
+      provider="${command_name#/}"; provider="${provider%!}"
+      value="${text#${command_name} }"
+      if [[ "$provider" == opencode && -z "$ZCODER_OPENCODE_MODEL" ]]; then
+        ui_select_opencode_model || { ui_refresh_all; return 0; }
+      fi
+      delegate_run "$provider" "$value" execute || delegate_status=$?
+      if (( delegate_status != 0 && delegate_status != 130 && ! DELEGATE_ERROR_REPORTED )); then
+        ui_append_message error "${DELEGATE_ERROR:-${provider} worker failed}"
+      fi
+      ;;
     /opencode)
       if [[ "$REMOTE_MODE" == client ]]; then
         ui_append_message error "External consultations are not exposed by the remote server."
@@ -461,7 +527,9 @@ handle_slash_command() {
       fi
       ;;
     /help|/\?)
-      ui_append_message system $'Enter sends a prompt. Shift+Enter inserts a newline; Alt+Enter is the fallback for terminals that do not report Shift+Enter separately. Pasted multiline text keeps its formatting. Escape stops a running Ollama response or external consultation.\nTab moves focus between the prompt, session sidebar, and transcript. Use Up/Down in the sidebar to resume another job. Ctrl+Y or /copy opens a stable plain-text view for native terminal selection and copying.\nCtrl+O selects an Ollama model. Ctrl+R toggles reasoning. Ctrl+N starts a new saved session. PgUp/PgDn scroll. Ctrl+U clears input. Ctrl+W deletes a word. Ctrl+Q exits.\n/claude REQUEST, /codex REQUEST, /agy REQUEST, and /opencode REQUEST run read-only external consultations. /opencode with no request selects its provider/model. /mcp shows configured servers and live status; /mcp reload reloads configuration. /skills lists installed Agent Skills; /skill NAME activates one. Prefix a request with $skill-name for explicit activation. /model opens the Ollama picker; /host HOST changes Ollama; /instructions lists active AGENTS.md files; /compact creates a context checkpoint; /context shows the token budget; /sessions focuses saved jobs; /new starts a saved job.'
+      ui_append_message system $'Enter sends a prompt. Shift+Enter inserts a newline; Alt+Enter is the fallback for terminals that do not report Shift+Enter separately. Pasted multiline text keeps its formatting. Escape stops a running Ollama response or external delegate.\nTab moves focus between the prompt, session sidebar, and transcript. Use Up/Down in the sidebar to resume another job. Ctrl+Y or /copy opens a stable plain-text view for native terminal selection and copying.\nCtrl+O selects an Ollama model. Ctrl+R toggles reasoning. Ctrl+N starts a new saved session. PgUp/PgDn scroll. Ctrl+U clears input. Ctrl+W deletes a word. Ctrl+Q exits.\n/claude REQUEST, /codex REQUEST, /agy REQUEST, and /opencode REQUEST run read-only consultations. Add ! to run an explicitly workspace-editing worker, for example /codex! REQUEST. /opencode with no request selects its provider/model. /mcp shows configured servers and live status; /mcp reload reloads configuration. /skills lists installed Agent Skills; /skill NAME activates one. Prefix a request with $skill-name for explicit activation. /model opens the Ollama picker; /host HOST changes Ollama; /instructions lists active AGENTS.md files; /compact creates a context checkpoint; /context shows the token budget; /sessions focuses saved jobs; /new starts a saved job.'
+      zcoder_delegate_availability_summary
+      ui_append_message system "$REPLY"
       ;;
     /quit|/exit|/q) RUNNING=0 ;;
     *) return 1 ;;

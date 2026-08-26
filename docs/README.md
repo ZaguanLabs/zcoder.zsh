@@ -9,7 +9,7 @@ zcoder.zsh. If you are new to the project, begin with
 | Guide | What it covers |
 | --- | --- |
 | [Getting started](getting-started.md) | Requirements, installation, first run, one-shot use, and essential options |
-| [Interface and sessions](interface.md) | TUI layout, keyboard controls, slash commands, saved jobs, and consultants |
+| [Interface and sessions](interface.md) | TUI layout, keyboard controls, slash commands, saved jobs, consultants, and external workers |
 | [Remote-agent server](remote.md) | Running zcoder beside a remote model and workspace |
 | [Safety and permissions](safety.md) | Workspace boundaries, command approval, trust boundaries, and sysadmin safeguards |
 

@@ -251,6 +251,10 @@ ui_plain_transcript() {
       codex) label="Codex consultant" ;;
       agy) label="Antigravity consultant" ;;
       opencode) label="OpenCode consultant" ;;
+      claude_worker) label="Claude worker" ;;
+      codex_worker) label="Codex worker" ;;
+      agy_worker) label="Antigravity worker" ;;
+      opencode_worker) label="OpenCode worker" ;;
       error) label="Error" ;;
       *) label="${role:u}" ;;
     esac
@@ -578,6 +582,10 @@ _ui_render_one_message() {
     codex) title="◇ Codex consultant  ${time}"; attr="cyan/black" ;;
     agy) title="◇ Antigravity consultant  ${time}"; attr="cyan/black" ;;
     opencode) title="◇ OpenCode consultant  ${time}"; attr="cyan/black" ;;
+    claude_worker) title="◆ Claude worker  ${time}"; attr="green/black" ;;
+    codex_worker) title="◆ Codex worker  ${time}"; attr="green/black" ;;
+    agy_worker) title="◆ Antigravity worker  ${time}"; attr="green/black" ;;
+    opencode_worker) title="◆ OpenCode worker  ${time}"; attr="green/black" ;;
     error) title="⚠ Error  ${time}"; attr="red/black" ;;
     *) title="ℹ ${role}  ${time}"; attr="magenta/black" ;;
   esac

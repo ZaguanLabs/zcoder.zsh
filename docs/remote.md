@@ -144,10 +144,17 @@ These controls are not yet exposed remotely:
 - model or Ollama host switching
 - manual `/compact`
 - Skills and MCP management screens
-- external consultant commands
+- external consultation and worker commands
 
 They fail closed in the client UI. Ordinary prompts, including explicit
 `$skill-name` activation, are handled entirely by the remote agent.
+
+The handshake nevertheless advertises which of `claude`, `codex`, `agy`, and
+`opencode` exist in the server process's `PATH`. This lets the client give the
+same precise unavailable-command message as local mode and ensures capability
+checks describe the server rather than the workstation. The field is optional
+for compatibility with older protocol-1 servers; its absence means unknown,
+not unavailable.
 
 ## Network security
 

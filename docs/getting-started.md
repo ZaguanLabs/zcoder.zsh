@@ -18,9 +18,15 @@ GNU `timeout` is optional. Without it, approved shell commands still work, but
 their configured time limits are not enforced. `make` and `mktemp` are needed
 only for development and the test suite.
 
-Claude Code, Codex, Google Antigravity, and OpenCode are optional read-only
-consultants. The Skills CLI is also optional: zcoder reads installed Agent Skill
-directories directly. Stdio MCP support adds no runtime dependency.
+Claude Code, Codex, Google Antigravity, and OpenCode are optional external
+harnesses. Their plain slash commands provide read-only consultations; explicit
+bang commands can run them as workspace-editing workers. The Skills CLI is also
+optional: zcoder reads installed Agent Skill directories directly. Stdio MCP
+support adds no runtime dependency.
+
+Use `/help` in the TUI to see which external harness binaries are available on
+the zcoder host. When connected remotely, this list comes from the server host,
+not the workstation.
 
 ## Install and run
 

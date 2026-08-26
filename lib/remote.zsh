@@ -14,7 +14,9 @@ typeset -g REMOTE_CLIENT_EVENT_CURSOR="0"
 typeset -g REMOTE_ERROR=""
 typeset -g REMOTE_MODEL_STATUS="unknown"
 typeset -g REMOTE_MODEL_ERROR=""
+typeset -g REMOTE_HARNESSES=""
 typeset -gi REMOTE_SESSIONS_SUPPORTED=0
+typeset -gi REMOTE_HARNESS_DISCOVERY_SUPPORTED=0
 typeset -gi REMOTE_SESSION_EMPTY=0
 typeset -gi REMOTE_SERVER_WORKER=0
 typeset -gi REMOTE_MAX_REQUEST_BYTES="${ZCODER_REMOTE_MAX_REQUEST_BYTES:-1048576}"
@@ -107,7 +109,7 @@ remote_client_request() {
 }
 
 remote_client_handshake() {
-  local protocol="" server_name="" workspace="" model="" profile="" command_policy="" sessions=""
+  local protocol="" server_name="" workspace="" model="" profile="" command_policy="" sessions="" harnesses=""
   remote_load_token "$REMOTE_TOKEN_FILE" || return 1
   remote_client_request GET /v1/hello || return 1
   json_parse_flat_object "$HTTP_BODY" || { REMOTE_ERROR="invalid server handshake: ${JSON_ERROR:-parse error}"; return 1; }
@@ -128,6 +130,18 @@ remote_client_handshake() {
   # Keep those servers usable and let their first real turn load the model.
   REMOTE_MODEL_STATUS="${JSON_OBJECT[model_status]:-unmanaged}"
   REMOTE_MODEL_ERROR="${JSON_OBJECT[model_error]:-}"
+  if (( ${+JSON_OBJECT[harnesses]} )) && [[ "${JSON_OBJECT_TYPES[harnesses]:-}" == string ]]; then
+    harnesses="${JSON_OBJECT[harnesses]}"
+    REMOTE_HARNESSES="$harnesses"
+    REMOTE_HARNESS_DISCOVERY_SUPPORTED=1
+    if (( ! $+functions[delegate_set_available_csv] && $+functions[zcoder_require] )); then
+      zcoder_require delegate
+    fi
+    (( $+functions[delegate_set_available_csv] )) && delegate_set_available_csv "$harnesses"
+  else
+    REMOTE_HARNESSES=""
+    REMOTE_HARNESS_DISCOVERY_SUPPORTED=0
+  fi
   if [[ "$sessions" == true ]]; then
     REMOTE_SESSIONS_SUPPORTED=1
     remote_client_start_session || return 1
@@ -910,6 +924,29 @@ _remote_server_cancel_turn() {
   zf_rm -f "$REMOTE_RUNTIME_DIR/worker.done" 2>/dev/null
 }
 
+_remote_server_hello_json() {
+  local name_json="" workspace_json="" model_json="" profile_json="" policy_json=""
+  local model_status_json="" model_error_json="" harnesses_json="" harnesses=""
+  local effective_policy="${mapfile[$REMOTE_RUNTIME_DIR/command_policy]:-$ZCODER_COMMAND_POLICY}"
+  if (( ! $+functions[delegate_available_csv] && $+functions[zcoder_require] )); then
+    zcoder_require delegate
+  fi
+  if (( $+functions[delegate_refresh_availability] )); then
+    delegate_refresh_availability
+    delegate_available_csv
+    harnesses="$REPLY"
+  fi
+  json_quote "$REMOTE_SERVER_NAME"; name_json="$REPLY"
+  json_quote "${ZCODER_WORKSPACE:A}"; workspace_json="$REPLY"
+  json_quote "$ZCODER_MODEL"; model_json="$REPLY"
+  json_quote "$ZCODER_PROFILE"; profile_json="$REPLY"
+  json_quote "$effective_policy"; policy_json="$REPLY"
+  json_quote "$REMOTE_MODEL_STATUS"; model_status_json="$REPLY"
+  json_quote "$REMOTE_MODEL_ERROR"; model_error_json="$REPLY"
+  json_quote "$harnesses"; harnesses_json="$REPLY"
+  REPLY="{\"protocol\":1,\"server_name\":${name_json},\"workspace\":${workspace_json},\"model\":${model_json},\"profile\":${profile_json},\"command_policy\":${policy_json},\"model_status\":${model_status_json},\"model_error\":${model_error_json},\"harnesses\":${harnesses_json},\"sessions\":true}"
+}
+
 _remote_server_handle_connection() {
   local fd="$1" read_status=0 target="" after="0" prompt="" turn_json="" id="" decision="" session_status=0
   _remote_http_read_request "$fd"
@@ -926,17 +963,9 @@ _remote_server_handle_connection() {
   target="$REMOTE_REQUEST_TARGET"
   case "$REMOTE_REQUEST_METHOD:$target" in
     GET:/v1/hello)
-      local name_json="" workspace_json="" model_json="" profile_json="" policy_json="" model_status_json="" model_error_json=""
-      local effective_policy="${mapfile[$REMOTE_RUNTIME_DIR/command_policy]:-$ZCODER_COMMAND_POLICY}"
       _remote_server_model_ensure 1 "$fd" || true
-      json_quote "$REMOTE_SERVER_NAME"; name_json="$REPLY"
-      json_quote "${ZCODER_WORKSPACE:A}"; workspace_json="$REPLY"
-      json_quote "$ZCODER_MODEL"; model_json="$REPLY"
-      json_quote "$ZCODER_PROFILE"; profile_json="$REPLY"
-      json_quote "$effective_policy"; policy_json="$REPLY"
-      json_quote "$REMOTE_MODEL_STATUS"; model_status_json="$REPLY"
-      json_quote "$REMOTE_MODEL_ERROR"; model_error_json="$REPLY"
-      _remote_http_send "$fd" 200 "{\"protocol\":1,\"server_name\":${name_json},\"workspace\":${workspace_json},\"model\":${model_json},\"profile\":${profile_json},\"command_policy\":${policy_json},\"model_status\":${model_status_json},\"model_error\":${model_error_json},\"sessions\":true}"
+      _remote_server_hello_json
+      _remote_http_send "$fd" 200 "$REPLY"
       ;;
     GET:/v1/model)
       _remote_server_model_poll || true

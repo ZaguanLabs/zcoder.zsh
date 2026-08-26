@@ -36,6 +36,28 @@ Approval is not a substitute for reading the command. Pay particular attention
 to variables, interpreters, downloaded scripts, pipes, and commands that invoke
 another shell.
 
+## External coding workers
+
+The plain `/claude`, `/codex`, `/agy`, and `/opencode` commands are read-only
+consultations. Their bang forms, such as `/codex! REQUEST`, explicitly authorize
+that external harness to modify the selected workspace for one invocation.
+
+External workers do not call zcoder's `run_command`, so their internal commands
+do not pass through zcoder's approval modal or catastrophic-command guard.
+Instead they run under the installed harness's own edit mode and permission
+policy: Codex uses `workspace-write`, Claude uses `acceptEdits`, Antigravity uses
+`accept-edits` with its sandbox, and OpenCode uses `build` without automatic
+permission approval. The worker prompt withholds unrelated authority such as
+installing, deploying, committing, or pushing unless the request explicitly
+requires it.
+
+The harness CLI, its configuration, hooks, plugins, and project instructions
+are part of this trust boundary. Review them before using a bang command.
+Cancellation, timeout, or a harness error cannot undo changes already made;
+inspect `git status` and the workspace before continuing after an interrupted
+worker. External workers are disabled entirely in the `sysadmin` profile so
+they cannot bypass its mandatory per-command approval policy.
+
 ## Sysadmin profile
 
 The `sysadmin` profile is designed for host maintenance rather than unrestricted

@@ -67,7 +67,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..661"
+print -r -- "1..713"
 
 input_reset
 input_layout 20 4
@@ -1977,6 +1977,74 @@ assert_eq "15" "${AGENT_TOOL_REQUEST_HISTORY[1]}" "bounded history preserves ind
 
 # External harnesses are built and parsed independently of curses. These tests
 # never invoke a paid model; the async checks use local Zsh child processes.
+saved_delegate_command_available="${functions[delegate_command_available]}"
+delegate_command_available() { [[ "$1" == claude || "$1" == codex ]]; }
+delegate_refresh_availability
+delegate_available claude
+assert_success "host discovery finds an installed Claude command" $?
+delegate_available codex
+assert_success "host discovery finds an installed Codex command" $?
+delegate_available agy
+assert_failure "host discovery marks a missing Antigravity command unavailable" $?
+delegate_available opencode
+assert_failure "host discovery marks a missing OpenCode command unavailable" $?
+delegate_available_csv
+assert_eq "claude,codex" "$REPLY" "available harnesses serialize in stable provider order"
+delegate_availability_summary "remote server 'test-server'"
+assert_contains "$REPLY" "available /claude, /codex; unavailable /agy, /opencode" "availability summary separates installed and missing harnesses"
+delegate_unavailable_message agy "remote server 'test-server'"
+assert_contains "$REPLY" "/agy is unavailable on remote server 'test-server'" "missing harnesses use the standard host-specific message"
+assert_contains "$REPLY" "Available external harnesses: /claude, /codex" "unavailable messages suggest installed alternatives"
+delegate_require_available agy "remote server 'test-server'"
+assert_failure "availability guard rejects a missing harness" $?
+assert_contains "$DELEGATE_ERROR" "'agy' was not found in PATH" "availability guard retains the standard error"
+
+saved_remote_hello_runtime="$REMOTE_RUNTIME_DIR"
+REMOTE_RUNTIME_DIR="$TEST_TMP/remote-harness-hello"
+zf_mkdir -p "$REMOTE_RUNTIME_DIR"
+_remote_server_hello_json
+remote_harness_hello="$REPLY"
+json_parse_flat_object "$remote_harness_hello"
+assert_success "remote hello with harness capabilities remains flat JSON" $?
+assert_eq "claude,codex" "${JSON_OBJECT[harnesses]}" "remote hello advertises commands installed on the server host"
+REMOTE_RUNTIME_DIR="$saved_remote_hello_runtime"
+
+saved_remote_handshake_load_token="${functions[remote_load_token]}"
+saved_remote_handshake_request="${functions[remote_client_request]}"
+saved_remote_handshake_workspace="$ZCODER_WORKSPACE"
+saved_remote_handshake_model="$ZCODER_MODEL"
+saved_remote_handshake_profile="$ZCODER_PROFILE"
+saved_remote_handshake_name="$REMOTE_SERVER_NAME"
+remote_load_token() { return 0; }
+remote_client_request() {
+  HTTP_BODY='{"protocol":1,"server_name":"test-server","workspace":"/srv/test-server","model":"server-model","profile":"coding","command_policy":"ask","model_status":"ready","model_error":"","harnesses":"claude,codex","sessions":false}'
+  return 0
+}
+remote_client_handshake
+assert_success "remote handshake accepts advertised harness capabilities" $?
+assert_eq "1" "$REMOTE_HARNESS_DISCOVERY_SUPPORTED" "remote clients recognize harness-aware servers"
+assert_eq "claude,codex" "$REMOTE_HARNESSES" "remote clients retain the server-authored harness list"
+delegate_available codex
+assert_success "remote availability enables a server-installed harness" $?
+delegate_available agy
+assert_failure "remote availability rejects a harness missing on the server" $?
+remote_client_request() {
+  HTTP_BODY='{"protocol":1,"server_name":"legacy","workspace":"/srv/legacy","model":"server-model","profile":"coding","command_policy":"ask","sessions":false}'
+  return 0
+}
+remote_client_handshake
+assert_success "remote handshake remains compatible with legacy capability responses" $?
+assert_eq "0" "$REMOTE_HARNESS_DISCOVERY_SUPPORTED" "legacy servers leave harness availability unknown"
+assert_eq "" "$REMOTE_HARNESSES" "legacy handshakes clear stale remote harness snapshots"
+functions[remote_load_token]="$saved_remote_handshake_load_token"
+functions[remote_client_request]="$saved_remote_handshake_request"
+functions[delegate_command_available]="$saved_delegate_command_available"
+DELEGATE_AVAILABILITY_KNOWN=0
+ZCODER_WORKSPACE="$saved_remote_handshake_workspace"
+ZCODER_MODEL="$saved_remote_handshake_model"
+ZCODER_PROFILE="$saved_remote_handshake_profile"
+REMOTE_SERVER_NAME="$saved_remote_handshake_name"
+
 delegate_build_command claude 'review $(touch should-not-run)'
 assert_success "Claude consultation command builds" $?
 assert_eq "claude-opus-5" "$DELEGATE_MODEL" "Claude uses the configured Opus model"
@@ -1986,6 +2054,29 @@ assert_contains "$delegate_command_text" "--tools Read,Glob,Grep" "Claude receiv
 assert_not_contains "$delegate_command_text" "Bash" "Claude cannot invoke its shell tool"
 assert_contains "${DELEGATE_COMMAND[-1]}" '$(touch should-not-run)' "delegate prompts remain literal argv data"
 
+delegate_execution_prompt 'implement $(touch still-literal)'
+assert_contains "$REPLY" "${ZCODER_WORKSPACE:A}" "worker prompt names the canonical workspace"
+assert_contains "$REPLY" "explicitly authorized" "worker prompt grants workspace edit authority"
+assert_contains "$REPLY" "Do not install dependencies" "worker prompt withholds unrelated mutation authority"
+assert_contains "$REPLY" 'implement $(touch still-literal)' "worker prompt preserves the literal request"
+delegate_prompt unknown "request"
+assert_failure "unknown delegate modes are rejected" $?
+assert_contains "$DELEGATE_ERROR" "consult or execute" "delegate mode errors list the supported choices"
+saved_delegate_profile="$ZCODER_PROFILE"
+ZCODER_PROFILE=sysadmin
+delegate_build_command codex "change the host" execute
+assert_failure "sysadmin profile rejects external coding workers" $?
+assert_contains "$DELEGATE_ERROR" "per-command approval" "sysadmin worker rejection preserves its approval boundary"
+ZCODER_PROFILE="$saved_delegate_profile"
+
+delegate_build_command claude "implement this" execute
+assert_success "Claude worker command builds" $?
+assert_eq "execute" "$DELEGATE_MODE" "worker command construction records execution mode"
+delegate_command_text="${(j: :)DELEGATE_COMMAND}"
+assert_contains "$delegate_command_text" "--permission-mode acceptEdits" "Claude worker accepts workspace edits"
+assert_contains "$delegate_command_text" "--tools Read,Glob,Grep,Edit,Write,Bash" "Claude worker receives focused coding tools"
+assert_not_contains "$delegate_command_text" "--permission-mode plan" "Claude worker does not remain in consultation mode"
+
 delegate_build_command codex "review this"
 assert_success "Codex consultation command builds" $?
 delegate_command_text="${(j: :)DELEGATE_COMMAND}"
@@ -1993,11 +2084,23 @@ assert_contains "$delegate_command_text" "codex --ask-for-approval never exec" "
 assert_contains "$delegate_command_text" "-s read-only" "Codex receives a read-only sandbox"
 assert_eq "1" "$DELEGATE_STDIN_PROMPT" "Codex receives the consultation over stdin"
 
+delegate_build_command codex "implement this" execute
+assert_success "Codex worker command builds" $?
+delegate_command_text="${(j: :)DELEGATE_COMMAND}"
+assert_contains "$delegate_command_text" "-s workspace-write" "Codex worker receives a workspace-write sandbox"
+assert_not_contains "$delegate_command_text" "-s read-only" "Codex worker does not receive the consultation sandbox"
+
 delegate_build_command agy "review this"
 assert_success "Antigravity consultation command builds" $?
 delegate_command_text="${(j: :)DELEGATE_COMMAND}"
 assert_contains "$delegate_command_text" "--mode plan" "Antigravity runs in plan mode"
 assert_contains "$delegate_command_text" "--sandbox" "Antigravity enables its sandbox"
+
+delegate_build_command agy "implement this" execute
+assert_success "Antigravity worker command builds" $?
+delegate_command_text="${(j: :)DELEGATE_COMMAND}"
+assert_contains "$delegate_command_text" "--mode accept-edits" "Antigravity worker accepts workspace edits"
+assert_contains "$delegate_command_text" "--sandbox" "Antigravity worker retains terminal restrictions"
 
 ZCODER_OPENCODE_MODEL=""
 delegate_build_command opencode "review this"
@@ -2008,6 +2111,21 @@ assert_success "OpenCode consultation command builds after model selection" $?
 delegate_command_text="${(j: :)DELEGATE_COMMAND}"
 assert_contains "$delegate_command_text" "--agent plan" "OpenCode uses its plan agent"
 assert_contains "$delegate_command_text" "--format json" "OpenCode emits structured events"
+
+delegate_build_command opencode "implement this" execute
+assert_success "OpenCode worker command builds" $?
+delegate_command_text="${(j: :)DELEGATE_COMMAND}"
+assert_contains "$delegate_command_text" "--agent build" "OpenCode worker uses its build agent"
+assert_not_contains "$delegate_command_text" "--auto" "OpenCode worker does not bypass its permission policy"
+
+delegate_transcript_role codex consult
+assert_eq "codex" "$REPLY" "consultations retain their provider transcript role"
+delegate_transcript_role codex execute
+assert_eq "codex_worker" "$REPLY" "worker runs receive a distinct transcript role"
+delegate_activity codex consult
+assert_eq "Codex consultation" "$REPLY" "consultation activity is labelled explicitly"
+delegate_activity codex execute
+assert_eq "Codex worker" "$REPLY" "worker activity is labelled explicitly"
 
 delegate_extract_output claude '{"type":"result","subtype":"success","result":"Claude final"}'
 assert_success "Claude JSON result parses" $?
@@ -2033,6 +2151,11 @@ delegate_remember claude claude-opus-5 "review this" "a deliberately long consul
 assert_eq "1" "${#AGENT_MESSAGES}" "successful consultations add one bounded context record"
 assert_contains "${AGENT_MESSAGES[1]}" '"role":"user"' "consultant context uses a template-safe user role"
 assert_contains "${AGENT_MESSAGES[1]}" "untrusted quoted reference material" "delegate context labels external output as untrusted"
+delegate_remember codex gpt-5.6-sol "implement this" "changed lib/example.zsh" execute
+assert_eq "2" "${#AGENT_MESSAGES}" "successful workers add one bounded context record"
+assert_contains "${AGENT_MESSAGES[2]}" '"role":"user"' "worker context uses a template-safe user role"
+assert_contains "${AGENT_MESSAGES[2]}" "untrusted report from an external coding worker" "worker context identifies the mutating source"
+assert_contains "${AGENT_MESSAGES[2]}" "workspace may have changed" "worker context tells the main agent to inspect current state"
 ZCODER_DELEGATE_HISTORY_CHARS=12000
 
 delegate_async_start "" 0 zsh -c 'print -rn -- '\''{"result":"async delegate"}'\'''
@@ -2093,6 +2216,14 @@ for (( render_index=1; render_index<=${#UI_LINES}; render_index++ )); do
   [[ "${UI_LINES[render_index]}" == *'Read(src/example.ts)'* ]] && read_summary_attr="${UI_ATTRS[render_index]}"
 done
 assert_eq "white/black" "$read_summary_attr" "ordinary tool output no longer uses yellow body text"
+
+UI_ROLES=(codex_worker)
+UI_CONTENTS=("Implemented the requested change")
+UI_THINKINGS=(""); UI_TIMES=("12:01"); UI_REASONING_OPEN=(0)
+ui_render_messages 80
+assert_contains "${(j:\n:)UI_LINES}" "Codex worker" "worker responses render with a distinct transcript title"
+ui_plain_transcript
+assert_contains "$REPLY" "=== Codex worker  12:01 ===" "plain transcript exports preserve worker identity"
 
 UI_ROLES=(assistant)
 UI_CONTENTS=("")
