@@ -568,12 +568,15 @@ tool_dispatch() {
   esac
 }
 
-# Multiple calls in one assistant response are safe only when every call is a
-# known read-only built-in. MCP calls remain conservative until their schemas
-# carry trustworthy side-effect metadata.
-tool_is_batch_safe() {
+# Multiple calls in one assistant response are supported for known read-only
+# built-ins and run_command. Calls are dispatched serially, so each command
+# still passes workspace validation, safety guards, and the configured command
+# approval policy.
+# MCP calls remain conservative until their schemas carry trustworthy
+# side-effect metadata.
+tool_supports_multi_call() {
   case "$1" in
-    list_files|read_file|read_file_range|search|read_skill_resource) return 0 ;;
+    list_files|read_file|read_file_range|search|read_skill_resource|run_command) return 0 ;;
     *) return 1 ;;
   esac
 }

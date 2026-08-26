@@ -156,7 +156,7 @@ for model in "${eval_models[@]}"; do
         eval_count_calls
         calls=$REPLY
         unsafe_batches=0
-        eval_history_contains "Unsafe tool batch" && unsafe_batches=1
+        eval_history_contains "Unsupported tool batch" && unsafe_batches=1
         loops=0
         [[ -n "$AGENT_LOOP_REASON" && $status -ne 0 ]] && loops=1
         passed=0

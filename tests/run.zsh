@@ -67,7 +67,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..635"
+print -r -- "1..640"
 
 input_reset
 input_layout 20 4
@@ -1178,7 +1178,7 @@ assert_contains "$REPLY" "reason privately" "system prompt assigns planning to p
 assert_contains "$REPLY" "Do not emit this private plan as a tool-free preamble" "system prompt prevents visible plan-only turns"
 assert_contains "$REPLY" "analyze the exact error" "system prompt requires evidence-based failure recovery"
 assert_contains "$REPLY" "Never repeat an unchanged failed call" "system prompt prevents unchanged retries"
-assert_contains "$REPLY" "Batch only independent read-only calls" "system prompt restricts multi-call batches"
+assert_contains "$REPLY" "independent diagnostic run_command calls" "system prompt permits serialized diagnostic command batches"
 assert_contains "$REPLY" "Make at most one state-changing tool call per reasoning cycle" "system prompt serializes mutations"
 assert_contains "$REPLY" "smallest meaningful syntax, test, build, or read-back verification" "system prompt requires proportionate verification"
 assert_contains "$REPLY" "Never claim verification that was not actually observed" "system prompt prohibits invented checks"
@@ -1277,15 +1277,15 @@ agent_reset
 tools_schema_json
 assert_contains "$REPLY" "defaults to 100" "list_files schema advertises its conservative default"
 assert_contains "$REPLY" "defaults to 50" "search schema advertises its conservative default"
-tool_is_batch_safe read_file
-assert_success "read_file is safe in a read-only batch" $?
-tool_is_batch_safe read_skill_resource
-assert_success "skill resource reads are safe in a read-only batch" $?
-tool_is_batch_safe apply_patch
-assert_failure "apply_patch is not batch-safe" $?
-tool_is_batch_safe run_command
-assert_failure "run_command is not batch-safe" $?
-tool_is_batch_safe mcp__example__inspect
+tool_supports_multi_call read_file
+assert_success "read_file is supported in a multi-call response" $?
+tool_supports_multi_call read_skill_resource
+assert_success "skill resource reads are supported in a multi-call response" $?
+tool_supports_multi_call apply_patch
+assert_failure "apply_patch is not supported in a multi-call response" $?
+tool_supports_multi_call run_command
+assert_success "run_command is supported with serialized dispatch" $?
+tool_supports_multi_call mcp__example__inspect
 assert_failure "MCP tools default to non-batchable" $?
 
 agent_format_tool_ui_result read_file '{"path":"src/note.txt"}' $'one\ntwo\nthree' 1
@@ -1488,8 +1488,8 @@ assert_eq "list_files,search" "${(j:,:)MOCK_BATCH_NAMES}" "safe batch execution 
 assert_contains "$MOCK_BATCH_SECOND_PAYLOAD" "batch result 1" "first safe batch result returns to the model"
 assert_contains "$MOCK_BATCH_SECOND_PAYLOAD" "batch result 2" "second safe batch result returns to the model"
 
-# A batch containing an approval-requiring or state-changing call fails before
-# dispatch, so it cannot partially execute or open an approval prompt.
+# run_command calls in one model response are dispatched serially. The real
+# dispatcher applies validation, safety, and the command approval policy to each.
 MOCK_BATCH_TURNS=0
 MOCK_BATCH_DISPATCHES=0
 MOCK_BATCH_NAMES=()
@@ -1497,21 +1497,46 @@ MOCK_BATCH_SECOND_PAYLOAD=""
 agent_ollama_chat() {
   (( MOCK_BATCH_TURNS++ ))
   if (( MOCK_BATCH_TURNS == 1 )); then
-    HTTP_BODY='{"message":{"content":"","thinking":"attempt mixed batch","tool_calls":[{"type":"function","function":{"name":"read_file","arguments":{"path":"reasoning.txt"}}},{"type":"function","function":{"name":"run_command","arguments":{"command":"print should-not-run"}}}]}}'
+    HTTP_BODY='{"message":{"content":"","thinking":"collect two diagnostics","tool_calls":[{"type":"function","function":{"name":"run_command","arguments":{"command":"print first"}}},{"type":"function","function":{"name":"run_command","arguments":{"command":"print second"}}}]}}'
   else
     MOCK_BATCH_SECOND_PAYLOAD="$1"
-    HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"blocked","response":"Unsafe batch was rejected."}}}]}}'
+    HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"complete","response":"Command batch completed."}}}]}}'
   fi
   HTTP_ERROR=""
   return 0
 }
 agent_reset
-agent_user_turn "attempt an unsafe batch" >/dev/null 2>&1
-unsafe_batch_status=$?
-assert_success "rejected unsafe batch returns control to the model" "$unsafe_batch_status"
-assert_eq "0" "$MOCK_BATCH_DISPATCHES" "unsafe batch dispatches no calls"
-assert_contains "$MOCK_BATCH_SECOND_PAYLOAD" "Unsafe tool batch" "unsafe batch error returns to the model"
-assert_contains "$MOCK_BATCH_SECOND_PAYLOAD" "run_command" "unsafe batch error identifies the non-batchable call"
+agent_user_turn "collect two diagnostics" >/dev/null 2>&1
+command_batch_status=$?
+assert_success "serialized command batch completes" "$command_batch_status"
+assert_eq "2" "$MOCK_BATCH_DISPATCHES" "every command in the batch is dispatched"
+assert_eq "run_command,run_command" "${(j:,:)MOCK_BATCH_NAMES}" "command batch preserves emitted order"
+assert_contains "$MOCK_BATCH_SECOND_PAYLOAD" "batch result 1" "first command result returns to the model"
+assert_contains "$MOCK_BATCH_SECOND_PAYLOAD" "batch result 2" "second command result returns to the model"
+
+# Unsupported mutations still reject the whole batch before partial dispatch.
+MOCK_BATCH_TURNS=0
+MOCK_BATCH_DISPATCHES=0
+MOCK_BATCH_NAMES=()
+MOCK_BATCH_SECOND_PAYLOAD=""
+agent_ollama_chat() {
+  (( MOCK_BATCH_TURNS++ ))
+  if (( MOCK_BATCH_TURNS == 1 )); then
+    HTTP_BODY='{"message":{"content":"","thinking":"attempt mixed edits","tool_calls":[{"type":"function","function":{"name":"read_file","arguments":{"path":"reasoning.txt"}}},{"type":"function","function":{"name":"apply_patch","arguments":{"patch":"--- a/a\\n+++ b/a\\n"}}}]}}'
+  else
+    MOCK_BATCH_SECOND_PAYLOAD="$1"
+    HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"blocked","response":"Unsupported batch was rejected."}}}]}}'
+  fi
+  HTTP_ERROR=""
+  return 0
+}
+agent_reset
+agent_user_turn "attempt unsupported mixed edits" >/dev/null 2>&1
+unsupported_batch_status=$?
+assert_success "rejected unsupported batch returns control to the model" "$unsupported_batch_status"
+assert_eq "0" "$MOCK_BATCH_DISPATCHES" "unsupported batch dispatches no calls"
+assert_contains "$MOCK_BATCH_SECOND_PAYLOAD" "Unsupported tool batch" "unsupported batch error returns to the model"
+assert_contains "$MOCK_BATCH_SECOND_PAYLOAD" "apply_patch" "unsupported batch error identifies the rejected tool"
 assert_contains "${mapfile[$ZCODER_DEBUG_LOG]}" "tool_batch_rejected" "debug log records rejected batches"
 
 functions[agent_ollama_chat]="${functions[_test_real_agent_ollama_chat]}"

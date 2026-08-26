@@ -56,7 +56,7 @@ agent_completion_instructions() {
 }
 
 agent_operating_loop_instructions() {
-  REPLY=$'Reasoning and execution protocol:\nFor each user request, follow this cycle: OBSERVE → DECIDE → ACT → CHECK.\nBefore the first action, reason privately:\n- Define the requested outcome and applicable constraints.\n- Identify the evidence needed before modifying anything.\n- Choose the smallest useful next action and how its result will be verified.\nDo not emit this private plan as a tool-free preamble.\nExecution rules:\n- Inspect only until enough evidence exists, then act.\n- After each tool result, update the plan from the observed evidence. Re-plan only when a result is unexpected, incomplete, or unsuccessful.\n- On failure, analyze the exact error before choosing the next action. Never repeat an unchanged failed call or bypass a failed focused operation with a broader operation.\n- Batch only independent read-only calls. Wait for results before dependent calls, edits, commands, approvals, or other state-changing operations.\n- Make at most one state-changing tool call per reasoning cycle.\n- After changing code or configuration, run the smallest meaningful syntax, test, build, or read-back verification. Broaden verification when the change carries wider risk.\n- Never claim verification that was not actually observed.\n- Before completing, confirm that the requested outcome was addressed, relevant verification passed, and any remaining limitation is stated.'
+  REPLY=$'Reasoning and execution protocol:\nFor each user request, follow this cycle: OBSERVE → DECIDE → ACT → CHECK.\nBefore the first action, reason privately:\n- Define the requested outcome and applicable constraints.\n- Identify the evidence needed before modifying anything.\n- Choose the smallest useful next action and how its result will be verified.\nDo not emit this private plan as a tool-free preamble.\nExecution rules:\n- Inspect only until enough evidence exists, then act.\n- After each tool result, update the plan from the observed evidence. Re-plan only when a result is unexpected, incomplete, or unsuccessful.\n- On failure, analyze the exact error before choosing the next action. Never repeat an unchanged failed call or bypass a failed focused operation with a broader operation.\n- Batch independent read-only calls or independent diagnostic run_command calls. zcoder serializes every call and applies workspace, safety, and approval checks to each command. Wait for results before dependent calls, edits, or state-changing commands.\n- Make at most one state-changing tool call per reasoning cycle.\n- After changing code or configuration, run the smallest meaningful syntax, test, build, or read-back verification. Broaden verification when the change carries wider risk.\n- Never claim verification that was not actually observed.\n- Before completing, confirm that the requested outcome was addressed, relevant verification passed, and any remaining limitation is stated.'
 }
 
 agent_patch_instructions() {
@@ -978,8 +978,8 @@ agent_user_turn() {
     batch_error=""
     if (( ${#call_names} > 1 )); then
       for tool_name in "${call_names[@]}"; do
-        if ! tool_is_batch_safe "$tool_name"; then
-          batch_error="Unsafe tool batch: multiple calls are allowed only for independent read-only built-ins. Resend dependent or state-changing calls one at a time; '${tool_name}' is not batch-safe."
+        if ! tool_supports_multi_call "$tool_name"; then
+          batch_error="Unsupported tool batch: multiple calls are accepted only for independent read-only built-ins and run_command. Commands are serialized and approved individually. Resend edits, activation, finish, unknown, or MCP calls one at a time; '${tool_name}' cannot be used in a batch."
           zcoder_debug tool_batch_rejected "step=$step calls=${(j:,:)call_names} reason=${(qqq)batch_error}"
           break
         fi

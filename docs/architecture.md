@@ -90,17 +90,18 @@ Patch application does not require a Git repository. zcoder validates with
 workspace-confined `patch --dry-run`. After a rejected patch, `write_file` is
 removed for the rest of that user turn until a corrected patch succeeds.
 
-## Batched reads and serialized changes
+## Multiple tool calls
 
-One assistant response may contain multiple independent read-only built-ins:
-`list_files`, `read_file`, `read_file_range`, `search`, and
-`read_skill_resource`. zcoder executes accepted calls sequentially to preserve
-deterministic history.
+One assistant response may contain multiple independent read-only built-ins or
+`run_command` calls. zcoder executes every accepted call sequentially and
+returns every result to Ollama, matching its parallel-tool-call protocol while
+preserving deterministic history. Each command independently passes workspace
+validation, safety guards, and the configured command approval policy before
+execution.
 
-A batch containing an edit, command, approval, activation, `finish`, unknown
-tool, or MCP tool without explicit read-only metadata is rejected before any
-call runs. Dependent reads and every state-changing operation therefore require
-separate reasoning cycles.
+A batch containing an edit, activation, `finish`, unknown tool, or MCP tool
+without explicit read-only metadata is rejected before any call runs. Dependent
+operations and state-changing commands still require separate reasoning cycles.
 
 ## Loop detection and completion
 
