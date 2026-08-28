@@ -69,7 +69,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..730"
+print -r -- "1..751"
 
 input_reset
 input_layout 20 4
@@ -1369,6 +1369,14 @@ assert_failure "intentional cancellation is not replayed" $?
 agent_format_tool_ui_result read_file '{"path":"src/note.txt"}' $'one\ntwo\nthree' 1
 assert_eq "Read(src/note.txt)" "$REPLY" "UI summarizes a complete file read"
 assert_not_contains "$REPLY" "three" "UI hides complete file read contents"
+agent_format_tool_ui_result read_file '{"path":"'"${TEST_TMP}"'/src/note.txt"}' $'one\ntwo\nthree' 1
+assert_eq "Read(src/note.txt)" "$REPLY" "UI makes an absolute file path relative to the workspace"
+zf_ln -s "$TEST_TMP" "$TEST_TMP/workspace-alias"
+agent_format_tool_ui_result read_file '{"path":"'"${TEST_TMP}"'/workspace-alias/src/note.txt"}' $'one\ntwo\nthree' 1
+assert_eq "Read(src/note.txt)" "$REPLY" "UI resolves a workspace symlink before making a path relative"
+zf_rm -f "$TEST_TMP/workspace-alias"
+agent_format_tool_ui_result read_file '{"path":"'"${TEST_TMP}"'"}' "directory" 0
+assert_contains "$REPLY" "Read(.)" "UI displays the workspace root as a relative path"
 agent_format_tool_ui_result read_file_range '{"path":"src/note.txt","start_line":2,"end_line":3}' $'2: two\n3: three' 1
 assert_eq "Read File Range(src/note.txt:2-3)" "$REPLY" "UI summarizes a ranged file read"
 agent_format_tool_ui_result write_file '{"path":"src/new.txt","content":"visible write body"}' "Wrote file" 1
@@ -1706,6 +1714,10 @@ agent_content_is_lfm_intermediate_plan '{"analysis":"nothing to run","plan":"don
 assert_failure "empty LFM command lists are not treated as stalled execution" $?
 agent_content_is_lfm_intermediate_plan '{"commands":[{"command":"pwd"}]}'
 assert_failure "a commands field alone does not trigger LFM recovery" $?
+agent_content_is_lfm_intermediate_plan '{"First action":"List files in the workspace."}'
+assert_success "single-field LFM plans are recognized without relying on their label" $?
+agent_content_is_lfm_intermediate_plan '{"First action":"List files in the workspace."} trailing planner debris'
+assert_success "single-field LFM plans remain recognizable inside malformed output" $?
 agent_extract_lfm_plan_action '{"analysis":"inspect first","plan":"list files","actions":[{"tool_name":"list_files","arguments":{"path":".","max_entries":20}}],"check":"inspect the result"}'
 assert_success "named LFM plan actions can be normalized" $?
 assert_eq "list_files" "$AGENT_COMPAT_TOOL_NAME" "LFM action normalization preserves the native tool name"
@@ -1727,6 +1739,40 @@ agent_extract_lfm_plan_action '{"analysis":"inspect","plan":"list files","next_s
 assert_success "LFM singular foreign tool calls can be normalized" $?
 assert_eq "list_files" "$AGENT_COMPAT_TOOL_NAME" "LFM singular tool calls preserve their name"
 assert_contains "$AGENT_COMPAT_TOOL_ARGS" '"max_entries":10' "LFM singular tool calls preserve arguments"
+agent_extract_lfm_plan_action $'{\n  "First action: Explore the workspace before acting."},\n  "tool_call": {\n    "name": "list_files",\n    "arguments": {"path": ".", "max_entries": 100}\n  }\n}'
+assert_success "balanced tool calls are recovered from malformed LFM wrappers" $?
+assert_eq "list_files" "$AGENT_COMPAT_TOOL_NAME" "malformed-wrapper recovery preserves the exposed tool name"
+agent_extract_lfm_plan_action $'{"tool_call":{"name":"search","arguments":{"query":"literal { brace } and \\"quoted\\" text","path":"."}} trailing'
+assert_success "balanced recovery ignores braces and escaped quotes inside strings" $?
+assert_contains "$AGENT_COMPAT_TOOL_ARGS" 'literal { brace }' "balanced recovery preserves brace-bearing argument strings"
+agent_extract_lfm_plan_action '{"tool_call":{"name":"not_exposed","arguments":{"path":"."}}}'
+assert_failure "unknown balanced tool calls are not promoted" $?
+agent_content_is_lfm_intermediate_plan '{"name":"not_exposed","arguments":{"path":"."}}'
+assert_success "unknown call objects request a corrected native tool call" $?
+agent_extract_lfm_plan_action '{"tool_call":{"name":"list_files"}}'
+assert_failure "balanced tool calls without arguments are not promoted" $?
+agent_content_is_lfm_intermediate_plan '{"name":"list_files"}'
+assert_success "call objects missing arguments request correction" $?
+agent_extract_lfm_plan_action '{"tool_call":{"name":"list_files","arguments":"."}}'
+assert_failure "balanced tool calls with non-object arguments are not promoted" $?
+agent_content_is_lfm_intermediate_plan '{"name":"list_files","arguments":"."}'
+assert_success "call objects with non-object arguments request correction" $?
+agent_extract_lfm_plan_action '{"actions":[{"name":"list_files","arguments":{"path":"."}},{"name":"search","arguments":{"query":"TODO"}}]}'
+assert_failure "multiple balanced tool-call candidates are rejected as ambiguous" $?
+agent_extract_lfm_plan_action '{"plan":"inspect","analysis":"choose a tool","actions":[{"name":"list_files","arguments":{"path":"."}},{"name":"search","arguments":{"query":"TODO"}}]}'
+assert_failure "ambiguous balanced calls cannot fall back to first-action promotion" $?
+TOOL_PATCH_RETRY_REQUIRED=1
+agent_extract_lfm_plan_action '{"tool_call":{"name":"write_file","arguments":{"path":"x","content":"x"}}}'
+assert_failure "temporarily unavailable tools are not promoted" $?
+TOOL_PATCH_RETRY_REQUIRED=0
+saved_command_policy="$ZCODER_COMMAND_POLICY"
+ZCODER_COMMAND_POLICY=deny
+agent_extract_lfm_plan_action 'malformed {"name":"run_command","arguments":{"command":"print should-not-run"}} tail'
+assert_success "a balanced run_command candidate is recovered structurally" $?
+tool_dispatch "$AGENT_COMPAT_TOOL_NAME" "$AGENT_COMPAT_TOOL_ARGS" >/dev/null 2>&1
+assert_failure "recovered run_command calls still pass through command approval" $?
+assert_contains "$TOOL_RESULT" "user denied" "recovered command denial is reported by the normal tool pipeline"
+ZCODER_COMMAND_POLICY="$saved_command_policy"
 
 typeset -gi MOCK_LFM_TURNS=0 MOCK_LFM_DISPATCHES=0
 typeset -ga MOCK_LFM_PAYLOADS=()

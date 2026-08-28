@@ -28,6 +28,9 @@ typeset -g AGENT_WARMUP_MODEL=""
 typeset -g AGENT_WARMUP_HOST=""
 typeset -g AGENT_COMPAT_TOOL_NAME=""
 typeset -g AGENT_COMPAT_TOOL_ARGS="{}"
+typeset -gi AGENT_LFM_BALANCED_TOOL_CANDIDATES=0
+typeset -gi AGENT_LFM_BALANCED_PLAN_OBJECTS=0
+typeset -gi AGENT_LFM_BALANCED_CALL_OBJECTS=0
 
 (( AGENT_LOOP_REPEAT_LIMIT >= 2 )) || AGENT_LOOP_REPEAT_LIMIT=3
 (( AGENT_LOOP_MAX_CYCLE > 0 )) || AGENT_LOOP_MAX_CYCLE=4
@@ -151,13 +154,22 @@ agent_default_system_prompt() {
 agent_format_tool_ui_result() {
   local tool_name="$1" args_json="$2" result="$3"
   local -i succeeded="${4:-0}"
-  local path="" start="" end="" content="" label=""
+  local path="" workspace_root="" resolved_path="" start="" end="" content="" label=""
   if ! json_parse_flat_object "$args_json"; then
     (( succeeded )) && label="✓ ${tool_name}" || label="✗ ${tool_name}"
     REPLY="$label"$'\n'"$result"
     return 0
   fi
   path="${JSON_OBJECT[path]:-?}"
+  if [[ "$path" == /* ]]; then
+    workspace_root="${ZCODER_WORKSPACE:A}"
+    resolved_path="${path:A}"
+    if [[ "$resolved_path" == "$workspace_root" ]]; then
+      path="."
+    elif [[ "$resolved_path" == "$workspace_root"/* ]]; then
+      path="${resolved_path#$workspace_root/}"
+    fi
+  fi
   path="${path//$'\n'/ }"
   (( ${#path} > 180 )) && path="${path[1,177]}..."
   case "$tool_name" in
@@ -556,6 +568,12 @@ agent_content_is_lfm_intermediate_plan() {
   local -i has_next_action=0
   [[ "$model" == *lfm* ]] || return 1
   _agent_content_is_lfm_json_plan "$content" && return 0
+  # A one-member string object is the stable structural core of LFM's
+  # free-form planner labels (for example "First action"). JSON-only user
+  # requests are excluded by the caller before this classification is used.
+  _agent_lfm_json_is_single_string_object "$content" && return 0
+  _agent_extract_lfm_balanced_tool_call "$content" >/dev/null
+  (( AGENT_LFM_BALANCED_PLAN_OBJECTS > 0 || AGENT_LFM_BALANCED_CALL_OBJECTS > 0 )) && return 0
   # Some LFM turns place literal newlines inside quoted shell commands. The
   # inner planner envelope is then invalid JSON even though Ollama's outer
   # response is valid. Recognize that model-specific shape only for a retry;
@@ -594,8 +612,174 @@ agent_lfm_user_requests_plan_only() {
      "$content" == *'respond with json'* || "$content" == *'return only json'* ]]
 }
 
+agent_lfm_tool_is_exposed() {
+  local name="$1" skill=""
+  case "$name" in
+    list_files|read_file|read_file_range|apply_patch|search|run_command|finish)
+      return 0
+      ;;
+    write_file)
+      (( ! TOOL_PATCH_RETRY_REQUIRED ))
+      return
+      ;;
+    activate_skill)
+      (( $+functions[skills_tools_schema_json] )) || return 1
+      for skill in "${SKILL_CATALOG_NAMES[@]}"; do
+        _skills_is_active "$skill" || return 0
+      done
+      return 1
+      ;;
+    read_skill_resource)
+      (( $+functions[skills_tools_schema_json] )) || return 1
+      for skill in "${SKILL_CATALOG_NAMES[@]}"; do
+        _skills_is_active "$skill" && return 0
+      done
+      return 1
+      ;;
+    mcp__*)
+      [[ -n "${MCP_TOOL_SERVER[$name]:-}" ]]
+      return
+      ;;
+  esac
+  return 1
+}
+
+_agent_parse_lfm_tool_candidate() {
+  local candidate="$1" key="" name="" args=""
+  local -i names=0 arguments=0
+  json_begin "$candidate" || return 1
+  [[ "$JSON_TOKEN_TYPE" == '{' ]] || return 1
+  json_next || return 1
+  while [[ "$JSON_TOKEN_TYPE" != '}' ]]; do
+    [[ "$JSON_TOKEN_TYPE" == string ]] || return 1
+    key="$JSON_TOKEN_VALUE"
+    json_next || return 1
+    [[ "$JSON_TOKEN_TYPE" == ':' ]] || return 1
+    json_next || return 1
+    case "$key:$JSON_TOKEN_TYPE" in
+      name:string|tool_name:string)
+        (( names++ ))
+        name="$JSON_TOKEN_VALUE"
+        json_next || return 1
+        ;;
+      arguments:'{')
+        (( arguments++ ))
+        json_capture_raw_value || return 1
+        args="$REPLY"
+        ;;
+      *) json_discard_value || return 1 ;;
+    esac
+    if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
+      json_next || return 1
+    elif [[ "$JSON_TOKEN_TYPE" != '}' ]]; then
+      return 1
+    fi
+  done
+  json_next || return 1
+  [[ "$JSON_TOKEN_TYPE" == eof && -n "$name" ]] || return 1
+  (( names == 1 && arguments == 1 )) || return 1
+  AGENT_COMPAT_TOOL_NAME="$name"
+  AGENT_COMPAT_TOOL_ARGS="$args"
+}
+
+_agent_lfm_json_is_call_object() {
+  local candidate="$1" key=""
+  local -i call_members=0
+  json_begin "$candidate" || return 1
+  [[ "$JSON_TOKEN_TYPE" == '{' ]] || return 1
+  json_next || return 1
+  while [[ "$JSON_TOKEN_TYPE" != '}' ]]; do
+    [[ "$JSON_TOKEN_TYPE" == string ]] || return 1
+    key="$JSON_TOKEN_VALUE"
+    [[ "$key" == name || "$key" == tool_name || "$key" == arguments ]] && (( call_members++ ))
+    json_next || return 1
+    [[ "$JSON_TOKEN_TYPE" == ':' ]] || return 1
+    json_next || return 1
+    json_discard_value || return 1
+    if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
+      json_next || return 1
+    elif [[ "$JSON_TOKEN_TYPE" != '}' ]]; then
+      return 1
+    fi
+  done
+  json_next || return 1
+  [[ "$JSON_TOKEN_TYPE" == eof ]] || return 1
+  (( call_members > 0 ))
+}
+
+# Inspect every complete object delimited by balanced braces. Quotes and
+# escapes are tracked so braces in argument strings remain ordinary data. The
+# surrounding text need not be valid JSON, but each candidate is parsed
+# strictly and no candidate text is repaired.
+_agent_extract_lfm_balanced_tool_call() {
+  local content="$1" ch="" candidate="" found_name="" found_args=""
+  local -a chars=() starts=()
+  local -i i start in_string=0 escaped=0 structural=0 exposed=0 plan_objects=0 call_objects=0
+  AGENT_LFM_BALANCED_TOOL_CANDIDATES=0
+  AGENT_LFM_BALANCED_PLAN_OBJECTS=0
+  AGENT_LFM_BALANCED_CALL_OBJECTS=0
+  [[ -n "$content" ]] && chars=("${(@s::)content}")
+  for (( i=1; i<=${#chars}; i++ )); do
+    ch="${chars[i]}"
+    if (( in_string )); then
+      if (( escaped )); then
+        escaped=0
+      elif [[ "$ch" == '\\' ]]; then
+        escaped=1
+      elif [[ "$ch" == '"' ]]; then
+        in_string=0
+      fi
+      continue
+    fi
+    if [[ "$ch" == '"' ]]; then
+      in_string=1
+    elif [[ "$ch" == '{' ]]; then
+      starts+=("$i")
+    elif [[ "$ch" == '}' && ${#starts} -gt 0 ]]; then
+      start="${starts[-1]}"
+      starts[-1]=()
+      candidate="${(j::)chars[start,i]}"
+      if (( ${#starts} == 0 )) && _agent_lfm_json_is_single_string_object "$candidate"; then
+        (( plan_objects++ ))
+      fi
+      _agent_lfm_json_is_call_object "$candidate" && (( call_objects++ ))
+      if _agent_parse_lfm_tool_candidate "$candidate"; then
+        (( structural++ ))
+        if agent_lfm_tool_is_exposed "$AGENT_COMPAT_TOOL_NAME"; then
+          (( exposed++ ))
+          found_name="$AGENT_COMPAT_TOOL_NAME"
+          found_args="$AGENT_COMPAT_TOOL_ARGS"
+        fi
+      fi
+    fi
+  done
+  AGENT_LFM_BALANCED_TOOL_CANDIDATES=$structural
+  AGENT_LFM_BALANCED_PLAN_OBJECTS=$plan_objects
+  AGENT_LFM_BALANCED_CALL_OBJECTS=$call_objects
+  (( structural == 1 && exposed == 1 )) || return 1
+  AGENT_COMPAT_TOOL_NAME="$found_name"
+  AGENT_COMPAT_TOOL_ARGS="$found_args"
+}
+
+_agent_lfm_json_is_single_string_object() {
+  local content="$1"
+  json_begin "$content" || return 1
+  [[ "$JSON_TOKEN_TYPE" == '{' ]] || return 1
+  json_next || return 1
+  [[ "$JSON_TOKEN_TYPE" == string ]] || return 1
+  json_next || return 1
+  [[ "$JSON_TOKEN_TYPE" == ':' ]] || return 1
+  json_next || return 1
+  [[ "$JSON_TOKEN_TYPE" == string ]] || return 1
+  json_next || return 1
+  [[ "$JSON_TOKEN_TYPE" == '}' ]] || return 1
+  json_next || return 1
+  [[ "$JSON_TOKEN_TYPE" == eof ]]
+}
+
 _agent_parse_lfm_action_object() {
-  local key="" name="" args="{}"
+  local key="" name="" args=""
+  local -i has_arguments=0
   [[ "$JSON_TOKEN_TYPE" == '{' ]] || return 1
   json_next || return 1
   while [[ "$JSON_TOKEN_TYPE" != '}' ]]; do
@@ -606,7 +790,7 @@ _agent_parse_lfm_action_object() {
     json_next || return 1
     case "$key:$JSON_TOKEN_TYPE" in
       tool_name:string|name:string) name="$JSON_TOKEN_VALUE"; json_next || return 1 ;;
-      arguments:'{') json_capture_raw_value || return 1; args="$REPLY" ;;
+      arguments:'{') json_capture_raw_value || return 1; args="$REPLY"; has_arguments=1 ;;
       *) json_discard_value || return 1 ;;
     esac
     if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
@@ -618,7 +802,7 @@ _agent_parse_lfm_action_object() {
   json_next || return 1
   while [[ -n "$name" && "$name[1]" == [[:space:]] ]]; do name="$name[2,-1]"; done
   while [[ -n "$name" && "$name[-1]" == [[:space:],] ]]; do name="$name[1,-2]"; done
-  [[ -n "$name" ]] || return 1
+  [[ -n "$name" ]] && (( has_arguments )) || return 1
   AGENT_COMPAT_TOOL_NAME="$name"
   AGENT_COMPAT_TOOL_ARGS="$args"
 }
@@ -664,6 +848,9 @@ agent_extract_lfm_plan_action() {
   local -i found=0
   AGENT_COMPAT_TOOL_NAME=""
   AGENT_COMPAT_TOOL_ARGS="{}"
+  [[ "${(L)ZCODER_MODEL:t}" == *lfm* ]] || return 1
+  _agent_extract_lfm_balanced_tool_call "$content" && return 0
+  (( AGENT_LFM_BALANCED_TOOL_CANDIDATES > 1 )) && return 1
   agent_content_is_lfm_intermediate_plan "$content" || return 1
   json_begin "$content" || return 1
   [[ "$JSON_TOKEN_TYPE" == '{' ]] || return 1
@@ -716,7 +903,8 @@ agent_extract_lfm_plan_action() {
   done
   json_next || return 1
   [[ "$JSON_TOKEN_TYPE" == eof ]] || return 1
-  (( found ))
+  (( found )) || return 1
+  agent_lfm_tool_is_exposed "$AGENT_COMPAT_TOOL_NAME"
 }
 
 agent_emit() {
