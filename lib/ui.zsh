@@ -543,6 +543,9 @@ _ui_add_tool_content() {
       _ui_diff_attr "${lines[index]}"; attr="$REPLY"
       _ui_add_hard_wrapped "${lines[index]}" "$width" "  " "$attr"
     done
+  elif [[ "${lines[1]}" == "Calling "* ]]; then
+    _ui_add_hard_wrapped "${lines[1]}" "$width" "  " "bold yellow/black"
+    return 0
   else
     _ui_add_wrapped "$content" "$width" "  " "white/black"
     return 0

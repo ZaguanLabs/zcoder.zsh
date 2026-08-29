@@ -148,13 +148,33 @@ agent_default_system_prompt() {
   esac
 }
 
-# Format the curses transcript independently from the tool result stored in
-# AGENT_MESSAGES. Read bodies remain available to the model but do not flood
-# the user's screen; edits remain visible for review.
+# Format the user-visible transcript independently from the tool result stored
+# in AGENT_MESSAGES. Read and MCP bodies remain available to the model but do
+# not flood the user's screen; edits remain visible for review.
 agent_format_tool_ui_result() {
   local tool_name="$1" args_json="$2" result="$3"
   local -i succeeded="${4:-0}"
   local path="" workspace_root="" resolved_path="" start="" end="" content="" label=""
+  local mcp_server="" mcp_tool="" mcp_target="" exposed_mcp_name=""
+  if [[ "$tool_name" == mcp__* ]]; then
+    mcp_server="${MCP_TOOL_SERVER[$tool_name]:-}"
+    mcp_tool="${MCP_TOOL_ORIGINAL[$tool_name]:-}"
+    if [[ -n "$mcp_server" ]]; then
+      mcp_target="$mcp_server"
+      [[ -n "$mcp_tool" ]] && mcp_target+=".$mcp_tool"
+    else
+      exposed_mcp_name="${tool_name#mcp__}"
+      if [[ "$exposed_mcp_name" == *__* ]]; then
+        mcp_target="${exposed_mcp_name%%__*}.${exposed_mcp_name#*__}"
+      else
+        mcp_target="$exposed_mcp_name"
+      fi
+    fi
+    # MCP catalog data is supplied by an external process. Make control bytes
+    # visible before the label reaches curses or a plain terminal.
+    REPLY="Calling ${(V)mcp_target}"
+    return 0
+  fi
   if ! json_parse_flat_object "$args_json"; then
     (( succeeded )) && label="✓ ${tool_name}" || label="✗ ${tool_name}"
     REPLY="$label"$'\n'"$result"
@@ -198,9 +218,6 @@ agent_format_tool_ui_result() {
     read_skill_resource)
       label="Skill Resource(${JSON_OBJECT[name]:-?}:${JSON_OBJECT[path]:-?})"
       (( succeeded )) && { REPLY="$label"; return 0; }
-      ;;
-    mcp__*)
-      label="MCP(${tool_name#mcp__})"
       ;;
     *)
       label="$tool_name $args_json"
@@ -1222,7 +1239,10 @@ agent_user_turn() {
       tool_args="${call_args[i]}"
       summary="$tool_name $tool_args"
       (( ${#summary} > 240 )) && summary="${summary[1,237]}..."
-      if (( ! ${UI_ACTIVE:-0} )); then
+      if [[ "$tool_name" == mcp__* ]]; then
+        agent_format_tool_ui_result "$tool_name" "$tool_args" "" 0
+        agent_emit tool "$REPLY"
+      elif (( ! ${UI_ACTIVE:-0} )); then
         agent_emit tool "→ $summary"
       fi
       agent_set_status "Tool: $tool_name"
@@ -1236,7 +1256,9 @@ agent_user_turn() {
       zcoder_debug tool_result "step=$step index=$i name=${(qqq)tool_name} ok=$TOOL_RESULT_OK result_chars=${#result} result_head=${(qqq)${result[1,500]}}"
       outcome_signature+="${TOOL_RESULT_OK}:${#result}:$result"
       agent_add_message tool "$result" "$tool_name"
-      if (( ${UI_ACTIVE:-0} )); then
+      if [[ "$tool_name" == mcp__* ]]; then
+        : # The call indicator was emitted before dispatch; keep its result private.
+      elif (( ${UI_ACTIVE:-0} )); then
         agent_format_tool_ui_result "$tool_name" "$tool_args" "$result" "$TOOL_RESULT_OK"
         agent_emit tool "$REPLY"
       else

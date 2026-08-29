@@ -69,7 +69,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..751"
+print -r -- "1..755"
 
 input_reset
 input_layout 20 4
@@ -1383,6 +1383,13 @@ agent_format_tool_ui_result write_file '{"path":"src/new.txt","content":"visible
 assert_contains "$REPLY" "visible write body" "UI displays write_file content"
 agent_format_tool_ui_result apply_patch '{"patch":"--- a/old.txt\n+++ b/old.txt\n@@ -1 +1 @@\n-old\n+new"}' "Patch applied" 1
 assert_contains "$REPLY" "+new" "UI displays apply_patch content"
+MCP_TOOL_SERVER[mcp__modern__echo_data]="modern"
+MCP_TOOL_ORIGINAL[mcp__modern__echo_data]="echo.data"
+agent_format_tool_ui_result mcp__modern__echo_data '{"payload":{"nested":true}}' "secret MCP output" 1
+assert_eq "Calling modern.echo.data" "$REPLY" "UI identifies an MCP call by server and original tool name"
+assert_not_contains "$REPLY" "secret MCP output" "UI hides successful MCP server output"
+agent_format_tool_ui_result mcp__modern__echo_data '{}' "sensitive MCP failure details" 0
+assert_not_contains "$REPLY" "sensitive MCP failure details" "UI hides failed MCP server output"
 
 tools_schema_json
 assert_contains "$REPLY" '"name":"finish"' "tool schema exposes structural turn completion"
@@ -2316,6 +2323,14 @@ for (( render_index=1; render_index<=${#UI_LINES}; render_index++ )); do
   [[ "${UI_LINES[render_index]}" == *'Read(src/example.ts)'* ]] && read_summary_attr="${UI_ATTRS[render_index]}"
 done
 assert_eq "white/black" "$read_summary_attr" "ordinary tool output no longer uses yellow body text"
+
+UI_CONTENTS=("Calling modern.echo.data")
+ui_render_messages 80
+mcp_call_attr=""
+for (( render_index=1; render_index<=${#UI_LINES}; render_index++ )); do
+  [[ "${UI_LINES[render_index]}" == *'Calling modern.echo.data'* ]] && mcp_call_attr="${UI_ATTRS[render_index]}"
+done
+assert_eq "bold yellow/black" "$mcp_call_attr" "MCP call indicators use the tool header color"
 
 UI_ROLES=(codex_worker)
 UI_CONTENTS=("Implemented the requested change")
