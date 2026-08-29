@@ -105,6 +105,7 @@ remain compatible and are treated as availability unknown.
 | `read_file` | Read a complete small text file | `zsh/mapfile` |
 | `read_file_range` | Read numbered inclusive lines | Native Zsh splitting and indexing |
 | `write_file` | Create or deliberately replace a file | Confined `zsh/system` descriptor writes |
+| `replace_text` | Replace one unique exact text fragment | Native Zsh matching and confined writes |
 | `apply_patch` | Apply a unified or context diff | `git apply`, then `patch` fallback |
 | `search` | Search text with locations | `rg` |
 | `run_command` | Run builds, tests, and diagnostics | Approved `zsh -c` |
@@ -118,10 +119,15 @@ repository and skip common dependency and build directories. The prompt directs
 the model to search first, then read relevant ranges rather than whole large
 files.
 
+`replace_text` is the low-complexity path for a small literal edit. It fails
+closed when the old text is absent or occurs more than once, so the model must
+read the target and supply a unique exact fragment.
+
 Patch application does not require a Git repository. zcoder validates with
 `git apply --check`; if Git rejects an otherwise usable diff, it tries a
-workspace-confined `patch --dry-run`. After a rejected patch, `write_file` is
-removed for the rest of that user turn until a corrected patch succeeds.
+workspace-confined `patch --dry-run`. After a rejected patch, `write_file` and
+`replace_text` are removed for the rest of that user turn until a corrected
+patch succeeds.
 The `apply_patch` tool schema and rejection result use the same unified-diff
 contract; the system prompt points to that single model-visible definition
 instead of duplicating it. It includes a valid and invalid example, explains

@@ -49,6 +49,23 @@ ZCODER_EVAL_REPEATS=3 \
 make model-eval
 ```
 
+Runs are grouped by model to amortize model-loading time. Use
+`ZCODER_EVAL_SCENARIOS` for a comma-separated subset when doing a quick probe,
+and `ZCODER_EVAL_OUTPUT_DIR` to retain the human transcript and JSONL model/tool
+history for every run:
+
+```sh
+ZCODER_EVAL_MODELS='lfm2.5-8b-q6-128k' \
+ZCODER_EVAL_SCENARIOS='conversational,independent_reads' \
+ZCODER_EVAL_OUTPUT_DIR=/tmp/zcoder-eval \
+ZCODER_EVAL_REPEATS=1 \
+make model-eval
+```
+
+The TSV output includes elapsed time, transcript, and history paths. A model's
+first scenario may include its Ollama load time; compare later scenarios for
+warm performance.
+
 Set `ZCODER_EVAL_BASELINE_PROMPT_FILE` to a complete earlier system prompt to
 compare `current` and `baseline` variants. The `{{WORKSPACE}}` placeholder is
 replaced with each temporary fixture path.

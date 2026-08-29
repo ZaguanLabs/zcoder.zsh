@@ -89,7 +89,7 @@ Minimize data collection and context use. Do not begin by reading whole source f
    When an MCP navigation tool returns a relevant source range, read that range directly instead of reading the whole file.
 4. Use read_file only for clearly small files, or when the entire file is genuinely required. Never read a large source file in full merely to inspect one function or section.
 5. If the built-in tools are insufficient, use run_command with targeted commands such as rg --files, rg -n, grep, sed -n, or awk. run_command requires user approval; do not use cat or an unbounded command when search or a ranged read will do.
-Stop inspecting once you have enough evidence to act. Read relevant code before editing it. Prefer apply_patch for focused changes and write_file for new or fully replaced files.
+Stop inspecting once you have enough evidence to act. Read relevant code before editing it. Prefer replace_text for one exact literal replacement, apply_patch for focused structural changes, and write_file for new or fully replaced files.
 ${patch_instructions}
 ${completion_instructions}
 If work remains, call the next appropriate work tool in this response. Do not emit a plan-only preamble.
@@ -149,9 +149,18 @@ agent_default_system_prompt() {
 agent_lfm_prompt_block() {
   local model="${(L)ZCODER_MODEL:t}"
   if [[ "$model" == *lfm* ]]; then
-    REPLY=$'\n\n<lfm_native_tools>\nUse only Ollama native tool calls for actions. Never encode an action, command, tool_call, or tool_calls object as JSON in assistant content. When calling a tool, keep assistant content empty and place private reasoning in the thinking field. After a tool result, continue with another native tool call or a complete final answer.\n</lfm_native_tools>'
+    REPLY=$'\n\n<lfm_native_tools>\nUse only Ollama native tool calls for actions. Never encode an action, command, tool_call, or tool_calls object as JSON in assistant content. When calling a tool, keep assistant content empty and place private reasoning in the thinking field. After a tool result, continue with another native tool call or a complete final answer.\nEvidence rules:\n- A tool result proves only what it explicitly reports. Do not replace an observed value with an inferred, shortened, or normalized value. When the user asks for an exact value, copy it verbatim from the tool result.\n- search finds matching text inside files; it does not find files by filename. Use list_files to discover a file path. A search result of "No text matches" does not prove that a named file is absent.\n- When the user supplies an exact file path, read that path directly. Do not search for the path string first.\n- Before apply_patch, read the target file or exact target range. Copy every removed and context line exactly from that read; never infer current contents from the request.\n</lfm_native_tools>'
   else
     REPLY=""
+  fi
+}
+
+agent_patch_failure_limit() {
+  local model="${(L)ZCODER_MODEL:t}"
+  if [[ "$model" == *lfm* ]]; then
+    REPLY=2
+  else
+    REPLY=0
   fi
 }
 
@@ -213,6 +222,9 @@ agent_format_tool_ui_result() {
     write_file)
       content="${JSON_OBJECT[content]:-}"
       label="Write File(${path})"$'\n'"$content"
+      ;;
+    replace_text)
+      label="Replace Text(${path})"
       ;;
     apply_patch)
       content="${JSON_OBJECT[patch]:-}"
@@ -678,6 +690,10 @@ agent_content_is_lfm_intermediate_plan() {
   local content="$1" model="${(L)ZCODER_MODEL:t}" compact=""
   local -i has_next_action=0
   [[ "$model" == *lfm* ]] || return 1
+  # Some LFM templates leak the opening control marker into content without
+  # producing Ollama's native tool_calls field. It is an unfinished action,
+  # never a user-facing final answer.
+  [[ "$content" == *'<|tool_call>'* || "$content" == *'<|tool_call|>'* ]] && return 0
   _agent_content_is_lfm_json_plan "$content" && return 0
   # A one-member string object is the stable structural core of LFM's
   # free-form planner labels (for example "First action"). JSON-only user
@@ -713,6 +729,16 @@ agent_content_is_lfm_false_tool_refusal() {
      "$content" == *'tools are not available in my current capabilities'* || \
      "$content" == *'do not have access to the provided tools'* || \
      "$content" == *'cannot access the provided tools'* ]]
+}
+
+agent_content_is_lfm_false_path_conclusion() {
+  local model="${(L)ZCODER_MODEL:t}" prior="" request=""
+  [[ "$model" == *lfm* && ${#AGENT_MESSAGES} -ge 2 && ${#AGENT_USER_MESSAGES} -gt 0 ]] || return 1
+  prior="${AGENT_MESSAGES[-2]}"
+  request="${(L)AGENT_USER_MESSAGES[-1]}"
+  [[ "$prior" == *'search examines file contents, not filenames; use list_files to discover file paths.'* ]] || return 1
+  [[ "$request" == *'find '* || "$request" == *'locate '* ||
+     "$request" == *'inspect the workspace'* || "$request" == *'file path'* ]]
 }
 
 agent_lfm_user_requests_plan_only() {
@@ -886,9 +912,11 @@ agent_user_turn() {
   local tool_name="" tool_args="" result="" summary="" display_result=""
   local request_signature="" outcome_signature="" loop_notice="" continuation_notice=""
   local -a call_names=() call_args=()
-  local -i step i request_status prepare_status incomplete_retries=0 transport_retries=0 needs_continuation=0 lfm_command_plan=0 lfm_tool_refusal=0 lfm_plan_only=0 loop_cycle=0 loop_count=0
+  local -i step i request_status prepare_status incomplete_retries=0 transport_retries=0 needs_continuation=0 lfm_command_plan=0 lfm_tool_refusal=0 lfm_path_conclusion=0 lfm_plan_only=0 loop_cycle=0 loop_count=0 patch_failures=0 patch_failure_limit=0
 
   (( AGENT_WARMUP_ACTIVE )) && agent_warmup_cancel "user prompt submitted"
+  agent_patch_failure_limit
+  patch_failure_limit=$REPLY
   AGENT_LAST_RESPONSE=""
   TOOL_PATCH_RETRY_REQUIRED=0
   agent_loop_reset
@@ -1004,10 +1032,12 @@ agent_user_turn() {
     needs_continuation=0
     lfm_command_plan=0
     lfm_tool_refusal=0
+    lfm_path_conclusion=0
     if (( ${#call_names} == 0 && AGENT_INCOMPLETE_RETRY_LIMIT > 0 && ! lfm_plan_only )); then
       agent_content_is_lfm_intermediate_plan "$content" && lfm_command_plan=1
       agent_content_is_lfm_false_tool_refusal "$content" && lfm_tool_refusal=1
-      if (( AGENT_REQUIRE_FINISH_TOOL || lfm_command_plan || lfm_tool_refusal )) || [[ -z "$content" ]]; then
+      agent_content_is_lfm_false_path_conclusion "$content" && lfm_path_conclusion=1
+      if (( AGENT_REQUIRE_FINISH_TOOL || lfm_command_plan || lfm_tool_refusal || lfm_path_conclusion )) || [[ -z "$content" ]]; then
         needs_continuation=1
       fi
     fi
@@ -1018,6 +1048,9 @@ agent_user_turn() {
       elif (( lfm_tool_refusal )); then
         AGENT_CONTINUATION_REASON="LFM response incorrectly claimed that supplied tools were unavailable"
         continuation_notice="Your previous response incorrectly claimed that file or command tools were unavailable. The tools in this request are available. If work remains, call exactly one provided native tool now. Do not describe a hypothetical solution. If the task is complete or genuinely blocked for another observed reason, call finish or return one complete user-facing answer."
+      elif (( lfm_path_conclusion )); then
+        AGENT_CONTINUATION_REASON="LFM response inferred file absence from a content-only search"
+        continuation_notice="Your previous response inferred that a file was absent from a content-only search. That result explicitly did not search filenames. Call list_files now to inspect workspace paths; do not repeat the content search or claim absence without path evidence."
       elif [[ -z "$content" ]]; then
         AGENT_CONTINUATION_REASON="response was empty and omitted a tool call"
         if (( AGENT_REQUIRE_FINISH_TOOL )); then
@@ -1033,7 +1066,7 @@ agent_user_turn() {
       if (( incomplete_retries < AGENT_INCOMPLETE_RETRY_LIMIT )); then
         (( incomplete_retries++ ))
         agent_add_context_message "$continuation_notice"
-        if (( lfm_command_plan || lfm_tool_refusal )); then
+        if (( lfm_command_plan || lfm_tool_refusal || lfm_path_conclusion )); then
           agent_emit system "↻ LFM returned a non-action response; requesting tool use or a final answer (${incomplete_retries}/${AGENT_INCOMPLETE_RETRY_LIMIT})."
         elif [[ -z "$content" ]]; then
           agent_emit system "↻ Model returned an empty response; retrying (${incomplete_retries}/${AGENT_INCOMPLETE_RETRY_LIMIT})."
@@ -1143,6 +1176,19 @@ agent_user_turn() {
           agent_emit tool "✓ ${tool_name}"$'\n'"$display_result"
         else
           agent_emit tool "✗ ${tool_name}"$'\n'"$display_result"
+        fi
+      fi
+      if [[ "$tool_name" == apply_patch ]]; then
+        if (( TOOL_RESULT_OK )); then
+          patch_failures=0
+        else
+          (( patch_failures++ ))
+          if (( patch_failure_limit > 0 && patch_failures >= patch_failure_limit )); then
+            AGENT_LOOP_REASON="apply_patch was rejected ${patch_failures} times without a successful correction"
+            agent_emit error "Stopped after ${patch_failures} rejected patch attempts. Inspect the exact patch errors and current file before trying again in a new turn."
+            agent_set_status "Patch stopped"
+            return 1
+          fi
         fi
       fi
     done

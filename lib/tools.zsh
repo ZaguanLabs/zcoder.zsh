@@ -9,7 +9,7 @@ typeset -g TOOL_SAFETY_REASON=""
 typeset -gi TOOL_PATCH_RETRY_REQUIRED=0
 
 _tool_patch_contract() {
-  REPLY=$'UNIFIED DIFF CONTRACT (the patch argument must follow this literally):\nGOOD (valid focused edit):\n--- a/lib/example.zsh\n+++ b/lib/example.zsh\n@@ -10,3 +10,3 @@\n context before\n-old value\n+new value\n context after\nThe old count is 3: two context lines plus one removed line. The new count is 3: two context lines plus one added line.\nBAD (invalid in this harness):\n*** Begin Patch\n*** Update File: lib/example.zsh\n@@\n-old value\n+new value\n*** End Patch\nThe bad form uses an unsupported wrapper and a bare @@ without numeric ranges.\nRules:\n1. Begin each file section with literal --- a/relative/path and +++ b/relative/path lines.\n2. Every hunk needs numeric old and new ranges: @@ -OLD_START,OLD_COUNT +NEW_START,NEW_COUNT @@. Counts describe hunk body lines, not total file length: context counts on both sides, - only on the old side, and + only on the new side.\n3. Every hunk body line starts with exactly one prefix character: space for unchanged context, - for removal, or + for addition. Copy context and removed text exactly from the latest read; never use ellipses or placeholders.\n4. Supply only unified diff text. Do not add Markdown fences, prose, JSON text inside the patch value, *** Begin Patch, *** Update File, or *** End Patch markers.'
+  REPLY=$'UNIFIED DIFF CONTRACT (the patch argument must follow this literally):\nGOOD (valid focused edit):\n--- a/lib/example.zsh\n+++ b/lib/example.zsh\n@@ -10,3 +10,3 @@\n marker before\n-enabled=false\n+enabled=true\n marker after\nThe old count is 3: two context lines plus one removed line. The new count is 3: two context lines plus one added line.\nBAD (invalid in this harness):\n*** Begin Patch\n*** Update File: lib/example.zsh\n@@\n-enabled=false\n+enabled=true\n*** End Patch\nThe bad form uses an unsupported wrapper and a bare @@ without numeric ranges.\nRules:\n1. Begin each file section with literal --- a/relative/path and +++ b/relative/path lines.\n2. Every hunk needs numeric old and new ranges: @@ -OLD_START,OLD_COUNT +NEW_START,NEW_COUNT @@. Counts describe hunk body lines, not total file length: context counts on both sides, - only on the old side, and + only on the new side.\n3. Every hunk body line starts with exactly one prefix character: space for unchanged context, - for removal, or + for addition. The prefix is the single first character; do not add words such as old or new after it unless those words occur in the file. Copy context and removed text exactly from the latest read; never use ellipses or placeholders.\n4. Supply only unified diff text. Do not add Markdown fences, prose, JSON text inside the patch value, *** Begin Patch, *** Update File, or *** End Patch markers.'
 }
 
 tools_schema_json() {
@@ -35,6 +35,8 @@ tools_schema_json() {
   if (( ! TOOL_PATCH_RETRY_REQUIRED )); then
     output+=',
 {"type":"function","function":{"name":"write_file","description":"Create a new workspace text file or deliberately replace a complete file. Never use this as a fallback after a focused apply_patch failure.","parameters":{"type":"object","required":["path","content"],"properties":{"path":{"type":"string"},"content":{"type":"string"}}}}}'
+    output+=',
+{"type":"function","function":{"name":"replace_text","description":"Replace one exact, uniquely occurring text fragment in an existing workspace file. Read the target first, then pass old_text verbatim. Prefer this to unified diff for a small literal replacement. Unavailable after apply_patch fails.","parameters":{"type":"object","required":["path","old_text","new_text"],"properties":{"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"}}}}}'
   fi
   output+=',
 {"type":"function","function":{"name":"apply_patch","description":'"${patch_description}"',"parameters":{"type":"object","required":["patch"],"properties":{"patch":{"type":"string","description":'"${patch_argument_description}"'}}}}},
@@ -211,6 +213,30 @@ tool_write_file() {
   _tool_succeed "Wrote ${#content} characters to ${resolved_path#$ZCODER_WORKSPACE/}"
 }
 
+tool_replace_text() {
+  local requested="$1" old_text="$2" new_text="$3"
+  local resolved_path="" content="" escaped_old="" before="" after=""
+  if (( TOOL_PATCH_RETRY_REQUIRED )); then
+    _tool_fail "replace_text is temporarily unavailable because apply_patch failed. Re-read the exact target lines and submit a corrected apply_patch instead."
+    return 1
+  fi
+  [[ -n "$old_text" ]] || { _tool_fail "old_text must not be empty"; return 1; }
+  _tool_resolve_existing "$requested" || return 1
+  resolved_path="$REPLY"
+  [[ -f "$resolved_path" ]] || { _tool_fail "not a regular file: $requested"; return 1; }
+  content="${mapfile[$resolved_path]}"
+  escaped_old="${(b)old_text}"
+  [[ "$content" == *${~escaped_old}* ]] || { _tool_fail "old_text was not found exactly in $requested"; return 1; }
+  before="${content%%${~escaped_old}*}"
+  after="${content#*${~escaped_old}}"
+  [[ "$after" != *${~escaped_old}* ]] || { _tool_fail "old_text occurs more than once in $requested; use a more specific fragment"; return 1; }
+  zcoder_write_text_file "$resolved_path" "${before}${new_text}${after}" || {
+    _tool_fail "could not safely update file: $requested"
+    return 1
+  }
+  _tool_succeed "Replaced one exact text occurrence in ${resolved_path#$ZCODER_WORKSPACE/}"
+}
+
 _tool_patch_paths_are_safe() {
   local patch_text="$1" line="" path="" resolved=""
   local -a lines=("${(@f)patch_text}")
@@ -305,6 +331,10 @@ tool_apply_patch() {
   if [[ -z "$engine" ]]; then
     _tool_patch_contract
     guidance=$'PATCH RETRY REQUIRED: re-read the exact current lines and correct the patch using this contract.\n'"${REPLY}"$'\nwrite_file is unavailable for this focused edit until apply_patch succeeds.'
+    if [[ "$patch_text" == '-old '* || "$patch_text" == *$'\n-old '* ||
+          "$patch_text" == '+new '* || "$patch_text" == *$'\n+new '* ]]; then
+      guidance+=$'\nTARGETED CORRECTION: old and new are not diff syntax. Remove those invented words. For a current file line `status: old`, the removed diff line is exactly `-status: old`; the replacement is exactly `+status: new`.'
+    fi
     _tool_fail "patch rejected"$'\n'"${git_error:+git apply: ${git_error}}"$'\n'"${patch_error:+patch: ${patch_error}}"$'\n'"$guidance"
     return 1
   fi
@@ -338,7 +368,10 @@ tool_search() {
   raw="${mapfile[$out_file]}"
   zf_rm -f "$out_file" 2>/dev/null
   (( exit_code == 0 || exit_code == 1 )) || { _tool_fail "ripgrep failed"$'\n'"$raw"; return 1; }
-  [[ -n "$raw" ]] || { _tool_succeed "No matches."; return 0; }
+  [[ -n "$raw" ]] || {
+    _tool_succeed "No text matches. search examines file contents, not filenames; use list_files to discover file paths."
+    return 0
+  }
   lines=("${(@f)raw}")
   for (( i=1; i<=${#lines} && i<=limit; i++ )); do
     line="${lines[i]}"
@@ -586,6 +619,7 @@ tool_dispatch() {
     read_file) tool_read_file "${JSON_OBJECT[path]:-}" ;;
     read_file_range) tool_read_file_range "${JSON_OBJECT[path]:-}" "${JSON_OBJECT[start_line]:-}" "${JSON_OBJECT[end_line]:-}" ;;
     write_file) tool_write_file "${JSON_OBJECT[path]:-}" "${JSON_OBJECT[content]:-}" ;;
+    replace_text) tool_replace_text "${JSON_OBJECT[path]:-}" "${JSON_OBJECT[old_text]:-}" "${JSON_OBJECT[new_text]:-}" ;;
     apply_patch) tool_apply_patch "${JSON_OBJECT[patch]:-}" ;;
     search) tool_search "${JSON_OBJECT[query]:-}" "${JSON_OBJECT[path]:-.}" "${JSON_OBJECT[max_results]:-50}" ;;
     run_command) tool_run_command "${JSON_OBJECT[command]:-}" "${JSON_OBJECT[cwd]:-.}" "${JSON_OBJECT[timeout_seconds]:-120}" ;;

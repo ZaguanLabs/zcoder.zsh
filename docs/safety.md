@@ -11,8 +11,9 @@ canonicalizes requested paths, resolves symlinks, and rejects anything that
 escapes that directory.
 
 Read, search, and edit tools execute directly inside the boundary. This includes
-`list_files`, `read_file`, `read_file_range`, `write_file`, `apply_patch`, and
-`search`. Tool output returned to the model is bounded to prevent uncontrolled
+`list_files`, `read_file`, `read_file_range`, `write_file`, `replace_text`,
+`apply_patch`, and `search`. Exact replacement requires one unique old-text
+match. Tool output returned to the model is bounded to prevent uncontrolled
 context growth.
 
 Internal command output, patch, HTTP, delegate, and MCP exchange files live

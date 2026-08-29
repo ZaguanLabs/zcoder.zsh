@@ -234,14 +234,28 @@ if (( $+commands[rg] )); then
   assert_contains "$TOOL_RESULT" "src/note.txt:2:1:two" "search returns locations"
   tool_search "ignored search needle" . 10
   assert_success "search applies ignore files outside Git" $?
-  assert_eq "No matches." "$TOOL_RESULT" "search excludes gitignored results outside Git"
+  assert_contains "$TOOL_RESULT" "No text matches." "search excludes gitignored results outside Git"
+  assert_contains "$TOOL_RESULT" "use list_files to discover file paths" "empty search results explain filename discovery"
 else
-  (( TESTS += 4 ))
+  (( TESTS += 5 ))
   pass "search unavailable (rg not installed)"
   pass "search output unavailable (rg not installed)"
   pass "ignore-aware search unavailable (rg not installed)"
   pass "ignored search output unavailable (rg not installed)"
+  pass "empty-search guidance unavailable (rg not installed)"
 fi
+
+mapfile[$TEST_TMP/src/replace.txt]=$'mode=old\n'
+tool_replace_text "src/replace.txt" "mode=old" "mode=new"
+assert_success "replace_text updates one exact occurrence" $?
+assert_eq $'mode=new\n' "${mapfile[$TEST_TMP/src/replace.txt]}" "replace_text preserves surrounding file content"
+tool_replace_text "src/replace.txt" "missing" "value"
+assert_failure "replace_text rejects a missing old fragment" $?
+assert_contains "$TOOL_RESULT" "not found exactly" "replace_text explains a missing old fragment"
+mapfile[$TEST_TMP/src/replace.txt]=$'same\nsame\n'
+tool_replace_text "src/replace.txt" "same" "changed"
+assert_failure "replace_text rejects an ambiguous old fragment" $?
+assert_contains "$TOOL_RESULT" "more than once" "replace_text requests a more specific fragment"
 
 if (( $+commands[git] )); then
   tool_apply_patch $'diff --git a/src/note.txt b/src/note.txt\n--- a/src/note.txt\n+++ b/src/note.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n'
@@ -266,16 +280,24 @@ assert_contains "$TOOL_RESULT" "UNIFIED DIFF CONTRACT" "patch errors teach the c
 assert_contains "$TOOL_RESULT" "GOOD (valid focused edit)" "patch errors repeat a valid example"
 assert_contains "$TOOL_RESULT" "BAD (invalid in this harness)" "patch errors contrast the unsupported envelope"
 assert_contains "$TOOL_RESULT" "Counts describe hunk body lines" "patch errors explain numeric hunk counts"
+tool_apply_patch $'--- a/src/note.txt\n+++ b/src/note.txt\n@@ -1,1 +1,1 @@\n-old TWO\n+new two\n'
+assert_failure "apply_patch rejects invented semantic diff prefixes" $?
+assert_contains "$TOOL_RESULT" "old and new are not diff syntax" "patch errors identify invented semantic prefixes"
 tools_schema_json
 assert_not_contains "$REPLY" '"name":"write_file"' "write_file is hidden after a rejected patch"
+assert_not_contains "$REPLY" '"name":"replace_text"' "replace_text is hidden after a rejected patch"
 tool_write_file "src/note.txt" "destructive fallback"
 assert_failure "write_file cannot bypass a rejected focused patch" $?
 assert_contains "$TOOL_RESULT" "corrected apply_patch" "blocked write_file directs the model back to patching"
 assert_contains "${mapfile[$TEST_TMP/src/note.txt]}" "TWO" "blocked write_file leaves the target unchanged"
+tool_replace_text "src/note.txt" "TWO" "two"
+assert_failure "replace_text cannot bypass a rejected focused patch" $?
+assert_contains "$TOOL_RESULT" "corrected apply_patch" "blocked replace_text directs the model back to patching"
 tool_apply_patch $'--- a/src/note.txt\n+++ b/src/note.txt\n@@ -1,3 +1,3 @@\n one\n-TWO\n+two\n three\n'
 assert_success "a corrected apply_patch releases patch recovery" $?
 tools_schema_json
 assert_contains "$REPLY" '"name":"write_file"' "write_file returns after the corrected patch succeeds"
+assert_contains "$REPLY" '"name":"replace_text"' "replace_text returns after the corrected patch succeeds"
 mapfile[$TEST_TMP/src/no-final-newline.txt]=$'before\n'
 tool_apply_patch $'--- a/src/no-final-newline.txt\n+++ b/src/no-final-newline.txt\n@@ -1 +1 @@\n-before\n+after'
 assert_success "apply_patch normalizes a missing final diff newline" $?
@@ -1279,6 +1301,7 @@ assert_contains "$REPLY" "Complete only after checking the requested outcome and
 assert_contains "$REPLY" "Do not begin by reading whole source files" "system prompt forbids full-file-first exploration"
 assert_contains "$REPLY" "chunks of no more than 200 lines" "system prompt gives ranged-read budget guidance"
 assert_contains "$REPLY" "Stop inspecting once you have enough evidence" "system prompt prevents unnecessary follow-up reads"
+assert_contains "$REPLY" "Prefer replace_text for one exact literal replacement" "system prompt routes simple edits to structured replacement"
 assert_contains "$REPLY" "do not repeat discovery with minor query variations" "system prompt prevents redundant discovery searches"
 assert_contains "$REPLY" "non-empty plain assistant response is also accepted as final" "default prompt permits compatible tool-free completion"
 assert_contains "$REPLY" "Never use a tool-free response as a preamble" "default prompt still requires tools while work remains"
@@ -1371,6 +1394,9 @@ tools_schema_json
 assert_contains "$REPLY" "defaults to 100" "list_files schema advertises its conservative default"
 assert_contains "$REPLY" "defaults to 50" "search schema advertises its conservative default"
 assert_contains "$REPLY" "GOOD (valid focused edit)" "apply_patch schema includes the valid example"
+assert_contains "$REPLY" '"name":"replace_text"' "tool schema exposes exact structured replacement"
+assert_contains "$REPLY" "-enabled=false" "apply_patch example uses a realistic removed line"
+assert_contains "$REPLY" "do not add words such as old or new" "apply_patch schema distinguishes prefixes from file content"
 assert_contains "$REPLY" "BAD (invalid in this harness)" "apply_patch schema includes the invalid example"
 assert_contains "$REPLY" "Counts describe hunk body lines" "apply_patch schema explains hunk counts"
 agent_transport_error_is_retryable "Ollama closed the connection before returning an HTTP response"
@@ -1749,11 +1775,19 @@ ZCODER_MODEL="lfm2.5-8b-fast"
 agent_resolve_system_prompt
 assert_contains "$REPLY" "Use only Ollama native tool calls for actions" "LFM prompts require the native Ollama action channel"
 assert_contains "$REPLY" "Never encode an action, command, tool_call, or tool_calls object as JSON" "LFM prompts reject competing content action envelopes"
+assert_contains "$REPLY" "copy it verbatim from the tool result" "LFM prompts preserve exact observed values"
+assert_contains "$REPLY" "search finds matching text inside files" "LFM prompts distinguish content search from file discovery"
+assert_contains "$REPLY" "Before apply_patch, read the target file" "LFM prompts require edit evidence before patching"
+assert_contains "$REPLY" "read that path directly" "LFM prompts avoid searching for supplied file paths"
+agent_patch_failure_limit
+assert_eq "2" "$REPLY" "LFM profiles bound repeated patch failures"
 agent_normalize_lfm_response $'<think>private final reasoning</think>\nVisible final answer.' "" 0
 assert_eq "Visible final answer." "$AGENT_NORMALIZED_CONTENT" "LFM final answers hide a leading think block"
 assert_eq "private final reasoning" "$AGENT_NORMALIZED_THINKING" "LFM final-answer reasoning enters the private thinking channel"
 agent_content_is_lfm_intermediate_plan '{"analysis":"inspect first","plan":"run a check","commands":[{"command":"pwd"}],"status":"working"}'
 assert_success "LFM command-plan envelopes are recognized" $?
+agent_content_is_lfm_intermediate_plan $'Inspect with list_files next.\n<|tool_call>'
+assert_success "dangling LFM tool-call markers request a native retry" $?
 agent_content_is_lfm_intermediate_plan '{"plan":"create it","instructions":"write the file","commands":[{"keystrokes":"write code"}],"check":"launch it"}'
 assert_success "LFM alternate planner fields are recognized" $?
 agent_content_is_lfm_intermediate_plan '{"analysis":"inspect first","plan":"explore the workspace","observations":[{"description":"nothing inspected"}],"next_steps":["list files"]}'
@@ -1772,6 +1806,14 @@ agent_content_is_lfm_false_tool_refusal "I cannot create the file because file s
 assert_success "false LFM tool-unavailable responses are recognized" $?
 agent_content_is_lfm_false_tool_refusal "The requested deployment tool is not available, but here is the completed analysis."
 assert_failure "specific unavailable-tool explanations are not treated as LFM protocol failures" $?
+AGENT_MESSAGES=('{"role":"user","content":"find fallback.txt"}' '{"role":"tool","tool_name":"search","content":"No text matches. search examines file contents, not filenames; use list_files to discover file paths."}' '{"role":"assistant","content":"fallback.txt does not exist"}')
+AGENT_USER_MESSAGES=("find fallback.txt")
+agent_content_is_lfm_false_path_conclusion "fallback.txt does not exist"
+assert_success "LFM filename conclusions require path evidence" $?
+AGENT_MESSAGES=('{"role":"user","content":"search TODO"}' '{"role":"tool","tool_name":"search","content":"No text matches."}' '{"role":"assistant","content":"No TODO text exists"}')
+AGENT_USER_MESSAGES=("search TODO")
+agent_content_is_lfm_false_path_conclusion "No TODO text exists"
+assert_failure "ordinary empty content searches remain valid LFM evidence" $?
 agent_lfm_user_requests_plan_only "Provide a plan only; do not execute it."
 assert_success "explicit plan-only requests disable LFM action recovery" $?
 agent_lfm_user_requests_plan_only "Create the editor and verify it."
@@ -1916,8 +1958,30 @@ assert_success "explicit LFM plan-only turns complete as plain content" $?
 assert_eq "1" "$MOCK_LFM_PLAN_ONLY_TURNS" "explicit LFM plans do not receive an action retry"
 assert_eq "0" "$MOCK_LFM_PLAN_ONLY_DISPATCHES" "explicit LFM plans never enter tool dispatch"
 assert_contains "$AGENT_LAST_RESPONSE" '"commands"' "explicit LFM plan JSON remains the final response"
+typeset -gi MOCK_LFM_PATCH_TURNS=0 MOCK_LFM_PATCH_DISPATCHES=0
+agent_ollama_chat() {
+  (( MOCK_LFM_PATCH_TURNS++ ))
+  HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"apply_patch","arguments":{"patch":"--- a/note.txt\\n+++ b/note.txt\\n@@ -1 +1 @@\\n-old value\\n+new value"}}}]}}'
+  HTTP_ERROR=""
+  return 0
+}
+tool_dispatch() {
+  (( MOCK_LFM_PATCH_DISPATCHES++ ))
+  TOOL_RESULT="Error: rejected mock patch"
+  TOOL_RESULT_OK=0
+  return 1
+}
+agent_reset
+agent_user_turn "repair a file" >/dev/null 2>&1
+lfm_patch_status=$?
+assert_failure "LFM patch recovery stops after its model-specific budget" "$lfm_patch_status"
+assert_eq "2" "$MOCK_LFM_PATCH_TURNS" "LFM patch recovery spends only two model turns"
+assert_eq "2" "$MOCK_LFM_PATCH_DISPATCHES" "LFM patch recovery dispatches only two rejected patches"
+assert_contains "$AGENT_LOOP_REASON" "rejected 2 times" "LFM patch stop records its exact reason"
 functions[tool_dispatch]="$saved_lfm_dispatch"
 ZCODER_MODEL="$saved_lfm_model"
+agent_patch_failure_limit
+assert_eq "0" "$REPLY" "other model profiles retain normal patch recovery"
 AGENT_INCOMPLETE_RETRY_LIMIT=3
 
 agent_ollama_chat() {
