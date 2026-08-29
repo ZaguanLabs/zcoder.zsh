@@ -23,6 +23,7 @@ typeset -g ZCODER_MODEL="${ZCODER_MODEL:-qwen3-coder:latest}"
 typeset -g ZCODER_THINK="${ZCODER_THINK:-true}"
 typeset -g ZCODER_PROFILE="${ZCODER_PROFILE:-coding}"
 typeset -g ZCODER_WARMUP="${ZCODER_WARMUP:-true}"
+typeset -gi ZCODER_MAX_OUTPUT_TOKENS="${ZCODER_MAX_OUTPUT_TOKENS:-8192}"
 typeset -gi AGENT_WARMUP_ACTIVE=0
 typeset -g AGENT_WARMUP_MODEL=""
 typeset -g AGENT_WARMUP_HOST=""
@@ -37,6 +38,7 @@ typeset -gi AGENT_LFM_BALANCED_CALL_OBJECTS=0
 (( AGENT_INCOMPLETE_RETRY_LIMIT >= 0 )) || AGENT_INCOMPLETE_RETRY_LIMIT=3
 (( AGENT_TRANSPORT_RETRY_LIMIT >= 0 )) || AGENT_TRANSPORT_RETRY_LIMIT=1
 (( AGENT_REQUIRE_FINISH_TOOL == 0 || AGENT_REQUIRE_FINISH_TOOL == 1 )) || AGENT_REQUIRE_FINISH_TOOL=0
+(( ZCODER_MAX_OUTPUT_TOKENS >= 256 )) || ZCODER_MAX_OUTPUT_TOKENS=8192
 
 agent_select_profile() {
   case "$1" in
@@ -65,10 +67,7 @@ agent_operating_loop_instructions() {
 }
 
 agent_patch_instructions() {
-  local patch_contract=""
-  _tool_patch_contract
-  patch_contract="$REPLY"
-  REPLY=$'Patch protocol for focused edits:\n'"${patch_contract}"$'\nIf rejected, read the exact error, re-read the latest target range, recalculate every hunk header, and call apply_patch with a corrected diff. Never bypass a focused patch failure with write_file.'
+  REPLY="For focused edits, follow the complete unified-diff contract in the apply_patch tool description. If a patch is rejected, read the exact error, re-read the latest target range, recalculate every hunk header, and retry apply_patch. Never bypass a focused patch failure with write_file."
 }
 
 agent_coding_system_prompt() {
@@ -403,8 +402,9 @@ agent_resolve_system_prompt() {
     mcp_prompt_block
     prompt+="$REPLY"
   fi
-  if [[ -n "$AGENT_COMPACTION_SUMMARY" ]]; then
-    prompt+=$'\n\n<compacted_context>\n'"$AGENT_COMPACTION_SUMMARY"$'\n</compacted_context>'
+  if (( $+functions[agent_compaction_prompt_block] )); then
+    agent_compaction_prompt_block
+    prompt+="$REPLY"
   fi
   [[ -n "$AGENT_LOOP_NUDGE" ]] && prompt+=$'\n\n'"$AGENT_LOOP_NUDGE"
   REPLY="$prompt"
@@ -430,10 +430,58 @@ agent_build_payload() {
   fi
   messages+="]"
   agent_context_options_json
-  options="${REPLY%,}"
+  options="$REPLY"
   [[ "$ZCODER_THINK" == true || "$ZCODER_THINK" == false ]] || think="false"
   [[ "$ZCODER_THINK" == false ]] && think="false"
-  REPLY="{\"model\":${model_json},\"messages\":${messages},\"tools\":${tools},\"stream\":false,\"think\":${think},\"options\":{${options}}}"
+  REPLY="{\"model\":${model_json},\"messages\":${messages},\"tools\":${tools},\"stream\":false,\"think\":${think},\"options\":{${options}\"num_predict\":${ZCODER_MAX_OUTPUT_TOKENS}}}"
+}
+
+agent_context_component_tokens() {
+  local value="$1"
+  local -i bytes estimate
+  _http_byte_length "$value"
+  bytes=$REPLY
+  if (( AGENT_LAST_PROMPT_TOKENS > 0 && AGENT_LAST_PAYLOAD_BYTES > 0 )); then
+    estimate=$(( (bytes * AGENT_LAST_PROMPT_TOKENS * 110 + AGENT_LAST_PAYLOAD_BYTES * 100 - 1) / (AGENT_LAST_PAYLOAD_BYTES * 100) ))
+  else
+    estimate=$(( (bytes + 2) / 3 ))
+  fi
+  REPLY="$estimate"
+}
+
+# Attribute estimated prompt tokens to model-visible components. This is an
+# operational estimate for finding bloat, not provider billing evidence.
+agent_context_bill() {
+  local base="" instructions="" skills="" mcp="" compacted="" tools="" message=""
+  local -i base_tokens=0 instruction_tokens=0 skill_tokens=0 mcp_tokens=0
+  local -i compacted_tokens=0 tool_schema_tokens=0 user_tokens=0 assistant_tokens=0 tool_result_tokens=0
+
+  if [[ -n "$AGENT_SYSTEM_PROMPT" ]]; then
+    base="$AGENT_SYSTEM_PROMPT"
+  else
+    agent_default_system_prompt; base="$REPLY"
+  fi
+  (( $+functions[instructions_prompt_block] )) && { instructions_prompt_block; instructions="$REPLY"; }
+  (( $+functions[skills_prompt_block] )) && { skills_prompt_block; skills="$REPLY"; }
+  (( $+functions[mcp_prompt_block] )) && { mcp_prompt_block; mcp="$REPLY"; }
+  (( $+functions[agent_compaction_prompt_block] )) && { agent_compaction_prompt_block; compacted="$REPLY"; }
+  tools_schema_json; tools="$REPLY"
+
+  agent_context_component_tokens "$base"; base_tokens=$REPLY
+  agent_context_component_tokens "$instructions"; instruction_tokens=$REPLY
+  agent_context_component_tokens "$skills"; skill_tokens=$REPLY
+  agent_context_component_tokens "$mcp"; mcp_tokens=$REPLY
+  agent_context_component_tokens "$compacted"; compacted_tokens=$REPLY
+  agent_context_component_tokens "$tools"; tool_schema_tokens=$REPLY
+  for message in "${AGENT_MESSAGES[@]}"; do
+    agent_context_component_tokens "$message"
+    case "$message" in
+      '{"role":"tool",'*) (( tool_result_tokens += REPLY )) ;;
+      '{"role":"assistant",'*) (( assistant_tokens += REPLY )) ;;
+      *) (( user_tokens += REPLY )) ;;
+    esac
+  done
+  REPLY="Estimated context bill: base=${base_tokens}; project=${instruction_tokens}; skills=${skill_tokens}; mcp=${mcp_tokens}; checkpoint=${compacted_tokens}; tool schemas=${tool_schema_tokens}; user/context=${user_tokens}; assistant=${assistant_tokens}; tool results=${tool_result_tokens}."
 }
 
 # Build a disposable request whose prefix matches a normal agent request while
@@ -634,6 +682,10 @@ agent_lfm_tool_is_exposed() {
   case "$name" in
     list_files|read_file|read_file_range|apply_patch|search|run_command|finish)
       return 0
+      ;;
+    discover_skills)
+      (( $+functions[skills_tools_schema_json] && ${#SKILL_CATALOG_NAMES} > 0 ))
+      return
       ;;
     write_file)
       (( ! TOOL_PATCH_RETRY_REQUIRED ))

@@ -69,7 +69,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..755"
+print -r -- "1..781"
 
 input_reset
 input_layout 20 4
@@ -125,6 +125,11 @@ terminal_sample=$'first\nsecond\t\e]52;c;clipboard\a\rthird'
 zcoder_terminal_safe "$terminal_sample"
 assert_eq $'first\nsecond\\t^[]52;c;clipboard^G^Mthird' "$REPLY" "terminal-safe rendering preserves lines and exposes controls"
 assert_not_contains "$REPLY" $'\e' "terminal-safe rendering removes literal escape bytes"
+
+zcoder_truncate_head_tail "BEGIN-${(l:120::x:)}-END" 60
+assert_contains "$REPLY" "BEGIN-" "bounded tool output preserves its head"
+assert_contains "$REPLY" "-END" "bounded tool output preserves its diagnostic tail"
+assert_eq "60" "${#REPLY}" "head-tail bounding honors the character limit"
 
 typeset -g MOCK_SYSWRITE_OUTPUT=""
 typeset -gi MOCK_SYSWRITE_CALLS=0
@@ -1033,22 +1038,37 @@ assert_success "complete Skill parsing succeeds at activation time" $?
 assert_contains "$SKILL_PARSED_BODY" "FOLDED BODY SENTINEL" "complete Skill parsing loads instructions on demand"
 
 skills_prompt_block
-assert_contains "$REPLY" '"name":"folded-skill"' "system prompt discloses skill metadata"
+assert_not_contains "$REPLY" '"name":"folded-skill"' "system prompt defers skill metadata"
 assert_not_contains "$REPLY" "FOLDED BODY SENTINEL" "system prompt does not eagerly load skill instructions"
 assert_contains "$REPLY" "never override" "skill catalog preserves higher-priority safety rules"
 assert_contains "$REPLY" "Ignore any allowed-tools metadata" "skill metadata cannot bypass approval policy"
 tools_schema_json
+assert_contains "$REPLY" '"name":"discover_skills"' "tool schema exposes on-demand skill discovery"
 assert_contains "$REPLY" '"name":"activate_skill"' "tool schema exposes skill activation when skills exist"
 assert_not_contains "$REPLY" '"name":"read_skill_resource"' "resource tool is hidden until a Skill is active"
-assert_contains "$REPLY" '"enum":["config-only","folded-skill","shared-skill"]' "skill tool names are constrained to discovered values"
+assert_not_contains "$REPLY" '"enum":["config-only","folded-skill","shared-skill"]' "skill names are not repeated in every tool schema"
+tool_dispatch discover_skills '{"query":"folded parser"}'
+assert_success "focused Skill discovery succeeds" $?
+assert_contains "$TOOL_RESULT" "folded-skill" "focused Skill discovery returns matching metadata"
+assert_not_contains "$TOOL_RESULT" "FOLDED BODY SENTINEL" "Skill discovery does not load instruction bodies"
 saved_max_skills=$ZCODER_MAX_SKILLS
 ZCODER_MAX_SKILLS=2
 skills_build_catalog
 assert_eq "2" "${#SKILL_CATALOG_NAMES}" "skill disclosure honors its configured count limit"
 tools_schema_json
-assert_not_contains "$REPLY" '"shared-skill"' "skill tool enums omit undisclosed catalog entries"
+assert_not_contains "$REPLY" '"shared-skill"' "deferred skill schemas omit catalog entries"
 skills_prompt_block
-assert_contains "$REPLY" "Skill catalog truncated" "bounded skill catalogs report truncation"
+assert_not_contains "$REPLY" "Skill catalog truncated" "bounded catalog state stays out of the prompt"
+tool_dispatch activate_skill '{"name":"shared-skill"}'
+assert_failure "model activation rejects a Skill outside the disclosed catalog" $?
+assert_contains "$TOOL_RESULT" "not in the disclosed catalog" "undisclosed Skill rejection explains the boundary"
+skills_activate "shared-skill"
+assert_success "explicit activation can select a valid Skill outside the model disclosure limit" $?
+tools_schema_json
+assert_contains "$REPLY" '"name":"read_skill_resource"' "explicitly activated undisclosed Skills expose the resource reader"
+assert_contains "$REPLY" '"enum":["shared-skill"]' "resource schemas include explicitly activated undisclosed Skills"
+skills_reset_activations
+assert_eq "0" "${#SKILL_ACTIVE_NAMES}" "explicit activation regression setup resets cleanly"
 ZCODER_MAX_SKILLS=$saved_max_skills
 skills_build_catalog
 
@@ -1058,7 +1078,7 @@ tool_dispatch activate_skill '{"name":"folded-skill"}'
 assert_success "activate_skill loads a discovered skill" $?
 assert_eq "1" "${#SKILL_ACTIVE_NAMES}" "skill activation is tracked once per conversation"
 tools_schema_json
-assert_contains "$REPLY" '"enum":["config-only","shared-skill"]' "active Skills leave the activation enum"
+assert_not_contains "$REPLY" '"enum":["config-only","shared-skill"]' "activation schema remains independent of catalog size"
 assert_contains "$REPLY" '"name":"read_skill_resource"' "resource tool appears after Skill activation"
 skills_prompt_block
 assert_contains "$REPLY" "FOLDED BODY SENTINEL" "activated skill instructions enter the system prompt"
@@ -1228,7 +1248,7 @@ assert_contains "$REPLY" "use set -o pipefail" "sysadmin prompt prevents hidden 
 assert_contains "$REPLY" "Use mktemp for temporary files" "sysadmin prompt rejects predictable temporary paths"
 assert_contains "$REPLY" "replace the entire stored state" "sysadmin prompt identifies replacement-style command risk"
 assert_contains "$REPLY" "crontab -l > /tmp/file; append content; crontab /tmp/file" "sysadmin prompt names the unsafe crontab pattern"
-assert_contains "$REPLY" "UNIFIED DIFF CONTRACT" "sysadmin prompt also teaches the workspace patch contract"
+assert_contains "$REPLY" "complete unified-diff contract in the apply_patch tool description" "sysadmin prompt points to the workspace patch contract"
 assert_contains "$REPLY" "OBSERVE → DECIDE → ACT → CHECK" "sysadmin prompt includes the shared operating loop"
 assert_contains "$REPLY" "Do not combine unrelated operations or multiple mutating steps" "sysadmin prompt keeps host mutations reviewable"
 assert_contains "$REPLY" "Never claim verification that was not actually observed" "sysadmin prompt requires observed verification"
@@ -1262,14 +1282,14 @@ assert_contains "$REPLY" "Stop inspecting once you have enough evidence" "system
 assert_contains "$REPLY" "do not repeat discovery with minor query variations" "system prompt prevents redundant discovery searches"
 assert_contains "$REPLY" "non-empty plain assistant response is also accepted as final" "default prompt permits compatible tool-free completion"
 assert_contains "$REPLY" "Never use a tool-free response as a preamble" "default prompt still requires tools while work remains"
-assert_contains "$REPLY" "GOOD (valid focused edit)" "coding prompt includes a valid unified-diff example"
-assert_contains "$REPLY" "@@ -10,3 +10,3 @@" "valid patch example includes concrete hunk ranges"
-assert_contains "$REPLY" "BAD (invalid in this harness)" "coding prompt contrasts an unsupported patch envelope"
-assert_contains "$REPLY" "exactly one prefix character" "coding prompt explains unified-diff line prefixes"
+assert_contains "$REPLY" "complete unified-diff contract in the apply_patch tool description" "coding prompt points to the canonical patch contract"
+assert_not_contains "$REPLY" "GOOD (valid focused edit)" "coding prompt does not duplicate the patch example"
+assert_not_contains "$REPLY" "BAD (invalid in this harness)" "coding prompt leaves invalid patch examples in the tool schema"
+assert_not_contains "$REPLY" "exactly one prefix character" "coding prompt leaves line-prefix details in the tool schema"
 assert_contains "$REPLY" "Never bypass a focused patch failure with write_file" "coding prompt requires patch retry instead of replacement"
 
 saved_context_window_setting="$ZCODER_CONTEXT_WINDOW"
-ZCODER_CONTEXT_WINDOW=8192
+ZCODER_CONTEXT_WINDOW=32768
 AGENT_CONTEXT_MODEL=""
 AGENT_MESSAGES=('{"role":"user","content":"WARMUP HISTORY SENTINEL"}')
 AGENT_USER_MESSAGES=("WARMUP USER SENTINEL")
@@ -1440,19 +1460,29 @@ AGENT_CONTEXT_DISCOVERY_PENDING=0
 agent_context_options_json
 assert_contains "$REPLY" '"num_ctx":131072' "automatic context preserves a known loaded allocation"
 
-ZCODER_CONTEXT_WINDOW=8192
+typeset -g MOCK_CHECKPOINT='{"schema_version":1,"objective":"complete the requested change","constraints":["preserve project rules"],"decisions":["use focused edits because the project requires them"],"artifacts":["lib/example.zsh: inspected"],"facts":["make test is required"],"completed":["localized the change"],"active":["implementing"],"blocked":[],"next":["finish the edit"]}'
+agent_parse_compaction_summary "$MOCK_CHECKPOINT"
+assert_success "structured compaction checkpoints validate" $?
+agent_parse_compaction_summary '{"schema_version":1,"objective":"missing the required arrays"}'
+assert_failure "incomplete compaction checkpoints fail closed" $?
+
+ZCODER_CONTEXT_WINDOW=32768
 ZCODER_COMPACT_PERCENT=70
 ZCODER_COMPACT_MAX_TOKENS=2048
 ZCODER_COMPACT_KEEP_USER_TOKENS=4096
+ZCODER_COMPACT_KEEP_RECENT_TOKENS=2048
+ZCODER_COMPACT_MIN_YIELD_TOKENS=2048
 agent_reset
 agent_add_message user "original request"
-agent_add_message assistant "old assistant detail"
-agent_add_message tool "old tool output" read_file
+agent_add_message assistant "old assistant detail ${(l:20000::a:)}"
+agent_add_message tool "old tool output ${(l:20000::b:)}" read_file
+agent_add_message assistant "superseded reasoning ${(l:20000::c:)}"
 agent_add_message user "current request"
 typeset -g MOCK_COMPACT_PAYLOAD=""
 agent_ollama_chat() {
   MOCK_COMPACT_PAYLOAD="$1"
-  HTTP_BODY='{"message":{"content":"checkpoint summary with exact state"},"prompt_eval_count":1800,"eval_count":120}'
+  json_quote "$MOCK_CHECKPOINT"
+  HTTP_BODY='{"message":{"content":'"$REPLY"'},"prompt_eval_count":1800,"eval_count":120}'
   HTTP_ERROR=""
   return 0
 }
@@ -1460,29 +1490,52 @@ agent_compact_history manual >/dev/null
 compact_status=$?
 assert_success "manual compaction completes" "$compact_status"
 assert_contains "$MOCK_COMPACT_PAYLOAD" "old tool output" "compaction request includes detailed tool history"
-assert_eq "checkpoint summary with exact state" "$AGENT_COMPACTION_SUMMARY" "compaction stores the model checkpoint"
+assert_contains "$MOCK_COMPACT_PAYLOAD" "You are zcoder" "compaction reuses the normal stable system prefix"
+assert_contains "$MOCK_COMPACT_PAYLOAD" '"name":"read_file"' "compaction reuses the normal tool-schema prefix"
+assert_eq "$MOCK_CHECKPOINT" "$AGENT_COMPACTION_SUMMARY" "compaction stores the validated model checkpoint"
 assert_eq "1" "$AGENT_COMPACTION_COUNT" "compaction advances its checkpoint counter"
-assert_eq "4" "${#AGENT_MESSAGES}" "replacement history retains the recent raw exchange"
+assert_eq "1" "${#AGENT_MESSAGES}" "replacement history retains the bounded recent suffix"
 assert_eq "2" "${#AGENT_USER_MESSAGES}" "replacement history preserves recent real user messages"
 agent_build_payload
-assert_contains "$REPLY" "checkpoint summary with exact state" "regular prompts include the compacted checkpoint"
-assert_contains "$REPLY" "old tool output" "compacted prompts retain recent tool results to prevent repeated work"
-assert_contains "$REPLY" '"num_ctx":8192' "explicit context windows are sent to Ollama"
+assert_contains "$REPLY" "complete the requested change" "regular prompts include the validated checkpoint"
+assert_contains "$REPLY" "original request" "regular prompts pin the original user request verbatim"
+assert_contains "$REPLY" "current request" "regular prompts pin the latest user correction verbatim"
+assert_not_contains "$REPLY" "old tool output" "compacted prompts remove stale detailed tool output"
+assert_contains "$REPLY" '"num_ctx":32768' "explicit 32K context windows are sent to Ollama"
+assert_contains "$REPLY" '"num_predict":8192' "normal turns carry the configured output ceiling"
 assert_success "compaction rearms above its post-checkpoint estimate" $(( AGENT_COMPACTION_REARM_TOKENS > AGENT_ESTIMATED_TOKENS ? 0 : 1 ))
 agent_context_summary
 assert_contains "$REPLY" "estimated next prompt:" "context status reports the current transport estimate"
 assert_contains "$REPLY" "last Ollama prompt: unknown" "context status distinguishes reset usage from a measured prompt"
+assert_contains "$REPLY" "Estimated context bill:" "context status attributes model-visible components"
 
-ZCODER_CONTEXT_WINDOW=4096
+AGENT_MESSAGES=('{"role":"assistant","content":"call","tool_calls":[{"type":"function","function":{"name":"read_file","arguments":{"path":"x"}}}]}' '{"role":"tool","tool_name":"read_file","content":"result"}')
+agent_compaction_recent_start 10
+assert_eq "3" "$REPLY" "recent history drops an oversized orphan tool result"
+
+ZCODER_COMPACT_KEEP_RECENT_TOKENS=16384
+agent_reset
+agent_add_message user "small request that should remain exact"
+low_yield_original="${AGENT_MESSAGES[1]}"
+agent_compact_history manual >/dev/null
+assert_failure "low-yield compaction is rejected" $?
+assert_eq "$low_yield_original" "${AGENT_MESSAGES[1]}" "low-yield rejection restores exact history"
+assert_eq "0" "$AGENT_COMPACTION_COUNT" "low-yield rejection does not advance checkpoint state"
+assert_contains "$HTTP_ERROR" "yielded only" "low-yield rejection explains its threshold"
+ZCODER_COMPACT_KEEP_RECENT_TOKENS=2048
+
+ZCODER_CONTEXT_WINDOW=32768
 ZCODER_COMPACT_PERCENT=70
 agent_reset
-agent_add_message user "${(l:12000::x:)}"
+agent_add_message user "original request"
+agent_add_message assistant "${(l:70000::x:)}"
+agent_add_message user "current request"
 agent_prepare_payload >/dev/null
 auto_compact_status=$?
 prepared_payload="$REPLY"
 assert_success "oversized prompts trigger automatic compaction" "$auto_compact_status"
 assert_eq "1" "$AGENT_COMPACTION_COUNT" "automatic compaction creates one checkpoint"
-assert_contains "$prepared_payload" "checkpoint summary with exact state" "automatic compaction rebuilds the pending prompt from its checkpoint"
+assert_contains "$prepared_payload" "complete the requested change" "automatic compaction rebuilds the pending prompt from its checkpoint"
 
 functions[_test_real_compaction_builder]="${functions[agent_build_compaction_payload]}"
 typeset -gi MOCK_COMPACTION_BUILDS=0
@@ -1490,8 +1543,8 @@ agent_build_compaction_payload() {
   (( MOCK_COMPACTION_BUILDS++ ))
   _test_real_compaction_builder "$@"
 }
-ZCODER_CONTEXT_WINDOW=4096
-AGENT_CONTEXT_WINDOW=4096
+ZCODER_CONTEXT_WINDOW=32768
+AGENT_CONTEXT_WINDOW=32768
 AGENT_CONTEXT_MODEL="$ZCODER_MODEL"
 agent_reset
 for compact_record in {1..128}; do
@@ -1532,7 +1585,7 @@ tool_dispatch() {
   TOOL_RESULT_OK=1
   return 0
 }
-ZCODER_CONTEXT_WINDOW=16384
+ZCODER_CONTEXT_WINDOW=32768
 AGENT_CONTEXT_MODEL=""
 agent_reset
 UI_ACTIVE=1
@@ -1682,7 +1735,7 @@ agent_ollama_chat() {
   HTTP_ERROR=""
   return 0
 }
-ZCODER_CONTEXT_WINDOW=16384
+ZCODER_CONTEXT_WINDOW=32768
 AGENT_CONTEXT_MODEL=""
 agent_reset
 agent_user_turn "explain the result" >/dev/null 2>&1
@@ -2009,7 +2062,7 @@ tool_dispatch() {
   TOOL_RESULT_OK=1
   return 0
 }
-ZCODER_CONTEXT_WINDOW=16384
+ZCODER_CONTEXT_WINDOW=32768
 AGENT_CONTEXT_MODEL=""
 agent_user_turn "keep reading forever" >/dev/null 2>&1
 mock_loop_status=$?

@@ -108,6 +108,7 @@ remain compatible and are treated as availability unknown.
 | `apply_patch` | Apply a unified or context diff | `git apply`, then `patch` fallback |
 | `search` | Search text with locations | `rg` |
 | `run_command` | Run builds, tests, and diagnostics | Approved `zsh -c` |
+| `discover_skills` | Search bounded Skill metadata on demand | Native Zsh matching |
 | `activate_skill` | Load selected Skill instructions | Native Skill discovery |
 | `read_skill_resource` | Read an active Skill resource | Canonicalized read-only access |
 | `finish` | Complete or block a turn structurally | Agent-loop control |
@@ -121,8 +122,9 @@ Patch application does not require a Git repository. zcoder validates with
 `git apply --check`; if Git rejects an otherwise usable diff, it tries a
 workspace-confined `patch --dry-run`. After a rejected patch, `write_file` is
 removed for the rest of that user turn until a corrected patch succeeds.
-The system prompt, `apply_patch` tool schema, and rejection result all use the
-same unified-diff contract. It includes a valid and invalid example, explains
+The `apply_patch` tool schema and rejection result use the same unified-diff
+contract; the system prompt points to that single model-visible definition
+instead of duplicating it. It includes a valid and invalid example, explains
 numeric hunk counts and line prefixes, and explicitly rejects Markdown fences,
 bare `@@`, placeholders, and `*** Begin Patch`-style harness envelopes.
 
@@ -140,6 +142,12 @@ file and then running its syntax check. `finish` remains a turn-control tool and
 must be the only call in its response; when mixed with work calls, only the
 `finish` call is rejected so the completed work and its results remain visible
 to the model.
+
+Normal turns request at most `ZCODER_MAX_OUTPUT_TOKENS` tokens. Automatic
+compaction reserves that output allowance when choosing its trigger, which is
+especially important at the supported 32K floor. `/context` attributes the
+current estimated prompt across base guidance, project instructions, Skills,
+MCP guidance, checkpoint state, schemas, and role-specific history.
 
 ## Loop detection and completion
 

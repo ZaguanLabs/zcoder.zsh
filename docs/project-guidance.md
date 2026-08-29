@@ -40,8 +40,9 @@ nested directories.
 
 zcoder implements the open [Agent Skills](https://agentskills.io) format with
 progressive disclosure. At startup it parses only each valid `SKILL.md` name and
-description. Full instructions enter context only when the model calls
-`activate_skill` or the user activates the Skill explicitly.
+description. The complete catalog stays outside the recurring model prompt. For
+an unqualified task, the model calls `discover_skills` with a focused query and
+then `activate_skill`; full instructions enter context only after activation.
 
 Referenced scripts, documentation, and assets are read individually with
 `read_skill_resource`; they are not loaded eagerly.
@@ -69,21 +70,23 @@ Inside the TUI:
 - `/skill NAME` activates one Skill.
 - Prefixing a request with `$skill-name` activates it before the first model turn.
 
-Otherwise, the model chooses a Skill from the compact catalog and activates it
-when relevant. Active Skill instructions remain in the system prompt, survive
-conversation compaction, and are cleared by `/new`.
+Otherwise, the model searches the bounded catalog on demand and activates a
+matching Skill when relevant. Active Skill instructions remain in the system
+prompt, survive conversation compaction, and are cleared by `/new`.
 
 ## Limits
 
 | Setting | Default | Purpose |
 | --- | ---: | --- |
-| `ZCODER_MAX_SKILLS` | 128 | Maximum Skills disclosed to the model |
-| `ZCODER_SKILL_CATALOG_MAX_BYTES` | 32 KiB | Combined catalog limit |
+| `ZCODER_MAX_SKILLS` | 128 | Maximum Skills discoverable by the model |
+| `ZCODER_SKILL_CATALOG_MAX_BYTES` | 32 KiB | Combined discoverable metadata limit |
 | `ZCODER_SKILL_MAX_BYTES` | 32 KiB | Maximum activated body size |
 | `ZCODER_ACTIVE_SKILLS_MAX_BYTES` | 64 KiB | Combined active body limit |
 | `ZCODER_MAX_ACTIVE_SKILLS` | 8 | Simultaneously active Skills |
 
-The activation-tool enum contains exactly the disclosed names.
+The recurring activation schema does not repeat catalog names. Model-initiated
+activation is nevertheless restricted to the bounded disclosed catalog;
+explicit user activation can still select any valid discovered Skill.
 
 ## Trust model
 

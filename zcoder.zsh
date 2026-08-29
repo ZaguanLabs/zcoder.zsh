@@ -8,7 +8,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.8.2"
+typeset -gr ZCODER_VERSION="0.8.3"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -117,7 +117,7 @@ while (( $# > 0 )); do
     -p|--prompt) require_option_value "$1" "${2:-}"; ONE_SHOT_PROMPT="$2"; shift ;;
     --context-window)
       require_option_value "$1" "${2:-}"
-      [[ "$2" == auto || "$2" == <4096-> ]] || { print -u2 -- "Error: --context-window expects auto or an integer of at least 4096"; exit 2; }
+      [[ "$2" == auto || "$2" == <32768-> ]] || { print -u2 -- "Error: --context-window expects auto or an integer of at least 32768"; exit 2; }
       ZCODER_CONTEXT_WINDOW="$2"; shift
       ;;
     --compact-at)

@@ -204,3 +204,23 @@ zcoder_truncate() {
     REPLY="$value"
   fi
 }
+
+# Preserve both the beginning and the diagnostic tail of bounded tool output.
+# Commands commonly put the actual failure and summary after voluminous logs.
+zcoder_truncate_head_tail() {
+  local value="$1" limit="${2:-${ZCODER_MAX_TOOL_OUTPUT:-32768}}" marker=""
+  local -i omitted head tail
+  if (( ${#value} <= limit )); then
+    REPLY="$value"
+    return 0
+  fi
+  omitted=$(( ${#value} - limit ))
+  marker=$'\n'"[... ${omitted} characters omitted ...]"$'\n'
+  if (( limit <= ${#marker} + 16 )); then
+    REPLY="${value[1,$limit]}"
+    return 0
+  fi
+  head=$(( (limit - ${#marker}) * 3 / 5 ))
+  tail=$(( limit - ${#marker} - head ))
+  REPLY="${value[1,$head]}${marker}${value[-$tail,-1]}"
+}

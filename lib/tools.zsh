@@ -58,7 +58,7 @@ _tool_fail() {
 
 _tool_succeed() {
   TOOL_RESULT_OK=1
-  zcoder_truncate "$1" "$ZCODER_MAX_TOOL_OUTPUT"
+  zcoder_truncate_head_tail "$1" "$ZCODER_MAX_TOOL_OUTPUT"
   TOOL_RESULT="$REPLY"
 }
 
@@ -561,7 +561,7 @@ tool_run_command() {
   exit_code=$?
   output="${mapfile[$out_file]}"
   zf_rm -f "$out_file" 2>/dev/null
-  zcoder_truncate "$output" "$ZCODER_MAX_TOOL_OUTPUT"; output="$REPLY"
+  zcoder_truncate_head_tail "$output" "$ZCODER_MAX_TOOL_OUTPUT"; output="$REPLY"
   if (( exit_code == 124 )); then
     _tool_fail "command timed out after ${timeout_seconds}s"$'\n'"$output"
     return 1
@@ -589,7 +589,8 @@ tool_dispatch() {
     apply_patch) tool_apply_patch "${JSON_OBJECT[patch]:-}" ;;
     search) tool_search "${JSON_OBJECT[query]:-}" "${JSON_OBJECT[path]:-.}" "${JSON_OBJECT[max_results]:-50}" ;;
     run_command) tool_run_command "${JSON_OBJECT[command]:-}" "${JSON_OBJECT[cwd]:-.}" "${JSON_OBJECT[timeout_seconds]:-120}" ;;
-    activate_skill) skills_activate "${JSON_OBJECT[name]:-}" ;;
+    discover_skills) skills_discover "${JSON_OBJECT[query]:-}" ;;
+    activate_skill) skills_activate_disclosed "${JSON_OBJECT[name]:-}" ;;
     read_skill_resource) skills_read_resource "${JSON_OBJECT[name]:-}" "${JSON_OBJECT[path]:-}" ;;
     *) _tool_fail "unknown tool: $name" ;;
   esac

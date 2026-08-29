@@ -18,6 +18,7 @@ Run `./zcoder.zsh --help` for the complete CLI reference.
 | `ZCODER_WARMUP` | `true` | Warm the selected model and stable prompt context before interactive work |
 | `ZCODER_HTTP_READ_TIMEOUT` | 900 | Idle seconds allowed while waiting for Ollama response data |
 | `ZCODER_MAX_TOOL_OUTPUT` | 32768 | Maximum returned tool-output characters |
+| `ZCODER_MAX_OUTPUT_TOKENS` | 8192 | Maximum tokens requested from a normal model turn |
 | `ZCODER_HOME` | `${XDG_CONFIG_HOME:-$HOME/.config}/zcoder` | User configuration and sessions |
 
 Command-line values take precedence where an equivalent flag exists.
@@ -83,8 +84,11 @@ Context sizing defaults to `auto`:
 - After the response, zcoder refreshes its accounting from `/api/ps`.
 
 Use `--context-window TOKENS` or `ZCODER_CONTEXT_WINDOW` to request an explicit
-allocation from the first turn. Larger contexts consume more memory. `/context`
-shows the active allocation, estimate, and compaction threshold.
+allocation from the first turn. zcoder supports explicit allocations of 32,768
+tokens or more; 32K and 64K are its intended local operating sizes. Larger
+contexts consume more memory. `/context` shows the active allocation, estimate,
+compaction threshold, output ceiling, and a component-level estimated context
+bill.
 
 ## Compaction
 
@@ -92,9 +96,11 @@ zcoder uses continuation checkpoints rather than silently discarding old turns:
 
 1. `prompt_eval_count` calibrates a conservative token estimate. Before the first sample, zcoder estimates three bytes per token plus template headroom.
 2. Automatic compaction begins at 85% of the allocated context by default.
-3. A tool-free, non-thinking Ollama request creates a concise checkpoint, capped at 2,048 tokens or 10% of the active context, whichever is smaller.
-4. The latest complete assistant/tool exchange and a bounded exact-user ledger remain available alongside the checkpoint.
-5. If the checkpoint request is too large, zcoder removes the oldest detailed records until the request fits its safety margin.
+3. A non-thinking Ollama request reuses the normal system/tool prefix, instructs the model not to call tools, and creates a schema-validated JSON checkpoint capped at 2,048 tokens or 10% of the active context, whichever is smaller.
+4. The initial request and latest correction are pinned verbatim, while additional recent user turns fill a soft token budget.
+5. The recent history boundary expands when necessary so a tool result never survives without its owning assistant tool call.
+6. Invalid or low-yield checkpoints are rejected without replacing exact history.
+7. If the checkpoint request is too large, zcoder removes the oldest unpinned detailed records until the request fits its safety margin.
 
 The visible transcript is not discarded. `/compact` creates a checkpoint
 manually; `/context` reports checkpoint count and current estimates.
@@ -114,6 +120,8 @@ Relevant settings:
 | `ZCODER_COMPACT_MAX_TOKENS` | 2048 |
 | `ZCODER_COMPACT_KEEP_USER_TOKENS` | 4096 |
 | `ZCODER_COMPACT_KEEP_RECENT_TOKENS` | 16384 |
+| `ZCODER_COMPACT_MIN_YIELD_TOKENS` | 2048 |
+| `ZCODER_MAX_OUTPUT_TOKENS` | 8192 |
 
 `--compact-at PERCENT` changes the threshold for one process.
 
