@@ -28,6 +28,7 @@ then runs the shell-level suite. The suite covers:
 - Ollama, delegate, and remote cancellation
 - command approval, denial, and safety guards
 - authenticated remote events and approvals
+- same-host relay framing, discovery, delivery, and origin isolation
 - input handling and curses rendering
 
 Run syntax checks alone with:

@@ -255,6 +255,7 @@ ui_plain_transcript() {
       codex_worker) label="Codex worker" ;;
       agy_worker) label="Antigravity worker" ;;
       opencode_worker) label="OpenCode worker" ;;
+      relay) label="Agent relay" ;;
       error) label="Error" ;;
       *) label="${role:u}" ;;
     esac
@@ -590,6 +591,7 @@ _ui_render_one_message() {
     codex_worker) title="◆ Codex worker  ${time}"; attr="green/black" ;;
     agy_worker) title="◆ Antigravity worker  ${time}"; attr="green/black" ;;
     opencode_worker) title="◆ OpenCode worker  ${time}"; attr="green/black" ;;
+    relay) title="↪ Agent relay  ${time}"; attr="magenta/black" ;;
     error) title="⚠ Error  ${time}"; attr="red/black" ;;
     *) title="ℹ ${role}  ${time}"; attr="magenta/black" ;;
   esac

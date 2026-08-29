@@ -17,6 +17,7 @@ lib/
   instructions.zsh      AGENTS.md discovery and prompt assembly
   json.zsh              native tokenizer, decoder, and encoder
   mcp.zsh               MCP registry, stdio brokers, and tools
+  relay.zsh             same-host discovery, Unix sockets, and task spool
   remote.zsh            authenticated remote server and client protocol
   skills.zsh            Agent Skill discovery and progressive loading
   state.zsh             workspace/profile-scoped persistent sessions
@@ -73,6 +74,21 @@ turn supersedes an unfinished warm-up because the HTTP worker deliberately owns
 only one Ollama request at a time. Warm-up output is validated and discarded;
 it never enters agent or session state.
 
+## Same-host agent relay
+
+Eligible local interactive processes lazily load `relay.zsh`, validate a
+same-user registry, start a background Unix-socket listener, and publish a
+small manifest. Discovery validates bounded manifests and pings the exact
+instance ID. The listener performs framing, validation, deduplication, queue
+limits, atomic spooling, and acknowledgement only.
+
+The curses process claims at most one queued envelope before reading the next
+keyboard event. It records a distinct relay transcript event and passes a fixed
+untrusted-context wrapper through the common agent loop. Relayed content stays
+out of the exact-user ledger and cannot set a session title. Because agent,
+session, and UI mutation stays in the foreground, a busy receiver can accept
+messages without concurrent conversation mutation.
+
 ## External harnesses
 
 Plain provider commands run read-only consultations. A bang command selects an
@@ -109,6 +125,8 @@ remain compatible and are treated as availability unknown.
 | `apply_patch` | Apply a unified or context diff | `git apply`, then `patch` fallback |
 | `search` | Search text with locations | `rg` |
 | `run_command` | Run builds, tests, and diagnostics | Approved `zsh -c` |
+| `list_agents` | Discover live same-user local peers | Private manifests plus protocol ping |
+| `send_agent_message` | Queue a task for one exact peer | Framed Unix-domain socket request |
 | `discover_skills` | Search bounded Skill metadata on demand | Native Zsh matching |
 | `activate_skill` | Load selected Skill instructions | Native Skill discovery |
 | `read_skill_resource` | Read an active Skill resource | Canonicalized read-only access |

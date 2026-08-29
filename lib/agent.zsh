@@ -29,6 +29,7 @@ typeset -g AGENT_WARMUP_MODEL=""
 typeset -g AGENT_WARMUP_HOST=""
 typeset -g AGENT_NORMALIZED_CONTENT=""
 typeset -g AGENT_NORMALIZED_THINKING=""
+typeset -g AGENT_TURN_ORIGIN="user"
 typeset -gi AGENT_LFM_BALANCED_PLAN_OBJECTS=0
 typeset -gi AGENT_LFM_BALANCED_CALL_OBJECTS=0
 
@@ -422,6 +423,10 @@ agent_resolve_system_prompt() {
   fi
   if (( $+functions[mcp_prompt_block] )); then
     mcp_prompt_block
+    prompt+="$REPLY"
+  fi
+  if (( $+functions[relay_prompt_block] )); then
+    relay_prompt_block
     prompt+="$REPLY"
   fi
   if (( $+functions[agent_compaction_prompt_block] )); then
@@ -908,28 +913,54 @@ agent_user_turn() {
     remote_client_user_turn "$1"
     return $?
   fi
+  local AGENT_TURN_ORIGIN="user"
+  (( $+functions[relay_mark_busy] )) && relay_mark_busy || true
+  {
+    _agent_run_turn "$1" user "$1"
+  } always {
+    (( $+functions[relay_mark_ready] )) && relay_mark_ready || true
+  }
+}
+
+agent_relay_turn() {
+  local context="$1" display="$2"
+  local AGENT_TURN_ORIGIN="relay"
+  (( $+functions[relay_mark_busy] )) && relay_mark_busy || true
+  {
+    _agent_run_turn "$context" relay "$display"
+  } always {
+    (( $+functions[relay_mark_ready] )) && relay_mark_ready || true
+  }
+}
+
+_agent_run_turn() {
   local user_content="$1" payload="" response="" content="" thinking="" calls_json="[]"
+  local turn_origin="${2:-user}" display_content="${3:-$1}"
   local tool_name="" tool_args="" result="" summary="" display_result=""
   local request_signature="" outcome_signature="" loop_notice="" continuation_notice=""
   local -a call_names=() call_args=()
   local -i step i request_status prepare_status incomplete_retries=0 transport_retries=0 needs_continuation=0 lfm_command_plan=0 lfm_tool_refusal=0 lfm_path_conclusion=0 lfm_plan_only=0 loop_cycle=0 loop_count=0 patch_failures=0 patch_failure_limit=0
 
-  (( AGENT_WARMUP_ACTIVE )) && agent_warmup_cancel "user prompt submitted"
+  (( AGENT_WARMUP_ACTIVE )) && agent_warmup_cancel "${turn_origin} prompt submitted"
   agent_patch_failure_limit
   patch_failure_limit=$REPLY
   AGENT_LAST_RESPONSE=""
   TOOL_PATCH_RETRY_REQUIRED=0
   agent_loop_reset
-  agent_lfm_user_requests_plan_only "$user_content" && lfm_plan_only=1
-  if (( $+functions[skills_activate_explicit_from_text] )); then
+  [[ "$turn_origin" == user ]] && agent_lfm_user_requests_plan_only "$user_content" && lfm_plan_only=1
+  if [[ "$turn_origin" == user ]] && (( $+functions[skills_activate_explicit_from_text] )); then
     skills_activate_explicit_from_text "$user_content"
     zcoder_debug explicit_skills "active=${(j:,:)SKILL_ACTIVE_NAMES}"
   fi
-  agent_add_message user "$user_content"
-  zcoder_debug user_turn_start "content=${(qqq)user_content}"
+  if [[ "$turn_origin" == relay ]]; then
+    agent_add_context_message "$user_content"
+  else
+    agent_add_message user "$user_content"
+  fi
+  zcoder_debug "${turn_origin}_turn_start" "content=${(qqq)user_content}"
   if (( $+functions[ui_append_message] && ${UI_ACTIVE:-0} )); then
-    ui_append_message user "$user_content"
-    (( $+functions[state_note_user] )) && state_note_user "$user_content"
+    ui_append_message "$turn_origin" "$display_content"
+    [[ "$turn_origin" == user ]] && (( $+functions[state_note_user] )) && state_note_user "$user_content"
     (( $+functions[state_save_and_refresh] )) && state_save_and_refresh
     ui_refresh_all
   fi

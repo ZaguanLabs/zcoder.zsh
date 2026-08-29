@@ -42,6 +42,14 @@ tools_schema_json() {
 {"type":"function","function":{"name":"apply_patch","description":'"${patch_description}"',"parameters":{"type":"object","required":["patch"],"properties":{"patch":{"type":"string","description":'"${patch_argument_description}"'}}}}},
 {"type":"function","function":{"name":"search","description":"Search workspace text with ripgrep for literals, regular expressions, or unmodeled text. Use it as the first inspection tool only when project instructions do not designate an MCP navigation tool. After finding a usable location, read its range instead of rephrasing the same search.","parameters":{"type":"object","required":["query"],"properties":{"query":{"type":"string","description":"Focused regular expression"},"path":{"type":"string","description":"Narrow workspace-relative search root; defaults to ."},"max_results":{"type":"integer","description":"Maximum matching lines; defaults to 50"}}}}},
 {"type":"function","function":{"name":"run_command","description":"Run a shell command in the workspace after explicit user approval. Use for tests, builds, formatting, git status, and diagnostics.","parameters":{"type":"object","required":["command"],"properties":{"command":{"type":"string"},"cwd":{"type":"string","description":"Workspace-relative working directory; defaults to ."},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600}}}}}'
+  if (( $+functions[relay_tool_list_agents] && ${RELAY_AVAILABLE:-0} )); then
+    output+=',
+{"type":"function","function":{"name":"list_agents","description":"List other live zcoder instances owned by this user on this machine. Returns exact instance IDs, projects, workspaces, models, profiles, and states. Use before send_agent_message when the user explicitly asks to contact another agent.","parameters":{"type":"object","properties":{}}}}'
+    if [[ "${AGENT_TURN_ORIGIN:-user}" == user ]]; then
+      output+=',
+{"type":"function","function":{"name":"send_agent_message","description":"Hand a concise task to one exact local zcoder instance. Call only when the current user explicitly asked to contact another zcoder agent. An accepted delivery does not mean the task completed. Never send secrets or unrelated transcript history.","parameters":{"type":"object","required":["target_instance_id","message"],"properties":{"target_instance_id":{"type":"string","description":"Exact live ID returned by list_agents"},"message":{"type":"string","description":"Small self-contained task and relevant facts for the receiving agent"}}}}}'
+    fi
+  fi
   if (( $+functions[skills_tools_schema_json] && ${#SKILL_CATALOG_NAMES} > 0 )); then
     skills_tools_schema_json
     output+=",${REPLY}"
@@ -623,6 +631,16 @@ tool_dispatch() {
     apply_patch) tool_apply_patch "${JSON_OBJECT[patch]:-}" ;;
     search) tool_search "${JSON_OBJECT[query]:-}" "${JSON_OBJECT[path]:-.}" "${JSON_OBJECT[max_results]:-50}" ;;
     run_command) tool_run_command "${JSON_OBJECT[command]:-}" "${JSON_OBJECT[cwd]:-.}" "${JSON_OBJECT[timeout_seconds]:-120}" ;;
+    list_agents)
+      (( $+functions[relay_tool_list_agents] && ${RELAY_AVAILABLE:-0} )) && relay_tool_list_agents || _tool_fail "inter-agent relay is unavailable"
+      ;;
+    send_agent_message)
+      if (( $+functions[relay_tool_send_agent_message] && ${RELAY_AVAILABLE:-0} )) && [[ "${AGENT_TURN_ORIGIN:-user}" == user ]]; then
+        relay_tool_send_agent_message "${JSON_OBJECT[target_instance_id]:-}" "${JSON_OBJECT[message]:-}"
+      else
+        _tool_fail "inter-agent delivery is unavailable for this turn"
+      fi
+      ;;
     discover_skills) skills_discover "${JSON_OBJECT[query]:-}" ;;
     activate_skill) skills_activate_disclosed "${JSON_OBJECT[name]:-}" ;;
     read_skill_resource) skills_read_resource "${JSON_OBJECT[name]:-}" "${JSON_OBJECT[path]:-}" ;;

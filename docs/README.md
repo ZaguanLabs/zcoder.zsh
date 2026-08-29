@@ -26,6 +26,7 @@ zcoder.zsh. If you are new to the project, begin with
 | Guide | What it covers |
 | --- | --- |
 | [Architecture](architecture.md) | Source layout, agent loop, HTTP behavior, batching, completion, and remote transport |
+| [Inter-agent communication](inter-agent-communication.md) | Same-host Unix-socket discovery, task delivery, queuing, safety, and implementation details |
 | [Development](development.md) | Test suite, model evaluation, compatibility expectations, and contribution checks |
 
 ## Releases

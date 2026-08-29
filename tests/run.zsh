@@ -10,6 +10,7 @@ typeset -gr PROJECT_DIR="${TEST_DIR:h}"
 
 source "${PROJECT_DIR}/lib/util.zsh"
 source "${PROJECT_DIR}/lib/json.zsh"
+source "${PROJECT_DIR}/lib/relay.zsh"
 source "${PROJECT_DIR}/lib/mcp.zsh"
 source "${PROJECT_DIR}/lib/http.zsh"
 source "${PROJECT_DIR}/lib/instructions.zsh"
@@ -24,6 +25,7 @@ source "${PROJECT_DIR}/lib/remote.zsh"
 
 typeset -gi TESTS=0 FAILURES=0
 typeset -g TEST_TMP=""
+typeset -g TEST_RELAY_PEER_PID="" TEST_RELAY_PEER_STOP=""
 
 pass() { print -r -- "ok $TESTS - $1"; }
 fail() { print -r -- "not ok $TESTS - $1"; (( FAILURES++ )); }
@@ -59,6 +61,12 @@ assert_failure() {
 }
 
 cleanup_tests() {
+  [[ -n "$TEST_RELAY_PEER_STOP" ]] && mapfile[$TEST_RELAY_PEER_STOP]="1" 2>/dev/null || true
+  if [[ "$TEST_RELAY_PEER_PID" == <1-> ]] && kill -0 "$TEST_RELAY_PEER_PID" 2>/dev/null; then
+    kill -TERM "$TEST_RELAY_PEER_PID" 2>/dev/null
+    wait "$TEST_RELAY_PEER_PID" 2>/dev/null || true
+  fi
+  relay_stop 2>/dev/null || true
   zcoder_debug_close 2>/dev/null || true
   zcoder_runtime_cleanup 2>/dev/null || true
   [[ -n "$TEST_TMP" && -d "$TEST_TMP" ]] && zf_rm -rf -- "$TEST_TMP" 2>/dev/null
@@ -69,7 +77,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..763"
+print -r -- "1..827"
 
 input_reset
 input_layout 20 4
@@ -157,6 +165,104 @@ zcoder_temp_path second .out; second_temp_path="$REPLY"
 assert_eq "$ZCODER_RUNTIME_DIR" "${first_temp_path:h}" "temporary files stay inside private runtime storage"
 if [[ "$first_temp_path" != "$second_temp_path" ]]; then temp_paths_unique=0; else temp_paths_unique=1; fi
 assert_success "temporary path allocation is unique" "$temp_paths_unique"
+
+# Same-host agent relay uses a background Unix-socket listener while all agent
+# and UI mutation remains in the foreground process.
+saved_relay_dir="$ZCODER_RELAY_DIR"
+saved_relay_mode="$ZCODER_RELAY"
+saved_relay_workspace="$ZCODER_WORKSPACE"
+saved_relay_model="$ZCODER_MODEL"
+saved_relay_profile="$ZCODER_PROFILE"
+saved_relay_session="$CURRENT_SESSION_ID"
+ZCODER_RELAY_DIR="$TEST_TMP/relay-registry"
+ZCODER_RELAY=on
+ZCODER_WORKSPACE="$TEST_TMP/relay-parent-project"
+ZCODER_MODEL="parent-model"
+ZCODER_PROFILE="coding"
+CURRENT_SESSION_ID="1_1"
+zf_mkdir -p "$ZCODER_WORKSPACE"
+relay_start
+assert_success "local agent relay starts" $?
+assert_eq "1" "$RELAY_AVAILABLE" "started relay exposes its model tools"
+[[ -S "$RELAY_SOCKET_PATH" && -f "$RELAY_MANIFEST_PATH" ]]
+assert_success "relay publishes a socket and manifest" $?
+relay_parent_socket="$RELAY_SOCKET_PATH"
+relay_parent_manifest="$RELAY_MANIFEST_PATH"
+relay_parent_pid="$RELAY_LISTENER_PID"
+
+relay_peer_runtime="$TEST_TMP/relay-peer-runtime"
+relay_peer_workspace="$TEST_TMP/peer-project"
+relay_peer_ready="$TEST_TMP/relay-peer.ready"
+TEST_RELAY_PEER_STOP="$TEST_TMP/relay-peer.stop"
+relay_peer_received="$TEST_TMP/relay-peer.received"
+zsh "${PROJECT_DIR}/tests/fixtures/relay_peer.zsh" \
+  "$ZCODER_RELAY_DIR" "$relay_peer_runtime" "$relay_peer_workspace" \
+  "$relay_peer_ready" "$TEST_RELAY_PEER_STOP" "$relay_peer_received" &
+TEST_RELAY_PEER_PID=$!
+relay_deadline=$(( EPOCHREALTIME + 3.0 ))
+while [[ ! -f "$relay_peer_ready" ]] && (( EPOCHREALTIME < relay_deadline )); do zselect -t 2 2>/dev/null; done
+[[ -f "$relay_peer_ready" ]]
+assert_success "second local relay fixture becomes ready" $?
+relay_peer_id="${mapfile[$relay_peer_ready]:-}"
+
+relay_discover
+assert_success "relay discovery finds a live peer" $?
+assert_eq "1" "${#RELAY_PEER_IDS}" "relay discovery excludes the calling instance"
+assert_eq "$relay_peer_id" "${RELAY_PEER_IDS[1]}" "relay discovery returns the exact peer instance ID"
+assert_eq "peer-project" "${RELAY_PEER_PROJECTS[1]}" "relay discovery reports the peer project"
+relay_agents_text
+assert_contains "$REPLY" "$relay_peer_id" "agent listing includes the exact selectable ID"
+assert_contains "$REPLY" "$relay_peer_workspace" "agent listing includes the canonical peer workspace"
+
+AGENT_TURN_ORIGIN=user
+tools_schema_json
+assert_contains "$REPLY" '"name":"list_agents"' "local user turns expose agent discovery"
+assert_contains "$REPLY" '"name":"send_agent_message"' "local user turns expose agent delivery"
+AGENT_TURN_ORIGIN=relay
+tools_schema_json
+assert_contains "$REPLY" '"name":"list_agents"' "relayed turns retain read-only agent discovery"
+assert_not_contains "$REPLY" '"name":"send_agent_message"' "relayed turns cannot recursively forward work"
+tool_dispatch send_agent_message '{"target_instance_id":"blocked","message":"do not forward"}'
+assert_failure "dispatch rejects a hidden relay send tool" $?
+assert_contains "$TOOL_RESULT" "unavailable for this turn" "dispatch enforces the relay forwarding guard"
+AGENT_TURN_ORIGIN=user
+
+relay_message=$'users.name became users.display_name\nVerify the focused consumer test. ÆØÅ'
+relay_tool_send_agent_message "$relay_peer_id" "$relay_message"
+assert_success "agent message delivery is acknowledged" $?
+assert_contains "$TOOL_RESULT" "Delivery does not imply task completion" "delivery result distinguishes acceptance from completion"
+relay_deadline=$(( EPOCHREALTIME + 3.0 ))
+while [[ ! -f "$relay_peer_received" ]] && (( EPOCHREALTIME < relay_deadline )); do zselect -t 2 2>/dev/null; done
+relay_received="${mapfile[$relay_peer_received]:-}"
+assert_contains "$relay_received" "relay-parent-project" "receiving peer retains sender identity"
+assert_contains "$relay_received" "$relay_message" "receiving peer preserves multiline Unicode task text"
+
+relay_pause
+assert_success "relay can pause incoming delivery" $?
+_relay_ping_peer "$RELAY_SOCKET_PATH" "$RELAY_INSTANCE_ID"
+assert_success "paused relay remains discoverable" $?
+assert_eq "paused" "$RELAY_ACK_STATE" "relay ping reports paused state"
+relay_resume
+assert_success "relay can resume incoming delivery" $?
+
+mapfile[$TEST_RELAY_PEER_STOP]="1"
+wait "$TEST_RELAY_PEER_PID"
+assert_success "relay fixture shuts down cleanly" $?
+TEST_RELAY_PEER_PID=""
+relay_stop
+assert_success "local relay shuts down cleanly" $?
+[[ ! -e "$relay_parent_socket" && ! -e "$relay_parent_manifest" ]]
+assert_success "relay shutdown removes only its public socket and manifest" $?
+kill -0 "$relay_parent_pid" 2>/dev/null
+assert_failure "relay shutdown reaps its listener worker" $?
+
+ZCODER_RELAY_DIR="$saved_relay_dir"
+ZCODER_RELAY="$saved_relay_mode"
+ZCODER_WORKSPACE="$saved_relay_workspace"
+ZCODER_MODEL="$saved_relay_model"
+ZCODER_PROFILE="$saved_relay_profile"
+CURRENT_SESSION_ID="$saved_relay_session"
+TEST_RELAY_PEER_STOP=""
 
 mapfile[$TEST_TMP/debug-target.log]="unchanged"
 zf_ln -s "$TEST_TMP/debug-target.log" "$TEST_TMP/debug-link.log"
@@ -1627,6 +1733,22 @@ assert_contains "$MOCK_REASONING_SECOND_PAYLOAD" "reasoning fixture contents" "f
 assert_eq "assistant" "${UI_ROLES[2]}" "reasoning-only tool turn enters the UI transcript"
 assert_eq "" "${UI_CONTENTS[2]}" "reasoning-only UI turn keeps empty assistant content"
 assert_eq "inspect privately" "${UI_THINKINGS[2]}" "reasoning-only UI turn keeps private reasoning"
+
+agent_ollama_chat() {
+  HTTP_BODY='{"message":{"content":"relay work complete"},"prompt_eval_count":80,"eval_count":6}'
+  HTTP_ERROR=""
+  return 0
+}
+agent_reset
+UI_ROLES=(); UI_CONTENTS=(); UI_THINKINGS=(); UI_TIMES=(); UI_REASONING_OPEN=()
+agent_relay_turn $'<agent_relay>\nTask:\nInspect the current consumer.\n</agent_relay>' $'From peer-project (pid 4242)\nInspect the current consumer.' >/dev/null 2>&1
+relay_turn_status=$?
+assert_success "relayed work uses the normal agent loop" "$relay_turn_status"
+assert_eq "relay" "${UI_ROLES[1]}" "relayed work has a distinct visible transcript role"
+assert_contains "${UI_CONTENTS[1]}" "peer-project" "relay transcript identifies its sender"
+assert_eq "0" "${#AGENT_USER_MESSAGES}" "relay context stays out of the exact-user ledger"
+assert_contains "${AGENT_MESSAGES[1]}" '"role":"user"' "relay context uses a template-safe user role"
+assert_contains "${AGENT_MESSAGES[1]}" "agent_relay" "relay wrapper remains visible to the receiving model"
 
 # Known read-only batches are accepted but remain deterministically sequential.
 typeset -gi MOCK_BATCH_TURNS=0 MOCK_BATCH_DISPATCHES=0

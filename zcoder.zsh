@@ -8,7 +8,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.8.5"
+typeset -gr ZCODER_VERSION="0.8.6"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -221,6 +221,7 @@ cleanup() {
   [[ "$REMOTE_MODE" != server ]] && (( $+functions[state_save_session] )) && state_save_session
   (( $+functions[delegate_async_cancel] )) && delegate_async_cancel
   http_async_cancel
+  (( $+functions[relay_stop] )) && relay_stop
   (( $+functions[remote_server_stop] )) && remote_server_stop
   mcp_shutdown_all
   ui_end
@@ -238,6 +239,7 @@ zcoder_refresh_sessions() {
   else
     state_save_and_refresh
   fi
+  (( $+functions[relay_refresh_manifest] )) && relay_refresh_manifest || true
 }
 
 zcoder_delegate_host_label() {
@@ -314,6 +316,50 @@ handle_slash_command() {
       else
         ui_append_message error "The terminal is too narrow to show the session sidebar."
       fi
+      ;;
+    /list-agents)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "Agent discovery is local to the machine running the agent and is not bridged through a remote client."
+      elif (( ! $+functions[relay_discover] || ! ${RELAY_ACTIVE:-0} )); then
+        ui_append_message error "Inter-agent relay is unavailable: ${RELAY_ERROR:-not started}."
+      elif relay_discover; then
+        relay_agents_text
+        zcoder_terminal_safe "$REPLY"
+        ui_append_message system "$REPLY"
+      else
+        ui_append_message error "Could not list local agents: ${RELAY_ERROR:-unknown error}"
+      fi
+      ;;
+    /agents)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "Agent relay controls are local to the machine running the agent."
+      elif (( $+functions[relay_status_text] )); then
+        relay_status_text
+        ui_append_message system "$REPLY"
+      else
+        ui_append_message error "Inter-agent relay is unavailable."
+      fi
+      ;;
+    /agents\ pause)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "Agent relay controls are local to the machine running the agent."
+      elif (( $+functions[relay_pause] )) && relay_pause; then
+        ui_append_message system "Inter-agent relay paused. New messages will be rejected; accepted messages remain queued."
+      else
+        ui_append_message error "Could not pause inter-agent relay: ${RELAY_ERROR:-not started}."
+      fi
+      ;;
+    /agents\ resume)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "Agent relay controls are local to the machine running the agent."
+      elif (( $+functions[relay_resume] )) && relay_resume; then
+        ui_append_message system "Inter-agent relay resumed."
+      else
+        ui_append_message error "Could not resume inter-agent relay: ${RELAY_ERROR:-not started}."
+      fi
+      ;;
+    /agents\ *)
+      ui_append_message error "Usage: /agents, /agents pause, or /agents resume"
       ;;
     /copy)
       ui_copy_view
@@ -536,7 +582,7 @@ handle_slash_command() {
       fi
       ;;
     /help|/\?)
-      ui_append_message system $'Enter sends a prompt. Shift+Enter inserts a newline; Alt+Enter is the fallback for terminals that do not report Shift+Enter separately. Pasted multiline text keeps its formatting. Escape stops a running Ollama response or external delegate.\nTab moves focus between the prompt, session sidebar, and transcript. Use Up/Down in the sidebar to resume another job. Ctrl+Y or /copy opens a stable plain-text view for native terminal selection and copying.\nCtrl+O selects an Ollama model. Ctrl+R toggles reasoning. Ctrl+N starts a new saved session. PgUp/PgDn scroll. Ctrl+U clears input. Ctrl+W deletes a word. Ctrl+Q exits.\n/claude REQUEST, /codex REQUEST, /agy REQUEST, and /opencode REQUEST run read-only consultations. Add ! to run an explicitly workspace-editing worker, for example /codex! REQUEST. /opencode with no request selects its provider/model. /mcp shows configured servers and live status; /mcp reload reloads configuration. /skills lists installed Agent Skills; /skill NAME activates one. Prefix a request with $skill-name for explicit activation. /model opens the Ollama picker; /host HOST changes Ollama; /instructions lists active AGENTS.md files; /compact creates a context checkpoint; /context shows the token budget; /sessions focuses saved jobs; /new starts a saved job.'
+      ui_append_message system $'Enter sends a prompt. Shift+Enter inserts a newline; Alt+Enter is the fallback for terminals that do not report Shift+Enter separately. Pasted multiline text keeps its formatting. Escape stops a running Ollama response or external delegate.\nTab moves focus between the prompt, session sidebar, and transcript. Use Up/Down in the sidebar to resume another job. Ctrl+Y or /copy opens a stable plain-text view for native terminal selection and copying.\nCtrl+O selects an Ollama model. Ctrl+R toggles reasoning. Ctrl+N starts a new saved session. PgUp/PgDn scroll. Ctrl+U clears input. Ctrl+W deletes a word. Ctrl+Q exits.\n/claude REQUEST, /codex REQUEST, /agy REQUEST, and /opencode REQUEST run read-only consultations. Add ! to run an explicitly workspace-editing worker, for example /codex! REQUEST. /opencode with no request selects its provider/model. /list-agents lists other local zcoder instances; /agents pause or /agents resume controls incoming work. /mcp shows configured servers and live status; /mcp reload reloads configuration. /skills lists installed Agent Skills; /skill NAME activates one. Prefix a request with $skill-name for explicit activation. /model opens the Ollama picker; /host HOST changes Ollama; /instructions lists active AGENTS.md files; /compact creates a context checkpoint; /context shows the token budget; /sessions focuses saved jobs; /new starts a saved job.'
       zcoder_delegate_availability_summary
       ui_append_message system "$REPLY"
       ;;
@@ -548,11 +594,17 @@ handle_slash_command() {
 }
 
 main_tui() {
-  local ch="" key="" mouse="" text="" previous_model=""
-  local -i current_index=1 i=1
+  local ch="" key="" mouse="" text="" previous_model="" relay_context="" relay_display=""
+  local -i current_index=1 i=1 relay_claim_status=1
   input_reset
   if [[ "$REMOTE_MODE" != client ]] && ! state_init; then
     print -u2 -- "Warning: could not initialize session storage at $ZCODER_SESSIONS_DIR"
+  fi
+  if [[ "$REMOTE_MODE" == local ]]; then
+    zcoder_require relay
+    if ! relay_start && [[ "$ZCODER_RELAY" != off ]]; then
+      ui_append_message system "Inter-agent relay unavailable: ${RELAY_ERROR:-startup failed}."
+    fi
   fi
   if [[ "$REMOTE_MODE" == local && "$ZCODER_WARMUP" == true ]]; then
     ui_set_status "Warming Up"
@@ -571,6 +623,23 @@ main_tui() {
       remote_client_model_poll || true
     else
       agent_warmup_poll
+    fi
+    if [[ "$REMOTE_MODE" == local ]] && (( $+functions[relay_claim_one] && ${RELAY_ACTIVE:-0} )); then
+      relay_refresh_manifest || true
+      relay_claim_one
+      relay_claim_status=$?
+      if (( relay_claim_status == 0 )); then
+        relay_relay_context; relay_context="$REPLY"
+        relay_relay_display; relay_display="$REPLY"
+        agent_relay_turn "$relay_context" "$relay_display"
+        relay_complete_claim || ui_append_message error "Could not finalize relayed message ${RELAY_CLAIM_MESSAGE_ID}."
+        zcoder_refresh_sessions
+        continue
+      elif (( relay_claim_status == 2 )); then
+        ui_append_message error "$RELAY_ERROR"
+        ui_refresh_all
+        continue
+      fi
     fi
     ch=""; key=""; mouse=""
     zcurses timeout input_win 100

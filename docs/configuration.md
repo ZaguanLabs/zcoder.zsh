@@ -23,6 +23,26 @@ Run `./zcoder.zsh --help` for the complete CLI reference.
 
 Command-line values take precedence where an equivalent flag exists.
 
+## Local agent relay
+
+The relay is enabled by default for local interactive sessions. It is not
+started for one-shot, remote-client, or remote-server processes.
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `ZCODER_RELAY` | `on` | `on`, `off`, or `paused` |
+| `ZCODER_RELAY_DIR` | unset | Override the private same-user registry directory |
+| `ZCODER_RELAY_MAX_BYTES` | `65536` | Maximum framed request or response bytes |
+| `ZCODER_RELAY_MAX_MESSAGE_CHARS` | `16000` | Maximum relayed task characters |
+| `ZCODER_RELAY_MAX_QUEUE` | `16` | Maximum accepted unfinished messages |
+| `ZCODER_RELAY_IO_TIMEOUT` | `2` | Frame and acknowledgement deadline in seconds |
+
+The registry defaults to `${XDG_RUNTIME_DIR}/zcoder-agents` when available,
+then `${TMPDIR:-/tmp}/zcoder-${UID}-agents`. It must be a real directory owned
+by the current user with no group or other permission bits. Invalid settings or
+unavailable Unix-socket support disable only the relay; ordinary local work
+continues. `/agents` reports the current state and `/list-agents` lists peers.
+
 ## Model warm-up
 
 The local TUI starts with a `[ Warming Up ]` badge and sends a disposable,

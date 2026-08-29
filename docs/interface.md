@@ -90,6 +90,9 @@ the TUI.
 | `/compact` | Create a context checkpoint |
 | `/context` | Show context use and compaction threshold |
 | `/sessions` | Focus saved jobs |
+| `/list-agents` | List other live local zcoder instances |
+| `/agents` | Show this instance's relay state and queue depth |
+| `/agents pause`, `/agents resume` | Reject or resume new incoming handoffs |
 | `/copy` | Open the plain-text transcript |
 | `/new` | Start a new job |
 | `/help` | Show in-app help |
@@ -97,6 +100,26 @@ the TUI.
 
 Some controls are intentionally unavailable in remote-client mode because the
 server owns that state.
+
+## Local agent handoffs
+
+Interactive zcoder instances owned by the same user on the same machine
+publish themselves through a private Unix-socket registry. `/list-agents`
+shows each live peer's exact instance ID, project, PID, state, canonical
+workspace, profile, and model without starting an Ollama turn.
+
+You can ask the current agent to tell one of those peers about a change or hand
+it a focused task. The model discovers the exact target and sends a concise
+message only when you explicitly request that communication. An accepted
+message is queued by the peer; it does not mean the peer has completed the
+work. The receiving terminal renders a distinct Agent relay event and starts
+the task in its currently selected session after any active turn finishes.
+
+`/agents pause` rejects new handoffs while retaining messages already accepted;
+`/agents resume` begins accepting and processing them again. Discovery and
+delivery are not bridged through remote-client mode. See
+[Inter-agent communication](inter-agent-communication.md) for protocol and
+safety details.
 
 ## External harnesses
 

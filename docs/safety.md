@@ -71,6 +71,29 @@ inspect `git status` and the workspace before continuing after an interrupted
 worker. External workers are disabled entirely in the `sysadmin` profile so
 they cannot bypass its mandatory per-command approval policy.
 
+## Local agent relay
+
+Inter-agent delivery is limited to interactive zcoder processes owned by the
+same operating-system user on the same machine. The shared registry directory
+must be private, real, and user-owned; the message queue remains in the
+receiver's process-private runtime directory. There is no TCP, SSH, HTTP, or
+remote-client bridge.
+
+The socket listener treats every message as untrusted data. It validates a
+bounded frame, target, identifiers, metadata, queue capacity, and task length,
+then atomically stores the envelope. It never invokes Ollama, tools, session
+code, curses, or shell commands. Only the receiving foreground loop can start
+the normal agent turn.
+
+A relayed task is a work request, not evidence about the target workspace. The
+receiver must inspect current state, and its own workspace boundary, project
+instructions, profile, and `run_command` approval policy remain authoritative.
+The send tool is exposed only during a local-user-originated turn and only when
+that user explicitly asked to contact another instance. It is hidden and
+rejected during relayed turns to prevent forwarding chains. Another process
+already running as the same user can forge same-user metadata, so sender names,
+PIDs, and workspaces are context rather than cryptographic identity.
+
 ## Sysadmin profile
 
 The `sysadmin` profile is designed for host maintenance rather than unrestricted
