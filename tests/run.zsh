@@ -69,7 +69,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..781"
+print -r -- "1..763"
 
 input_reset
 input_layout 20 4
@@ -1746,6 +1746,12 @@ assert_eq "The requested explanation is complete." "$AGENT_LAST_RESPONSE" "adapt
 
 saved_lfm_model="$ZCODER_MODEL"
 ZCODER_MODEL="lfm2.5-8b-fast"
+agent_resolve_system_prompt
+assert_contains "$REPLY" "Use only Ollama native tool calls for actions" "LFM prompts require the native Ollama action channel"
+assert_contains "$REPLY" "Never encode an action, command, tool_call, or tool_calls object as JSON" "LFM prompts reject competing content action envelopes"
+agent_normalize_lfm_response $'<think>private final reasoning</think>\nVisible final answer.' "" 0
+assert_eq "Visible final answer." "$AGENT_NORMALIZED_CONTENT" "LFM final answers hide a leading think block"
+assert_eq "private final reasoning" "$AGENT_NORMALIZED_THINKING" "LFM final-answer reasoning enters the private thinking channel"
 agent_content_is_lfm_intermediate_plan '{"analysis":"inspect first","plan":"run a check","commands":[{"command":"pwd"}],"status":"working"}'
 assert_success "LFM command-plan envelopes are recognized" $?
 agent_content_is_lfm_intermediate_plan '{"plan":"create it","instructions":"write the file","commands":[{"keystrokes":"write code"}],"check":"launch it"}'
@@ -1767,9 +1773,9 @@ assert_success "false LFM tool-unavailable responses are recognized" $?
 agent_content_is_lfm_false_tool_refusal "The requested deployment tool is not available, but here is the completed analysis."
 assert_failure "specific unavailable-tool explanations are not treated as LFM protocol failures" $?
 agent_lfm_user_requests_plan_only "Provide a plan only; do not execute it."
-assert_success "explicit plan-only requests disable LFM action promotion" $?
+assert_success "explicit plan-only requests disable LFM action recovery" $?
 agent_lfm_user_requests_plan_only "Create the editor and verify it."
-assert_failure "ordinary implementation requests retain LFM action promotion" $?
+assert_failure "ordinary implementation requests retain LFM action recovery" $?
 agent_content_is_lfm_intermediate_plan '{"analysis":"nothing to run","plan":"done","commands":[]}'
 assert_failure "empty LFM command lists are not treated as stalled execution" $?
 agent_content_is_lfm_intermediate_plan '{"commands":[{"command":"pwd"}]}'
@@ -1778,73 +1784,33 @@ agent_content_is_lfm_intermediate_plan '{"First action":"List files in the works
 assert_success "single-field LFM plans are recognized without relying on their label" $?
 agent_content_is_lfm_intermediate_plan '{"First action":"List files in the workspace."} trailing planner debris'
 assert_success "single-field LFM plans remain recognizable inside malformed output" $?
-agent_extract_lfm_plan_action '{"analysis":"inspect first","plan":"list files","actions":[{"tool_name":"list_files","arguments":{"path":".","max_entries":20}}],"check":"inspect the result"}'
-assert_success "named LFM plan actions can be normalized" $?
-assert_eq "list_files" "$AGENT_COMPAT_TOOL_NAME" "LFM action normalization preserves the native tool name"
-assert_contains "$AGENT_COMPAT_TOOL_ARGS" '"max_entries":20' "LFM action normalization preserves nested arguments"
-agent_extract_lfm_plan_action '{"analysis":"inspect first","plan":"run pwd","commands":[{"command":"pwd"}],"status":"working"}'
-assert_success "LFM command plans can be normalized" $?
-assert_eq "run_command" "$AGENT_COMPAT_TOOL_NAME" "LFM commands enter the approval-gated command tool"
-assert_contains "$AGENT_COMPAT_TOOL_ARGS" '"command":"pwd"' "LFM command text is preserved"
-agent_extract_lfm_plan_action '{"plan":"create the file","instructions":"use the terminal","commands":[{"keystrokes":"print -r -- ready\n","cwd":"/workspace/project","timeout_seconds":5}],"check":"inspect it"}'
-assert_success "LFM keystroke command plans can be normalized" $?
-assert_not_contains "$AGENT_COMPAT_TOOL_ARGS" '"keystrokes"' "LFM keystrokes are converted to native command arguments"
-assert_contains "$AGENT_COMPAT_TOOL_ARGS" '"cwd":"/workspace/project"' "LFM command working directories remain subject to native workspace checks"
-assert_contains "$AGENT_COMPAT_TOOL_ARGS" '"timeout_seconds":5' "LFM command timeouts are preserved"
-agent_extract_lfm_plan_action '{"plan":"write it","observations":"ready to create","steps":"create then check","next actions":"write the file","tool_calls":[{"name":"write_file,\n","arguments":{"path":"editor.py","content":"code"}}]}'
-assert_success "LFM foreign named tool calls can be normalized" $?
-assert_eq "write_file" "$AGENT_COMPAT_TOOL_NAME" "LFM foreign tool names lose protocol punctuation"
-assert_contains "$AGENT_COMPAT_TOOL_ARGS" '"path":"editor.py"' "LFM foreign tool arguments are preserved"
-agent_extract_lfm_plan_action '{"analysis":"inspect","plan":"list files","next_step":"inspect output","tool_call":{"name":"list_files","arguments":{"path":".","max_entries":10}}}'
-assert_success "LFM singular foreign tool calls can be normalized" $?
-assert_eq "list_files" "$AGENT_COMPAT_TOOL_NAME" "LFM singular tool calls preserve their name"
-assert_contains "$AGENT_COMPAT_TOOL_ARGS" '"max_entries":10' "LFM singular tool calls preserve arguments"
-agent_extract_lfm_plan_action $'{\n  "First action: Explore the workspace before acting."},\n  "tool_call": {\n    "name": "list_files",\n    "arguments": {"path": ".", "max_entries": 100}\n  }\n}'
-assert_success "balanced tool calls are recovered from malformed LFM wrappers" $?
-assert_eq "list_files" "$AGENT_COMPAT_TOOL_NAME" "malformed-wrapper recovery preserves the exposed tool name"
-agent_extract_lfm_plan_action $'{"tool_call":{"name":"search","arguments":{"query":"literal { brace } and \\"quoted\\" text","path":"."}} trailing'
-assert_success "balanced recovery ignores braces and escaped quotes inside strings" $?
-assert_contains "$AGENT_COMPAT_TOOL_ARGS" 'literal { brace }' "balanced recovery preserves brace-bearing argument strings"
-agent_extract_lfm_plan_action '{"tool_call":{"name":"not_exposed","arguments":{"path":"."}}}'
-assert_failure "unknown balanced tool calls are not promoted" $?
+agent_content_is_lfm_intermediate_plan '{"tool_call":{"name":"list_files","arguments":{"path":"."}}}'
+assert_success "content tool-call objects request a corrected native tool call" $?
+agent_content_is_lfm_intermediate_plan $'{"tool_call":{"name":"search","arguments":{"query":"literal { brace } and \\"quoted\\" text","path":"."}} trailing'
+assert_success "content-envelope recognition handles braces and escaped quotes inside strings" $?
 agent_content_is_lfm_intermediate_plan '{"name":"not_exposed","arguments":{"path":"."}}'
 assert_success "unknown call objects request a corrected native tool call" $?
-agent_extract_lfm_plan_action '{"tool_call":{"name":"list_files"}}'
-assert_failure "balanced tool calls without arguments are not promoted" $?
 agent_content_is_lfm_intermediate_plan '{"name":"list_files"}'
 assert_success "call objects missing arguments request correction" $?
-agent_extract_lfm_plan_action '{"tool_call":{"name":"list_files","arguments":"."}}'
-assert_failure "balanced tool calls with non-object arguments are not promoted" $?
 agent_content_is_lfm_intermediate_plan '{"name":"list_files","arguments":"."}'
 assert_success "call objects with non-object arguments request correction" $?
-agent_extract_lfm_plan_action '{"actions":[{"name":"list_files","arguments":{"path":"."}},{"name":"search","arguments":{"query":"TODO"}}]}'
-assert_failure "multiple balanced tool-call candidates are rejected as ambiguous" $?
-agent_extract_lfm_plan_action '{"plan":"inspect","analysis":"choose a tool","actions":[{"name":"list_files","arguments":{"path":"."}},{"name":"search","arguments":{"query":"TODO"}}]}'
-assert_failure "ambiguous balanced calls cannot fall back to first-action promotion" $?
-TOOL_PATCH_RETRY_REQUIRED=1
-agent_extract_lfm_plan_action '{"tool_call":{"name":"write_file","arguments":{"path":"x","content":"x"}}}'
-assert_failure "temporarily unavailable tools are not promoted" $?
-TOOL_PATCH_RETRY_REQUIRED=0
-saved_command_policy="$ZCODER_COMMAND_POLICY"
-ZCODER_COMMAND_POLICY=deny
-agent_extract_lfm_plan_action 'malformed {"name":"run_command","arguments":{"command":"print should-not-run"}} tail'
-assert_success "a balanced run_command candidate is recovered structurally" $?
-tool_dispatch "$AGENT_COMPAT_TOOL_NAME" "$AGENT_COMPAT_TOOL_ARGS" >/dev/null 2>&1
-assert_failure "recovered run_command calls still pass through command approval" $?
-assert_contains "$TOOL_RESULT" "user denied" "recovered command denial is reported by the normal tool pipeline"
-ZCODER_COMMAND_POLICY="$saved_command_policy"
+agent_content_is_lfm_intermediate_plan '{"plan":"inspect","analysis":"choose a native tool","actions":[{"name":"list_files","arguments":{"path":"."}},{"name":"search","arguments":{"query":"TODO"}}]}'
+assert_success "ambiguous content actions request one corrected native tool call" $?
 
 typeset -gi MOCK_LFM_TURNS=0 MOCK_LFM_DISPATCHES=0
 typeset -ga MOCK_LFM_PAYLOADS=()
 saved_lfm_dispatch="${functions[tool_dispatch]}"
 typeset -gi MOCK_LFM_ACTION_TURNS=0
-typeset -g MOCK_LFM_ACTION_NAME="" MOCK_LFM_ACTION_SECOND_PAYLOAD=""
+typeset -g MOCK_LFM_ACTION_NAME=""
+typeset -ga MOCK_LFM_ACTION_PAYLOADS=()
 agent_ollama_chat() {
   (( MOCK_LFM_ACTION_TURNS++ ))
+  MOCK_LFM_ACTION_PAYLOADS+=("$1")
   if (( MOCK_LFM_ACTION_TURNS == 1 )); then
-    HTTP_BODY='{"message":{"content":"{\"analysis\":\"inspect first\",\"plan\":\"list files\",\"actions\":[{\"tool_name\":\"list_files\",\"arguments\":{\"path\":\".\",\"max_entries\":20}}],\"check\":\"inspect the result\"}"}}'
+    HTTP_BODY='{"message":{"content":"{\"analysis\":\"inspect first\",\"plan\":\"search files\",\"actions\":[{\"tool_name\":\"search\",\"arguments\":{\"query\":\"TODO\"}}],\"check\":\"inspect the result\"}"}}'
+  elif (( MOCK_LFM_ACTION_TURNS == 2 )); then
+    HTTP_BODY='{"message":{"content":"<think>native private reasoning</think>{\"tool_call\":{\"name\":\"search\",\"arguments\":{\"query\":\"wrong channel\"}}}","tool_calls":[{"type":"function","function":{"name":"list_files","arguments":{"path":"."}}}]}}'
   else
-    MOCK_LFM_ACTION_SECOND_PAYLOAD="$1"
     HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"complete","response":"Promoted action completed."}}}]}}'
   fi
   HTTP_ERROR=""
@@ -1852,7 +1818,7 @@ agent_ollama_chat() {
 }
 tool_dispatch() {
   MOCK_LFM_ACTION_NAME="$1"
-  TOOL_RESULT="promoted native result"
+  TOOL_RESULT="native tool result"
   TOOL_RESULT_OK=1
   return 0
 }
@@ -1860,12 +1826,16 @@ AGENT_INCOMPLETE_RETRY_LIMIT=1
 AGENT_REQUIRE_FINISH_TOOL=0
 agent_reset
 agent_user_turn "complete an LFM action plan" >/dev/null 2>&1
-assert_success "named LFM plan actions enter native dispatch" $?
-assert_eq "2" "$MOCK_LFM_ACTION_TURNS" "promoted LFM actions continue without a retry turn"
-assert_eq "list_files" "$MOCK_LFM_ACTION_NAME" "promoted LFM actions use the requested native tool"
-assert_contains "$MOCK_LFM_ACTION_SECOND_PAYLOAD" '"name":"list_files"' "promoted LFM actions are recorded as structured tool calls"
-assert_contains "$MOCK_LFM_ACTION_SECOND_PAYLOAD" "promoted native result" "promoted LFM action results return to the model"
-assert_not_contains "$MOCK_LFM_ACTION_SECOND_PAYLOAD" "intermediate JSON plan" "named LFM actions do not spend the continuation budget"
+assert_success "LFM native-tool recovery completes" $?
+assert_eq "3" "$MOCK_LFM_ACTION_TURNS" "content JSON receives a retry before native tool execution"
+assert_eq "list_files" "$MOCK_LFM_ACTION_NAME" "native tool calls override competing content JSON"
+assert_contains "${MOCK_LFM_ACTION_PAYLOADS[2]}" "intermediate JSON plan" "content action envelopes receive a native-tool nudge"
+assert_not_contains "${AGENT_MESSAGES[2]}" ',"tool_calls":' "content action envelopes are never promoted into executable calls"
+assert_contains "${AGENT_MESSAGES[4]}" '"content":""' "mixed native tool turns suppress LFM assistant content"
+assert_contains "${AGENT_MESSAGES[4]}" "native private reasoning" "native LFM think blocks remain private reasoning"
+assert_contains "${AGENT_MESSAGES[4]}" "wrong channel" "competing native-turn content remains available only as reasoning"
+assert_contains "${MOCK_LFM_ACTION_PAYLOADS[3]}" '"name":"list_files"' "native LFM calls are preserved in the continuation payload"
+assert_contains "${MOCK_LFM_ACTION_PAYLOADS[3]}" "native tool result" "native tool results return to LFM with the tool role"
 
 agent_ollama_chat() {
   (( MOCK_LFM_TURNS++ ))

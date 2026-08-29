@@ -170,16 +170,18 @@ separately and are not replayed, because restarting a long-running generation
 would discard work and repeat the same load.
 
 LFM-family models sometimes return their planner envelope as ordinary JSON
-content instead of using Ollama's native `tool_calls` field. For those models,
-zcoder recognizes `actions`, `tool_call(s)`, and `commands` planner shapes and
-normalizes one action at a time into the regular tool pipeline. Shell-like
-`command` or `keystrokes` entries become `run_command` calls, so workspace
-validation, safety guards, and command approval still apply. Malformed planner
-JSON and false claims that the supplied tools are unavailable receive a bounded
-native-tool retry; the planner text is never displayed as a completed answer.
-Other model families and ordinary JSON answers keep the standard adaptive
-completion behavior. Explicit requests for a plan without execution or for a
-JSON-only response also bypass LFM action promotion.
+content instead of using Ollama's native `tool_calls` field. zcoder explicitly
+instructs these models to use only Ollama's native action channel. Content JSON
+is never converted into an executable action; recognized planner shapes and
+false claims that supplied tools are unavailable receive a bounded native-tool
+retry instead.
+
+When a native LFM tool call includes non-empty assistant content, the native
+call remains authoritative and that incidental content is retained only as
+private, collapsible reasoning. A leading `<think>...</think>` block is also
+separated from a tool-free final answer. Other model families and ordinary JSON
+answers keep the standard adaptive completion behavior. Explicit requests for
+a plan without execution or for a JSON-only response bypass LFM recovery.
 
 Set `ZCODER_REQUIRE_FINISH_TOOL=1` for strict structural completion.
 

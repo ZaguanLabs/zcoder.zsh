@@ -27,9 +27,8 @@ typeset -gi ZCODER_MAX_OUTPUT_TOKENS="${ZCODER_MAX_OUTPUT_TOKENS:-8192}"
 typeset -gi AGENT_WARMUP_ACTIVE=0
 typeset -g AGENT_WARMUP_MODEL=""
 typeset -g AGENT_WARMUP_HOST=""
-typeset -g AGENT_COMPAT_TOOL_NAME=""
-typeset -g AGENT_COMPAT_TOOL_ARGS="{}"
-typeset -gi AGENT_LFM_BALANCED_TOOL_CANDIDATES=0
+typeset -g AGENT_NORMALIZED_CONTENT=""
+typeset -g AGENT_NORMALIZED_THINKING=""
 typeset -gi AGENT_LFM_BALANCED_PLAN_OBJECTS=0
 typeset -gi AGENT_LFM_BALANCED_CALL_OBJECTS=0
 
@@ -145,6 +144,15 @@ agent_default_system_prompt() {
     sysadmin) agent_sysadmin_system_prompt ;;
     *) agent_coding_system_prompt ;;
   esac
+}
+
+agent_lfm_prompt_block() {
+  local model="${(L)ZCODER_MODEL:t}"
+  if [[ "$model" == *lfm* ]]; then
+    REPLY=$'\n\n<lfm_native_tools>\nUse only Ollama native tool calls for actions. Never encode an action, command, tool_call, or tool_calls object as JSON in assistant content. When calling a tool, keep assistant content empty and place private reasoning in the thinking field. After a tool result, continue with another native tool call or a complete final answer.\n</lfm_native_tools>'
+  else
+    REPLY=""
+  fi
 }
 
 # Format the user-visible transcript independently from the tool result stored
@@ -390,6 +398,8 @@ agent_add_assistant_message() {
 agent_resolve_system_prompt() {
   local prompt="$AGENT_SYSTEM_PROMPT"
   [[ -n "$prompt" ]] || { agent_default_system_prompt; prompt="$REPLY"; }
+  agent_lfm_prompt_block
+  prompt+="$REPLY"
   if (( $+functions[instructions_prompt_block] )); then
     instructions_prompt_block
     prompt+="$REPLY"
@@ -461,6 +471,7 @@ agent_context_bill() {
   else
     agent_default_system_prompt; base="$REPLY"
   fi
+  agent_lfm_prompt_block; base+="$REPLY"
   (( $+functions[instructions_prompt_block] )) && { instructions_prompt_block; instructions="$REPLY"; }
   (( $+functions[skills_prompt_block] )) && { skills_prompt_block; skills="$REPLY"; }
   (( $+functions[mcp_prompt_block] )) && { mcp_prompt_block; mcp="$REPLY"; }
@@ -578,6 +589,41 @@ agent_warmup_poll() {
   agent_warmup_collect || true
 }
 
+# LFM sometimes puts private reasoning or a competing JSON action envelope in
+# message.content even when Ollama also returned native tool_calls. Keep the
+# native calls authoritative and move that incidental content into the
+# collapsible thinking channel. A leading <think> block is also separated from
+# a tool-free final answer so it is never printed as user-facing prose.
+agent_normalize_lfm_response() {
+  local content="$1" thinking="$2" prefix="" remainder="" thought=""
+  local -i has_native_tools="${3:-0}"
+  AGENT_NORMALIZED_CONTENT="$content"
+  AGENT_NORMALIZED_THINKING="$thinking"
+  [[ "${(L)ZCODER_MODEL:t}" == *lfm* ]] || return 0
+
+  if [[ "$content" == *'<think>'*'</think>'* ]]; then
+    prefix="${content%%'<think>'*}"
+    if [[ -z "${prefix//[[:space:]]/}" ]]; then
+      remainder="${content#*'<think>'}"
+      thought="${remainder%%'</think>'*}"
+      content="${remainder#*'</think>'}"
+      content="${content#"${content%%[![:space:]]*}"}"
+      if [[ -n "$thought" ]]; then
+        [[ -n "$thinking" ]] && thinking+=$'\n\n'
+        thinking+="$thought"
+      fi
+    fi
+  fi
+
+  if (( has_native_tools )) && [[ -n "$content" ]]; then
+    [[ -n "$thinking" ]] && thinking+=$'\n\n'
+    thinking+="$content"
+    content=""
+  fi
+  AGENT_NORMALIZED_CONTENT="$content"
+  AGENT_NORMALIZED_THINKING="$thinking"
+}
+
 _agent_content_is_lfm_json_plan() {
   local content="$1" model="${(L)ZCODER_MODEL:t}" key=""
   local -i has_plan=0 has_context=0 has_next_action=0
@@ -637,7 +683,7 @@ agent_content_is_lfm_intermediate_plan() {
   # free-form planner labels (for example "First action"). JSON-only user
   # requests are excluded by the caller before this classification is used.
   _agent_lfm_json_is_single_string_object "$content" && return 0
-  _agent_extract_lfm_balanced_tool_call "$content" >/dev/null
+  _agent_scan_lfm_balanced_objects "$content"
   (( AGENT_LFM_BALANCED_PLAN_OBJECTS > 0 || AGENT_LFM_BALANCED_CALL_OBJECTS > 0 )) && return 0
   # Some LFM turns place literal newlines inside quoted shell commands. The
   # inner planner envelope is then invalid JSON even though Ollama's outer
@@ -677,80 +723,6 @@ agent_lfm_user_requests_plan_only() {
      "$content" == *'respond with json'* || "$content" == *'return only json'* ]]
 }
 
-agent_lfm_tool_is_exposed() {
-  local name="$1" skill=""
-  case "$name" in
-    list_files|read_file|read_file_range|apply_patch|search|run_command|finish)
-      return 0
-      ;;
-    discover_skills)
-      (( $+functions[skills_tools_schema_json] && ${#SKILL_CATALOG_NAMES} > 0 ))
-      return
-      ;;
-    write_file)
-      (( ! TOOL_PATCH_RETRY_REQUIRED ))
-      return
-      ;;
-    activate_skill)
-      (( $+functions[skills_tools_schema_json] )) || return 1
-      for skill in "${SKILL_CATALOG_NAMES[@]}"; do
-        _skills_is_active "$skill" || return 0
-      done
-      return 1
-      ;;
-    read_skill_resource)
-      (( $+functions[skills_tools_schema_json] )) || return 1
-      for skill in "${SKILL_CATALOG_NAMES[@]}"; do
-        _skills_is_active "$skill" && return 0
-      done
-      return 1
-      ;;
-    mcp__*)
-      [[ -n "${MCP_TOOL_SERVER[$name]:-}" ]]
-      return
-      ;;
-  esac
-  return 1
-}
-
-_agent_parse_lfm_tool_candidate() {
-  local candidate="$1" key="" name="" args=""
-  local -i names=0 arguments=0
-  json_begin "$candidate" || return 1
-  [[ "$JSON_TOKEN_TYPE" == '{' ]] || return 1
-  json_next || return 1
-  while [[ "$JSON_TOKEN_TYPE" != '}' ]]; do
-    [[ "$JSON_TOKEN_TYPE" == string ]] || return 1
-    key="$JSON_TOKEN_VALUE"
-    json_next || return 1
-    [[ "$JSON_TOKEN_TYPE" == ':' ]] || return 1
-    json_next || return 1
-    case "$key:$JSON_TOKEN_TYPE" in
-      name:string|tool_name:string)
-        (( names++ ))
-        name="$JSON_TOKEN_VALUE"
-        json_next || return 1
-        ;;
-      arguments:'{')
-        (( arguments++ ))
-        json_capture_raw_value || return 1
-        args="$REPLY"
-        ;;
-      *) json_discard_value || return 1 ;;
-    esac
-    if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
-      json_next || return 1
-    elif [[ "$JSON_TOKEN_TYPE" != '}' ]]; then
-      return 1
-    fi
-  done
-  json_next || return 1
-  [[ "$JSON_TOKEN_TYPE" == eof && -n "$name" ]] || return 1
-  (( names == 1 && arguments == 1 )) || return 1
-  AGENT_COMPAT_TOOL_NAME="$name"
-  AGENT_COMPAT_TOOL_ARGS="$args"
-}
-
 _agent_lfm_json_is_call_object() {
   local candidate="$1" key=""
   local -i call_members=0
@@ -779,12 +751,13 @@ _agent_lfm_json_is_call_object() {
 # Inspect every complete object delimited by balanced braces. Quotes and
 # escapes are tracked so braces in argument strings remain ordinary data. The
 # surrounding text need not be valid JSON, but each candidate is parsed
-# strictly and no candidate text is repaired.
-_agent_extract_lfm_balanced_tool_call() {
-  local content="$1" ch="" candidate="" found_name="" found_args=""
+# strictly and no candidate text is repaired. This scan only classifies a
+# content response for a corrective retry; it never produces an executable
+# action.
+_agent_scan_lfm_balanced_objects() {
+  local content="$1" ch="" candidate=""
   local -a chars=() starts=()
-  local -i i start in_string=0 escaped=0 structural=0 exposed=0 plan_objects=0 call_objects=0
-  AGENT_LFM_BALANCED_TOOL_CANDIDATES=0
+  local -i i start in_string=0 escaped=0 plan_objects=0 call_objects=0
   AGENT_LFM_BALANCED_PLAN_OBJECTS=0
   AGENT_LFM_BALANCED_CALL_OBJECTS=0
   [[ -n "$content" ]] && chars=("${(@s::)content}")
@@ -812,22 +785,10 @@ _agent_extract_lfm_balanced_tool_call() {
         (( plan_objects++ ))
       fi
       _agent_lfm_json_is_call_object "$candidate" && (( call_objects++ ))
-      if _agent_parse_lfm_tool_candidate "$candidate"; then
-        (( structural++ ))
-        if agent_lfm_tool_is_exposed "$AGENT_COMPAT_TOOL_NAME"; then
-          (( exposed++ ))
-          found_name="$AGENT_COMPAT_TOOL_NAME"
-          found_args="$AGENT_COMPAT_TOOL_ARGS"
-        fi
-      fi
     fi
   done
-  AGENT_LFM_BALANCED_TOOL_CANDIDATES=$structural
   AGENT_LFM_BALANCED_PLAN_OBJECTS=$plan_objects
   AGENT_LFM_BALANCED_CALL_OBJECTS=$call_objects
-  (( structural == 1 && exposed == 1 )) || return 1
-  AGENT_COMPAT_TOOL_NAME="$found_name"
-  AGENT_COMPAT_TOOL_ARGS="$found_args"
 }
 
 _agent_lfm_json_is_single_string_object() {
@@ -844,136 +805,6 @@ _agent_lfm_json_is_single_string_object() {
   [[ "$JSON_TOKEN_TYPE" == '}' ]] || return 1
   json_next || return 1
   [[ "$JSON_TOKEN_TYPE" == eof ]]
-}
-
-_agent_parse_lfm_action_object() {
-  local key="" name="" args=""
-  local -i has_arguments=0
-  [[ "$JSON_TOKEN_TYPE" == '{' ]] || return 1
-  json_next || return 1
-  while [[ "$JSON_TOKEN_TYPE" != '}' ]]; do
-    [[ "$JSON_TOKEN_TYPE" == string ]] || return 1
-    key="$JSON_TOKEN_VALUE"
-    json_next || return 1
-    [[ "$JSON_TOKEN_TYPE" == ':' ]] || return 1
-    json_next || return 1
-    case "$key:$JSON_TOKEN_TYPE" in
-      tool_name:string|name:string) name="$JSON_TOKEN_VALUE"; json_next || return 1 ;;
-      arguments:'{') json_capture_raw_value || return 1; args="$REPLY"; has_arguments=1 ;;
-      *) json_discard_value || return 1 ;;
-    esac
-    if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
-      json_next || return 1
-    elif [[ "$JSON_TOKEN_TYPE" != '}' ]]; then
-      return 1
-    fi
-  done
-  json_next || return 1
-  while [[ -n "$name" && "$name[1]" == [[:space:]] ]]; do name="$name[2,-1]"; done
-  while [[ -n "$name" && "$name[-1]" == [[:space:],] ]]; do name="$name[1,-2]"; done
-  [[ -n "$name" ]] && (( has_arguments )) || return 1
-  AGENT_COMPAT_TOOL_NAME="$name"
-  AGENT_COMPAT_TOOL_ARGS="$args"
-}
-
-_agent_parse_lfm_command_object() {
-  local key="" command_text="" cwd="." timeout_seconds="120"
-  local command_json="" cwd_json=""
-  [[ "$JSON_TOKEN_TYPE" == '{' ]] || return 1
-  json_next || return 1
-  while [[ "$JSON_TOKEN_TYPE" != '}' ]]; do
-    [[ "$JSON_TOKEN_TYPE" == string ]] || return 1
-    key="$JSON_TOKEN_VALUE"
-    json_next || return 1
-    [[ "$JSON_TOKEN_TYPE" == ':' ]] || return 1
-    json_next || return 1
-    case "$key:$JSON_TOKEN_TYPE" in
-      command:string) command_text="$JSON_TOKEN_VALUE"; json_next || return 1 ;;
-      keystrokes:string)
-        [[ -n "$command_text" ]] || command_text="$JSON_TOKEN_VALUE"
-        json_next || return 1
-        ;;
-      cwd:string) cwd="$JSON_TOKEN_VALUE"; json_next || return 1 ;;
-      timeout_seconds:number) timeout_seconds="$JSON_TOKEN_VALUE"; json_next || return 1 ;;
-      *) json_discard_value || return 1 ;;
-    esac
-    if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
-      json_next || return 1
-    elif [[ "$JSON_TOKEN_TYPE" != '}' ]]; then
-      return 1
-    fi
-  done
-  json_next || return 1
-  [[ -n "$command_text" ]] || return 1
-  [[ "$timeout_seconds" == <1-3600> ]] || timeout_seconds=120
-  json_quote "$command_text"; command_json="$REPLY"
-  json_quote "$cwd"; cwd_json="$REPLY"
-  AGENT_COMPAT_TOOL_NAME="run_command"
-  AGENT_COMPAT_TOOL_ARGS="{\"command\":${command_json},\"cwd\":${cwd_json},\"timeout_seconds\":${timeout_seconds}}"
-}
-
-agent_extract_lfm_plan_action() {
-  local content="$1" key=""
-  local -i found=0
-  AGENT_COMPAT_TOOL_NAME=""
-  AGENT_COMPAT_TOOL_ARGS="{}"
-  [[ "${(L)ZCODER_MODEL:t}" == *lfm* ]] || return 1
-  _agent_extract_lfm_balanced_tool_call "$content" && return 0
-  (( AGENT_LFM_BALANCED_TOOL_CANDIDATES > 1 )) && return 1
-  agent_content_is_lfm_intermediate_plan "$content" || return 1
-  json_begin "$content" || return 1
-  [[ "$JSON_TOKEN_TYPE" == '{' ]] || return 1
-  json_next || return 1
-  while [[ "$JSON_TOKEN_TYPE" != '}' ]]; do
-    [[ "$JSON_TOKEN_TYPE" == string ]] || return 1
-    key="$JSON_TOKEN_VALUE"
-    json_next || return 1
-    [[ "$JSON_TOKEN_TYPE" == ':' ]] || return 1
-    json_next || return 1
-    if [[ ( "$key" == actions || "$key" == tool_calls ) && "$JSON_TOKEN_TYPE" == '[' ]]; then
-      json_next || return 1
-      if [[ "$JSON_TOKEN_TYPE" == '{' ]]; then
-        _agent_parse_lfm_action_object || return 1
-        found=1
-      fi
-      while [[ "$JSON_TOKEN_TYPE" != ']' ]]; do
-        if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
-          json_next || return 1
-        else
-          json_discard_value || return 1
-        fi
-      done
-      json_next || return 1
-    elif [[ "$key" == tool_call && "$JSON_TOKEN_TYPE" == '{' ]]; then
-      _agent_parse_lfm_action_object || return 1
-      found=1
-    elif [[ "$key" == commands && "$JSON_TOKEN_TYPE" == '[' ]]; then
-      json_next || return 1
-      if [[ "$JSON_TOKEN_TYPE" == '{' ]]; then
-        _agent_parse_lfm_command_object || return 1
-        found=1
-      fi
-      while [[ "$JSON_TOKEN_TYPE" != ']' ]]; do
-        if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
-          json_next || return 1
-        else
-          json_discard_value || return 1
-        fi
-      done
-      json_next || return 1
-    else
-      json_discard_value || return 1
-    fi
-    if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
-      json_next || return 1
-    elif [[ "$JSON_TOKEN_TYPE" != '}' ]]; then
-      return 1
-    fi
-  done
-  json_next || return 1
-  [[ "$JSON_TOKEN_TYPE" == eof ]] || return 1
-  (( found )) || return 1
-  agent_lfm_tool_is_exposed "$AGENT_COMPAT_TOOL_NAME"
 }
 
 agent_emit() {
@@ -1164,16 +995,9 @@ agent_user_turn() {
     calls_json="$JSON_RESPONSE_TOOL_CALLS"
     call_names=("${JSON_TOOL_NAMES[@]}")
     call_args=("${JSON_TOOL_ARGS[@]}")
-    if (( ${#call_names} == 0 && ! lfm_plan_only )) && agent_extract_lfm_plan_action "$content"; then
-      call_names=("$AGENT_COMPAT_TOOL_NAME")
-      call_args=("$AGENT_COMPAT_TOOL_ARGS")
-      json_quote "$AGENT_COMPAT_TOOL_NAME"
-      calls_json="[{\"type\":\"function\",\"function\":{\"name\":${REPLY},\"arguments\":${AGENT_COMPAT_TOOL_ARGS}}}]"
-      [[ -n "$thinking" ]] && thinking+=$'\n\n'
-      thinking+="$content"
-      content=""
-      zcoder_debug lfm_action_promoted "step=$step name=${(qqq)AGENT_COMPAT_TOOL_NAME} args=${(qqq)AGENT_COMPAT_TOOL_ARGS}"
-    fi
+    agent_normalize_lfm_response "$content" "$thinking" "${#call_names}"
+    content="$AGENT_NORMALIZED_CONTENT"
+    thinking="$AGENT_NORMALIZED_THINKING"
     zcoder_debug response_parsed "step=$step content=${(qqq)content} thinking_chars=${#thinking} tool_calls=${#call_names} prompt_tokens=$JSON_RESPONSE_PROMPT_TOKENS output_tokens=$JSON_RESPONSE_OUTPUT_TOKENS"
     agent_add_assistant_message "$content" "$thinking" "$calls_json"
 
