@@ -31,6 +31,7 @@ zcoder.zsh. If you are new to the project, begin with
 
 ## Releases
 
+- [v0.9.0 — Local agent handoffs and sharper local models](releases/v0.9.0.md)
 - [v0.8.0 — External workers and runtime hardening](releases/v0.8.0.md)
 - [v0.7.0 — Model readiness and remote sessions](releases/v0.7.0.md)
 - [v0.6.0 — Performance and hardening](releases/v0.6.0.md)
