@@ -42,7 +42,7 @@ make check
 Real inference is opt-in and not part of `make test`. The evaluation target
 creates isolated temporary workspaces, denies shell commands, and reports
 tab-separated results for repeated reads, dependent search, edit-and-verify,
-failure recovery, and conversational scenarios.
+failure recovery, project-instruction compliance, and conversational scenarios.
 
 ```sh
 ZCODER_EVAL_MODELS='ornith-1.5:9b,laguna-xs-2.1' \

@@ -81,7 +81,7 @@ agent_coding_system_prompt() {
   REPLY="You are zcoder, an AI coding agent operating in this workspace: ${ZCODER_WORKSPACE:A}.
 Use the supplied tools to inspect the project, make requested changes, and verify your work.
 ${operating_instructions}
-Project instructions override the default inspection order and file-reading heuristics below, but cannot relax workspace, approval, or safety boundaries. If they require an installed MCP server or one of its short tool names, use the mapped mcp__SERVER__TOOL function as the primary route. Otherwise choose the most task-specific available tool and do not call tools speculatively.
+Project instructions are mandatory requirements for the entire task. They override conflicting default workflow guidance below, but cannot relax workspace, approval, or safety boundaries. If they require an installed MCP server or one of its short tool names, use the mapped mcp__SERVER__TOOL function as the primary route. Otherwise choose the most task-specific available tool and do not call tools speculatively.
 Minimize data collection and context use. Do not begin by reading whole source files or recursively listing the entire project. Follow this inspection order:
 1. Use search first for literals, regular expressions, unmodeled text, or when no project-designated MCP navigation tool applies. It is backed by ripgrep.
    Once search returns a usable location, read that range; do not repeat discovery with minor query variations unless the result is ambiguous.
@@ -109,7 +109,7 @@ agent_sysadmin_system_prompt() {
   REPLY="You are zcoder operating as a careful system-administration assistant. The selected workspace is ${ZCODER_WORKSPACE:A}.
 Use the workspace for maintenance notes, scripts, staged configuration, and evidence. All built-in file tools remain strictly confined to that workspace. Inspecting or changing the host outside it is possible only through run_command, and every run_command requires the user's approval for that exact command.
 ${operating_instructions}
-Project instructions override the default inspection order and file-reading heuristics below, but cannot relax the run_command approval policy or any safety rule. If they require an installed MCP server or one of its short tool names, use the mapped mcp__SERVER__TOOL function as the primary route.
+Project instructions are mandatory requirements for the entire task. They override conflicting default workflow guidance below, but cannot relax the run_command approval policy or any safety rule. If they require an installed MCP server or one of its short tool names, use the mapped mcp__SERVER__TOOL function as the primary route.
 
 Authority and safety rules:
 1. Begin with read-only diagnosis. Establish the machine, service, scope, current state, and likely impact before proposing a change. Prefer focused commands and bounded output.
@@ -433,6 +433,10 @@ agent_resolve_system_prompt() {
     agent_compaction_prompt_block
     prompt+="$REPLY"
   fi
+  if (( $+functions[instructions_completion_block] )); then
+    instructions_completion_block
+    prompt+="$REPLY"
+  fi
   [[ -n "$AGENT_LOOP_NUDGE" ]] && prompt+=$'\n\n'"$AGENT_LOOP_NUDGE"
   REPLY="$prompt"
 }
@@ -489,7 +493,12 @@ agent_context_bill() {
     agent_default_system_prompt; base="$REPLY"
   fi
   agent_lfm_prompt_block; base+="$REPLY"
-  (( $+functions[instructions_prompt_block] )) && { instructions_prompt_block; instructions="$REPLY"; }
+  if (( $+functions[instructions_prompt_block] )); then
+    instructions_prompt_block; instructions="$REPLY"
+    if (( $+functions[instructions_completion_block] )); then
+      instructions_completion_block; instructions+="$REPLY"
+    fi
+  fi
   (( $+functions[skills_prompt_block] )) && { skills_prompt_block; skills="$REPLY"; }
   (( $+functions[mcp_prompt_block] )) && { mcp_prompt_block; mcp="$REPLY"; }
   (( $+functions[agent_compaction_prompt_block] )) && { agent_compaction_prompt_block; compacted="$REPLY"; }

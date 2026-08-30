@@ -77,7 +77,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..842"
+print -r -- "1..844"
 
 input_reset
 input_layout 20 4
@@ -1101,6 +1101,8 @@ assert_not_contains "$INSTRUCTIONS_TEXT" "ignored global base" "global base is i
 assert_not_contains "$INSTRUCTIONS_TEXT" "ignored service base" "scoped base is ignored beside override"
 agent_build_payload
 assert_contains "$REPLY" "root project rule" "resolved instructions enter the system prompt"
+assert_contains "$REPLY" "mandatory requirements, not reference material" "resolved instructions are framed as mandatory"
+assert_contains "$REPLY" "Before finishing, verify that every applicable project instruction" "resolved instructions add a completion check"
 
 empty_override_root="$TEST_TMP/empty-override"
 zf_mkdir -p "$empty_override_root" "$TEST_TMP/empty-zcoder-home"
@@ -1390,7 +1392,7 @@ assert_eq "sysadmin" "$ZCODER_PROFILE" "invalid profile selection preserves the 
 agent_select_profile coding
 assert_success "coding prompt profile is accepted" $?
 agent_default_system_prompt
-assert_contains "$REPLY" "Project instructions override the default inspection order" "system prompt makes project inspection routing authoritative"
+assert_contains "$REPLY" "Project instructions are mandatory requirements for the entire task" "system prompt makes project instructions authoritative"
 assert_contains "$REPLY" "MCP navigation tool returns a relevant source range" "system prompt routes MCP locations into bounded reads"
 assert_contains "$REPLY" "Use search first" "system prompt prefers indexed search before broad reads"
 assert_contains "$REPLY" "Use read_file_range" "system prompt directs large-file inspection to ranges"
@@ -1426,7 +1428,7 @@ AGENT_MESSAGES=('{"role":"user","content":"WARMUP HISTORY SENTINEL"}')
 AGENT_USER_MESSAGES=("WARMUP USER SENTINEL")
 agent_build_warmup_payload
 warmup_payload="$REPLY"
-assert_contains "$warmup_payload" "Project instructions override the default inspection order" "warm-up payload includes the resolved coding system prompt"
+assert_contains "$warmup_payload" "Project instructions are mandatory requirements for the entire task" "warm-up payload includes the resolved coding system prompt"
 assert_contains "$warmup_payload" "Initialization check only" "warm-up payload asks for an isolated readiness response"
 assert_contains "$warmup_payload" 'respond with exactly Ready and nothing else' "warm-up request specifies the silent readiness sentinel"
 assert_contains "$warmup_payload" '"think":false' "warm-up disables model reasoning"

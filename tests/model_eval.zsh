@@ -48,7 +48,7 @@ typeset -g scenarios_text="${ZCODER_EVAL_SCENARIOS:-}"
 typeset -gi eval_repeats="${ZCODER_EVAL_REPEATS:-3}"
 typeset -g baseline_file="${ZCODER_EVAL_BASELINE_PROMPT_FILE:-}"
 typeset -ga eval_models=() eval_variants=(current)
-typeset -ga all_scenarios=(independent_reads dependent_search edit_verify failure_replan conversational)
+typeset -ga all_scenarios=(independent_reads dependent_search edit_verify failure_replan project_instructions conversational)
 typeset -ga scenarios=()
 
 if [[ -z "$models_text" ]]; then
@@ -105,6 +105,45 @@ eval_history_contains_path() {
   return 1
 }
 
+eval_history_verifies_after_edit() {
+  local expected_path="$1" message="" name=""
+  local -i i saw_edit=0
+  for message in "${AGENT_MESSAGES[@]}"; do
+    [[ "$message" == '{"role":"assistant",'* && "$message" == *'"tool_calls"'* ]] || continue
+    json_parse_ollama_response "{\"message\":${message}}" || return 1
+    for (( i=1; i<=${#JSON_TOOL_NAMES}; i++ )); do
+      name="${JSON_TOOL_NAMES[i]}"
+      json_parse_flat_object "${JSON_TOOL_ARGS[i]}" || return 1
+      case "$name" in
+        apply_patch)
+          saw_edit=1
+          ;;
+        replace_text|write_file)
+          [[ "${JSON_OBJECT[path]:-}" == "$expected_path" ]] && saw_edit=1
+          ;;
+        read_file)
+          (( saw_edit )) && [[ "${JSON_OBJECT[path]:-}" == "$expected_path" ]] && return 0
+          ;;
+      esac
+    done
+  done
+  return 1
+}
+
+eval_first_tool_call_is() {
+  local expected_name="$1" expected_path="$2" message=""
+  for message in "${AGENT_MESSAGES[@]}"; do
+    [[ "$message" == '{"role":"assistant",'* && "$message" == *'"tool_calls"'* ]] || continue
+    json_parse_ollama_response "{\"message\":${message}}" || return 1
+    (( ${#JSON_TOOL_NAMES} > 0 )) || continue
+    [[ "${JSON_TOOL_NAMES[1]}" == "$expected_name" ]] || return 1
+    json_parse_flat_object "${JSON_TOOL_ARGS[1]}" || return 1
+    [[ "${JSON_OBJECT[path]:-}" == "$expected_path" ]]
+    return $?
+  done
+  return 1
+}
+
 eval_write_history() {
   local path="$1" message
   : >| "$path" || return 1
@@ -134,6 +173,11 @@ eval_prepare_fixture() {
     failure_replan)
       REPLY="First try to read missing.txt. After that expected failure, inspect the workspace, find fallback.txt, and report its exact value without repeating the failed call."
       ;;
+    project_instructions)
+      mapfile[$run_dir/guidance.txt]=$'project guidance sentinel\n'
+      mapfile[$run_dir/AGENTS.md]=$'# Evaluation project rules\n\nFor every request in this workspace:\n\n- Before any other file operation, read `guidance.txt` with `read_file`.\n- Do not call `search`, `list_files`, or `run_command`.\n- After modifying a file, verify it with `read_file`.\n- End the final response with exactly `GUIDANCE-CHECKED`.\n'
+      REPLY="Change note.txt from 'status: old' to 'status: new' with the smallest focused edit, then report completion."
+      ;;
     conversational)
       REPLY="Reply with exactly: evaluation ready"
       ;;
@@ -162,6 +206,15 @@ eval_scenario_passed() {
       eval_history_contains_path missing.txt &&
         eval_history_contains_path fallback.txt &&
         [[ "$AGENT_LAST_RESPONSE" == *"ember-593"* ]]
+      ;;
+    project_instructions)
+      eval_first_tool_call_is read_file guidance.txt &&
+        ! eval_history_contains '"name":"search"' &&
+        ! eval_history_contains '"name":"list_files"' &&
+        ! eval_history_contains '"name":"run_command"' &&
+        eval_history_verifies_after_edit note.txt &&
+        [[ "${mapfile[$run_dir/note.txt]}" == *"status: new"* ]] &&
+        [[ "$AGENT_LAST_RESPONSE" == *"GUIDANCE-CHECKED" ]]
       ;;
     conversational)
       [[ "$AGENT_LAST_RESPONSE" == "evaluation ready" ]]

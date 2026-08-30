@@ -142,7 +142,7 @@ instructions_prompt_block() {
   local output="" source="" content="" display=""
   local -i i
   [[ -n "$INSTRUCTIONS_TEXT" ]] || { REPLY=""; return 0; }
-  output=$'\n\nProject instructions are loaded below in precedence order. Each file governs its directory and descendants; later, more specific files override earlier guidance. Before changing files in a deeper directory, check for a closer AGENTS.override.md or AGENTS.md.\n<project_instructions>'
+  output=$'\n\nThe project instructions below are mandatory requirements, not reference material. Before acting, identify and follow every applicable instruction. Do not omit a requirement because the user did not repeat it. Each file governs its directory and descendants; later, more specific files override earlier guidance. Workspace, approval, and safety restrictions remain authoritative. Before changing files in a deeper directory, check for a closer AGENTS.override.md or AGENTS.md.\n<mandatory_project_instructions>'
   for (( i=1; i<=${#INSTRUCTION_SOURCES}; i++ )); do
     source="${INSTRUCTION_SOURCES[i]}"
     content="${INSTRUCTION_CONTENTS[i]}"
@@ -156,8 +156,16 @@ instructions_prompt_block() {
     output+=$'\n\n'"### Instructions from ${display}"$'\n'"${content}"
   done
   (( INSTRUCTIONS_TRUNCATED )) && output+=$'\n\n[Instruction chain truncated at configured byte limit.]'
-  output+=$'\n</project_instructions>'
+  output+=$'\n</mandatory_project_instructions>'
   REPLY="$output"
+}
+
+instructions_completion_block() {
+  if [[ -n "$INSTRUCTIONS_TEXT" ]]; then
+    REPLY=$'\n\n<project_instruction_check>\nBefore finishing, verify that every applicable project instruction, including required checks, was satisfied. If not, the task is incomplete.\n</project_instruction_check>'
+  else
+    REPLY=""
+  fi
 }
 
 instructions_summary() {
