@@ -761,13 +761,32 @@ mcp_call_tool() {
 }
 
 mcp_status_text() {
-  local name="" output="" scope="" server_status="" detail=""
+  local name="" output="" line="" scope="" server_status="" transport="" protocol="" detail=""
+  local -i name_width=0 status_width=0 transport_width=0 scope_width=0 protocol_width=0
+  local -i have_protocol=0 have_detail=0
   if (( ${#MCP_NAMES} == 0 )); then REPLY="No MCP servers configured."; return 0; fi
   for name in "${MCP_NAMES[@]}"; do
-    scope="${MCP_SCOPE[$name]}"; server_status="${MCP_STATUS[$name]}"; detail="${MCP_DETAIL[$name]:-}"
-    output+="${output:+$'\n'}${name}"$'\t'"${server_status}"$'\t'"${MCP_TYPE[$name]}"$'\t'"${scope}"
-    [[ -n "${MCP_PROTOCOL[$name]:-}" ]] && output+=$'\t'"${MCP_PROTOCOL[$name]}"
-    [[ -n "$detail" ]] && output+=$'\t'"$detail"
+    server_status="${MCP_STATUS[$name]}"; transport="${MCP_TYPE[$name]}"; scope="${MCP_SCOPE[$name]}"; protocol="${MCP_PROTOCOL[$name]:-}"
+    (( ${#name} > name_width )) && name_width=${#name}
+    (( ${#server_status} > status_width )) && status_width=${#server_status}
+    (( ${#transport} > transport_width )) && transport_width=${#transport}
+    (( ${#scope} > scope_width )) && scope_width=${#scope}
+    (( ${#protocol} > protocol_width )) && protocol_width=${#protocol}
+    [[ -n "$protocol" ]] && have_protocol=1
+    [[ -n "${MCP_DETAIL[$name]:-}" ]] && have_detail=1
+  done
+  for name in "${MCP_NAMES[@]}"; do
+    scope="${MCP_SCOPE[$name]}"; server_status="${MCP_STATUS[$name]}"; transport="${MCP_TYPE[$name]}"
+    protocol="${MCP_PROTOCOL[$name]:-}"; detail="${MCP_DETAIL[$name]:-}"
+    line="${(r:$name_width:: :)name}  ${(r:$status_width:: :)server_status}  ${(r:$transport_width:: :)transport}  "
+    if (( have_protocol || have_detail )); then
+      line+="${(r:$scope_width:: :)scope}  "
+      if (( have_detail )); then line+="${(r:$protocol_width:: :)protocol}  ${detail}"; else line+="$protocol"; fi
+    else
+      line+="$scope"
+    fi
+    [[ -n "$output" ]] && output+=$'\n'
+    output+="$line"
   done
   REPLY="$output"
 }

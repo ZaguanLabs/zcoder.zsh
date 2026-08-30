@@ -77,7 +77,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..827"
+print -r -- "1..828"
 
 input_reset
 input_layout 20 4
@@ -434,6 +434,8 @@ assert_eq "3" "${#MCP_NAMES}" "MCP configuration merges named servers"
 assert_eq "project" "${MCP_SCOPE[shadowed]}" "project MCP definitions override user definitions"
 assert_eq "disabled" "${MCP_STATUS[shadowed]}" "disabled MCP servers remain visible without starting"
 assert_eq "0" "${#MCP_BROKER_PID}" "MCP server processes are lazy at launch"
+mcp_status_text
+assert_eq $'legacy    configured  stdio  project\nmodern    configured  stdio  user\nshadowed  disabled    stdio  project' "$REPLY" "MCP status aligns columns with spaces"
 
 raw_mcp_object='{"description":"mentions \"inputSchema\" before the field and contains } ]","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"commas, braces }, and brackets ] stay inside strings"}}}}'
 _mcp_raw_member "$raw_mcp_object" inputSchema
@@ -494,7 +496,7 @@ assert_contains "${mapfile[$mcp_legacy_log]}" '"method":"notifications/initializ
 mcp_tools_schema_json
 assert_contains "$REPLY" '"name":"mcp__legacy__echo_data"' "tool catalog combines connected MCP servers"
 mcp_status_text
-assert_contains "$REPLY" $'modern\tconnected\tstdio\tuser\t2026-07-28' "MCP status includes connection, transport, scope, and version"
+assert_contains "$REPLY" 'modern    connected  stdio  user     2026-07-28' "MCP status includes connection, transport, scope, and version"
 modern_broker_pid="${MCP_BROKER_PID[modern]}"
 legacy_broker_pid="${MCP_BROKER_PID[legacy]}"
 mcp_shutdown_all
