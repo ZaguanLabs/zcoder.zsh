@@ -77,7 +77,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..828"
+print -r -- "1..842"
 
 input_reset
 input_layout 20 4
@@ -1563,6 +1563,7 @@ assert_eq "2200" "$REPLY" "token estimates calibrate against Ollama prompt usage
 
 assert_eq "65536" "$ZCODER_CONTEXT_FALLBACK" "unknown unloaded models default to a 64K context"
 assert_eq "85" "$ZCODER_COMPACT_PERCENT" "automatic compaction defaults to 85 percent"
+assert_eq "2" "$ZCODER_COMPACT_RETRY_LIMIT" "invalid compaction checkpoints receive two corrective retries by default"
 saved_context_lookup="${functions[ollama_get_running_context]}"
 saved_model="$ZCODER_MODEL"
 ollama_get_running_context() {
@@ -1642,6 +1643,74 @@ agent_context_summary
 assert_contains "$REPLY" "estimated next prompt:" "context status reports the current transport estimate"
 assert_contains "$REPLY" "last Ollama prompt: unknown" "context status distinguishes reset usage from a measured prompt"
 assert_contains "$REPLY" "Estimated context bill:" "context status attributes model-visible components"
+
+functions[_test_valid_compaction_chat]="${functions[agent_ollama_chat]}"
+typeset -gi MOCK_COMPACTION_ATTEMPTS=0
+agent_ollama_chat() {
+  (( MOCK_COMPACTION_ATTEMPTS++ ))
+  if (( MOCK_COMPACTION_ATTEMPTS == 1 )); then
+    json_quote "I will summarize the conversation now."
+    HTTP_BODY='{"message":{"content":'"$REPLY"'},"prompt_eval_count":1800,"eval_count":12}'
+    HTTP_ERROR=""
+    return 0
+  fi
+  _test_valid_compaction_chat "$@"
+}
+agent_reset
+agent_add_message user "retry the malformed checkpoint"
+agent_add_message assistant "discardable history ${(l:70000::r:)}"
+agent_add_message user "continue after the checkpoint"
+agent_compact_history manual >/dev/null
+retry_compact_status=$?
+assert_success "compaction recovers from an invalid checkpoint" "$retry_compact_status"
+assert_eq "2" "$MOCK_COMPACTION_ATTEMPTS" "invalid checkpoints receive a fresh Ollama request"
+assert_contains "$MOCK_COMPACT_PAYLOAD" "A previous compaction attempt was rejected" "checkpoint retries explain the validation failure to the model"
+assert_eq "$MOCK_CHECKPOINT" "$AGENT_COMPACTION_SUMMARY" "a valid retry becomes the compaction checkpoint"
+assert_eq "0" "$AGENT_COMPACTION_IN_PROGRESS" "successful retries clear the compaction guard"
+
+ZCODER_COMPACT_RETRY_LIMIT=1
+typeset -gi MOCK_COMPACTION_ATTEMPTS=0
+agent_ollama_chat() {
+  (( MOCK_COMPACTION_ATTEMPTS++ ))
+  json_quote '```json'
+  HTTP_BODY='{"message":{"content":'"$REPLY"'},"prompt_eval_count":1800,"eval_count":4}'
+  HTTP_ERROR=""
+  return 0
+}
+agent_reset
+agent_add_message user "preserve this request after failed compaction"
+agent_add_message assistant "exact history ${(l:70000::e:)}"
+rejected_history="${(j:\n:)AGENT_MESSAGES}"
+agent_compact_history manual >/dev/null
+rejected_compact_status=$?
+assert_failure "compaction fails after invalid checkpoint retries are exhausted" "$rejected_compact_status"
+assert_eq "2" "$MOCK_COMPACTION_ATTEMPTS" "compaction honors its corrective retry limit"
+assert_contains "$HTTP_ERROR" "after 2 attempts" "exhausted compaction reports the number of attempts"
+assert_eq "$rejected_history" "${(j:\n:)AGENT_MESSAGES}" "exhausted retries preserve exact history"
+assert_eq "0" "$AGENT_COMPACTION_COUNT" "exhausted retries do not advance checkpoint state"
+assert_eq "0" "$AGENT_COMPACTION_IN_PROGRESS" "exhausted retries clear the compaction guard"
+
+ZCODER_COMPACT_RETRY_LIMIT=2
+typeset -gi MOCK_COMPACTION_ATTEMPTS=0
+agent_ollama_chat() {
+  (( MOCK_COMPACTION_ATTEMPTS++ ))
+  if (( MOCK_COMPACTION_ATTEMPTS == 1 )); then
+    HTTP_BODY=""
+    HTTP_ERROR="Ollama closed the connection before returning an HTTP response"
+    return 1
+  fi
+  _test_valid_compaction_chat "$@"
+}
+agent_reset
+agent_add_message user "retry a disconnected compaction request"
+agent_add_message assistant "discardable history ${(l:70000::t:)}"
+agent_add_message user "continue after the connection recovers"
+agent_compact_history manual >/dev/null
+transport_compact_status=$?
+assert_success "compaction recovers from a transient transport failure" "$transport_compact_status"
+assert_eq "2" "$MOCK_COMPACTION_ATTEMPTS" "compaction reuses the normal transport retry policy"
+functions[agent_ollama_chat]="${functions[_test_valid_compaction_chat]}"
+unfunction _test_valid_compaction_chat
 
 AGENT_MESSAGES=('{"role":"assistant","content":"call","tool_calls":[{"type":"function","function":{"name":"read_file","arguments":{"path":"x"}}}]}' '{"role":"tool","tool_name":"read_file","content":"result"}')
 agent_compaction_recent_start 10

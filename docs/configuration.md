@@ -119,7 +119,7 @@ zcoder uses continuation checkpoints rather than silently discarding old turns:
 3. A non-thinking Ollama request reuses the normal system/tool prefix, instructs the model not to call tools, and creates a schema-validated JSON checkpoint capped at 2,048 tokens or 10% of the active context, whichever is smaller.
 4. The initial request and latest correction are pinned verbatim, while additional recent user turns fill a soft token budget.
 5. The recent history boundary expands when necessary so a tool result never survives without its owning assistant tool call.
-6. Invalid or low-yield checkpoints are rejected without replacing exact history.
+6. Malformed, empty, or schema-invalid checkpoints receive up to two corrective retries by default. Exhausted or low-yield checkpoints are rejected without replacing exact history.
 7. If the checkpoint request is too large, zcoder removes the oldest unpinned detailed records until the request fits its safety margin.
 
 The visible transcript is not discarded. `/compact` creates a checkpoint
@@ -141,6 +141,7 @@ Relevant settings:
 | `ZCODER_COMPACT_KEEP_USER_TOKENS` | 4096 |
 | `ZCODER_COMPACT_KEEP_RECENT_TOKENS` | 16384 |
 | `ZCODER_COMPACT_MIN_YIELD_TOKENS` | 2048 |
+| `ZCODER_COMPACT_RETRY_LIMIT` | 2 |
 | `ZCODER_MAX_OUTPUT_TOKENS` | 8192 |
 
 `--compact-at PERCENT` changes the threshold for one process.
