@@ -78,7 +78,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..879"
+print -r -- "1..889"
 
 input_reset
 input_layout 20 4
@@ -1197,12 +1197,16 @@ assert_success "complete Skill parsing succeeds at activation time" $?
 assert_contains "$SKILL_PARSED_BODY" "FOLDED BODY SENTINEL" "complete Skill parsing loads instructions on demand"
 
 skills_prompt_block
-assert_not_contains "$REPLY" '"name":"folded-skill"' "system prompt defers skill metadata"
+assert_contains "$REPLY" "- folded-skill: Handles folded descriptions. Use for parser verification." "system prompt exposes Skill routing metadata"
+assert_contains "$REPLY" "task clearly matches a Skill description" "system prompt requires implicit Skill selection"
+assert_contains "$REPLY" "call activate_skill" "system prompt routes a matching Skill through activation"
 assert_not_contains "$REPLY" "FOLDED BODY SENTINEL" "system prompt does not eagerly load skill instructions"
 assert_contains "$REPLY" "never override" "skill catalog preserves higher-priority safety rules"
 assert_contains "$REPLY" "Ignore any allowed-tools metadata" "skill metadata cannot bypass approval policy"
+_skills_catalog_description $'first line\nsecond\tline'
+assert_eq "first line second line" "$REPLY" "model-visible Skill descriptions are normalized to one line"
 tools_schema_json
-assert_contains "$REPLY" '"name":"discover_skills"' "tool schema exposes on-demand skill discovery"
+assert_not_contains "$REPLY" '"name":"discover_skills"' "complete visible catalogs do not expose redundant Skill discovery"
 assert_contains "$REPLY" '"name":"activate_skill"' "tool schema exposes skill activation when skills exist"
 assert_not_contains "$REPLY" '"name":"read_skill_resource"' "resource tool is hidden until a Skill is active"
 assert_not_contains "$REPLY" '"enum":["config-only","folded-skill","shared-skill"]' "skill names are not repeated in every tool schema"
@@ -1215,12 +1219,13 @@ ZCODER_MAX_SKILLS=2
 skills_build_catalog
 assert_eq "2" "${#SKILL_CATALOG_NAMES}" "skill disclosure honors its configured count limit"
 tools_schema_json
+assert_not_contains "$REPLY" '"name":"discover_skills"' "Skills outside the discoverable count limit do not expose a misleading fallback"
 assert_not_contains "$REPLY" '"shared-skill"' "deferred skill schemas omit catalog entries"
 skills_prompt_block
-assert_not_contains "$REPLY" "Skill catalog truncated" "bounded catalog state stays out of the prompt"
+assert_not_contains "$REPLY" "visible catalog was truncated" "count-limited undiscoverable Skills do not advertise fallback discovery"
 tool_dispatch activate_skill '{"name":"shared-skill"}'
-assert_failure "model activation rejects a Skill outside the disclosed catalog" $?
-assert_contains "$TOOL_RESULT" "not in the disclosed catalog" "undisclosed Skill rejection explains the boundary"
+assert_failure "model activation rejects a Skill outside the discoverable catalog" $?
+assert_contains "$TOOL_RESULT" "not in the model-discoverable catalog" "undiscoverable Skill rejection explains the boundary"
 skills_activate "shared-skill"
 assert_success "explicit activation can select a valid Skill outside the model disclosure limit" $?
 tools_schema_json
@@ -1229,6 +1234,24 @@ assert_contains "$REPLY" '"enum":["shared-skill"]' "resource schemas include exp
 skills_reset_activations
 assert_eq "0" "${#SKILL_ACTIVE_NAMES}" "explicit activation regression setup resets cleanly"
 ZCODER_MAX_SKILLS=$saved_max_skills
+skills_build_catalog
+
+saved_catalog_max_bytes=$ZCODER_SKILL_CATALOG_MAX_BYTES
+_skills_catalog_description "${SKILL_DESCRIPTIONS[config-only]}"
+catalog_first_line="- config-only: $REPLY"
+_instructions_byte_length "$catalog_first_line"
+ZCODER_SKILL_CATALOG_MAX_BYTES=$(( REPLY + 1 ))
+skills_build_catalog
+assert_eq "1" "${#SKILL_CATALOG_NAMES}" "routing catalog byte limit preserves complete entries"
+assert_eq "3" "${#SKILL_DISCOVERABLE_NAMES}" "byte truncation keeps omitted Skills available to fallback discovery"
+tools_schema_json
+assert_contains "$REPLY" '"name":"discover_skills"' "byte-truncated visible catalogs expose fallback Skill discovery"
+skills_prompt_block
+assert_contains "$REPLY" "visible catalog was truncated" "byte truncation tells the model when fallback discovery is appropriate"
+tool_dispatch discover_skills '{"query":"project copy"}'
+assert_success "fallback Skill discovery searches descriptions omitted from the visible catalog" $?
+assert_contains "$TOOL_RESULT" "shared-skill" "fallback Skill discovery returns an omitted match"
+ZCODER_SKILL_CATALOG_MAX_BYTES=$saved_catalog_max_bytes
 skills_build_catalog
 
 tool_dispatch read_skill_resource '{"name":"folded-skill","path":"references/guide.md"}'

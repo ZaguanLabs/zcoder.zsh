@@ -128,7 +128,7 @@ remain compatible and are treated as availability unknown.
 | `run_command` | Run builds, tests, and diagnostics | Approved `zsh -c` |
 | `list_agents` | Discover live same-user local peers | Private manifests plus protocol ping |
 | `send_agent_message` | Queue a task for one exact peer | Framed Unix-domain socket request |
-| `discover_skills` | Search bounded Skill metadata on demand | Native Zsh matching |
+| `discover_skills` | Search omitted Skill metadata when the visible catalog is truncated | Native Zsh matching |
 | `activate_skill` | Load selected Skill instructions | Native Skill discovery |
 | `read_skill_resource` | Read an active Skill resource | Canonicalized read-only access |
 | `finish` | Complete or block a turn structurally | Agent-loop control |

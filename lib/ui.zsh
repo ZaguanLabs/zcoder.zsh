@@ -163,7 +163,7 @@ ui_draw_sidebar() {
   [[ "$ZCODER_PROFILE" == sysadmin ]] && policy="per-command"
   (( ! ${TOOL_PATCH_RETRY_REQUIRED:-0} )) && names+=(write_file)
   names+=(apply_patch search run_command)
-  for skill_name in "${SKILL_CATALOG_NAMES[@]}"; do
+  for skill_name in "${SKILL_DISCOVERABLE_NAMES[@]}"; do
     if ! _skills_is_active "$skill_name"; then
       inactive_skills=1
       break

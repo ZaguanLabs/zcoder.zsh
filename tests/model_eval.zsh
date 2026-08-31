@@ -48,7 +48,7 @@ typeset -g scenarios_text="${ZCODER_EVAL_SCENARIOS:-}"
 typeset -gi eval_repeats="${ZCODER_EVAL_REPEATS:-3}"
 typeset -g baseline_file="${ZCODER_EVAL_BASELINE_PROMPT_FILE:-}"
 typeset -ga eval_models=() eval_variants=(current)
-typeset -ga all_scenarios=(independent_reads dependent_search edit_verify failure_replan project_instructions conversational)
+typeset -ga all_scenarios=(independent_reads dependent_search edit_verify failure_replan project_instructions implicit_skill skill_nonmatch conversational)
 typeset -ga scenarios=()
 
 if [[ -z "$models_text" ]]; then
@@ -178,6 +178,15 @@ eval_prepare_fixture() {
       mapfile[$run_dir/AGENTS.md]=$'# Evaluation project rules\n\nFor every request in this workspace:\n\n- Before any other file operation, read `guidance.txt` with `read_file`.\n- Do not call `search`, `list_files`, or `run_command`.\n- After modifying a file, verify it with `read_file`.\n- End the final response with exactly `GUIDANCE-CHECKED`.\n'
       REPLY="Change note.txt from 'status: old' to 'status: new' with the smallest focused edit, then report completion."
       ;;
+    implicit_skill|skill_nonmatch)
+      zf_mkdir -p "$run_dir/.agents/skills/release-labeler" || return 1
+      mapfile[$run_dir/.agents/skills/release-labeler/SKILL.md]=$'---\nname: release-labeler\ndescription: Use when the user asks to normalize, canonicalize, or format a software release label or version.\n---\n\n# Release label workflow\n\nFor a release-label request, do not call file or command tools after activation. Reply with exactly `Using release-labeler: ROUTED-RELEASE-v<version>`, replacing `<version>` with the requested numeric version.'
+      if [[ "$scenario" == implicit_skill ]]; then
+        REPLY="Normalize the software release label 2.4 into the canonical form required by this project."
+      else
+        REPLY="Reply with exactly: evaluation ready"
+      fi
+      ;;
     conversational)
       REPLY="Reply with exactly: evaluation ready"
       ;;
@@ -215,6 +224,15 @@ eval_scenario_passed() {
         eval_history_verifies_after_edit note.txt &&
         [[ "${mapfile[$run_dir/note.txt]}" == *"status: new"* ]] &&
         [[ "$AGENT_LAST_RESPONSE" == *"GUIDANCE-CHECKED" ]]
+      ;;
+    implicit_skill)
+      eval_history_contains '"name":"activate_skill"' &&
+        eval_history_contains '"name":"release-labeler"' &&
+        [[ "$AGENT_LAST_RESPONSE" == "Using release-labeler: ROUTED-RELEASE-v2.4" ]]
+      ;;
+    skill_nonmatch)
+      ! eval_history_contains '"name":"activate_skill"' &&
+        [[ "$AGENT_LAST_RESPONSE" == "evaluation ready" ]]
       ;;
     conversational)
       [[ "$AGENT_LAST_RESPONSE" == "evaluation ready" ]]
