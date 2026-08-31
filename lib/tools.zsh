@@ -48,6 +48,9 @@ tools_schema_json() {
     if [[ "${AGENT_TURN_ORIGIN:-user}" == user ]]; then
       output+=',
 {"type":"function","function":{"name":"send_agent_message","description":"Hand a concise task to one exact local zcoder instance. Call only when the current user explicitly asked to contact another zcoder agent. An accepted delivery does not mean the task completed. Never send secrets or unrelated transcript history.","parameters":{"type":"object","required":["target_instance_id","message"],"properties":{"target_instance_id":{"type":"string","description":"Exact live ID returned by list_agents"},"message":{"type":"string","description":"Small self-contained task and relevant facts for the receiving agent"}}}}}'
+    elif [[ "${AGENT_TURN_ORIGIN:-user}" == relay && -n "${AGENT_RELAY_REPLY_TARGET:-}" ]]; then
+      output+=',
+{"type":"function","function":{"name":"send_agent_message","description":"Reply to the exact agent that sent the current relayed turn. The target must be that sender; forwarding to any other agent is blocked. Send only information or a question needed to continue the current exchange, never an acknowledgement, secrets, or unrelated transcript history.","parameters":{"type":"object","required":["target_instance_id","message"],"properties":{"target_instance_id":{"type":"string","description":"Exact sender instance ID shown in the current agent_relay context"},"message":{"type":"string","description":"Concise reply needed to continue the current exchange"}}}}}'
     fi
   fi
   if (( $+functions[skills_tools_schema_json] && ${#SKILL_CATALOG_NAMES} > 0 )); then
@@ -635,8 +638,16 @@ tool_dispatch() {
       (( $+functions[relay_tool_list_agents] && ${RELAY_AVAILABLE:-0} )) && relay_tool_list_agents || _tool_fail "inter-agent relay is unavailable"
       ;;
     send_agent_message)
-      if (( $+functions[relay_tool_send_agent_message] && ${RELAY_AVAILABLE:-0} )) && [[ "${AGENT_TURN_ORIGIN:-user}" == user ]]; then
+      if (( ! $+functions[relay_tool_send_agent_message] || ! ${RELAY_AVAILABLE:-0} )); then
+        _tool_fail "inter-agent delivery is unavailable for this turn"
+      elif [[ "${AGENT_TURN_ORIGIN:-user}" == user ]]; then
         relay_tool_send_agent_message "${JSON_OBJECT[target_instance_id]:-}" "${JSON_OBJECT[message]:-}"
+      elif [[ "${AGENT_TURN_ORIGIN:-user}" == relay && -n "${AGENT_RELAY_REPLY_TARGET:-}" ]]; then
+        if [[ "${JSON_OBJECT[target_instance_id]:-}" != "$AGENT_RELAY_REPLY_TARGET" ]]; then
+          _tool_fail "a relayed turn may reply only to its sender (${AGENT_RELAY_REPLY_TARGET})"
+        else
+          relay_tool_send_agent_message "${JSON_OBJECT[target_instance_id]:-}" "${JSON_OBJECT[message]:-}"
+        fi
       else
         _tool_fail "inter-agent delivery is unavailable for this turn"
       fi

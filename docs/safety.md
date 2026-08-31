@@ -88,11 +88,13 @@ the normal agent turn.
 A relayed task is a work request, not evidence about the target workspace. The
 receiver must inspect current state, and its own workspace boundary, project
 instructions, profile, and `run_command` approval policy remain authoritative.
-The send tool is exposed only during a local-user-originated turn and only when
-that user explicitly asked to contact another instance. It is hidden and
-rejected during relayed turns to prevent forwarding chains. Another process
-already running as the same user can forge same-user metadata, so sender names,
-PIDs, and workspaces are context rather than cryptographic identity.
+During a local-user-originated turn, the send tool is available only when that
+user explicitly asked to contact another instance. During a relayed turn, it is
+scoped to the exact sender instance so the agents can continue a direct
+exchange; schema generation and dispatch both block third-agent forwarding.
+Another process already running as the same user can forge same-user metadata,
+so sender names, PIDs, workspaces, and instance IDs are context rather than
+cryptographic identity.
 
 ## Sysadmin profile
 

@@ -17,6 +17,7 @@ typeset -gi AGENT_LOOP_WARNING_ACTIVE=0
 typeset -g AGENT_LOOP_NUDGE=""
 typeset -g AGENT_LOOP_REASON=""
 typeset -g AGENT_LOOP_FORBIDDEN_REQUEST=""
+typeset -g AGENT_RELAY_REPLY_TARGET=""
 typeset -ga AGENT_TOOL_REQUEST_HISTORY=()
 typeset -ga AGENT_TOOL_OUTCOME_HISTORY=()
 typeset -g ZCODER_MODEL="${ZCODER_MODEL:-qwen3-coder:latest}"
@@ -934,6 +935,7 @@ agent_user_turn() {
 agent_relay_turn() {
   local context="$1" display="$2"
   local AGENT_TURN_ORIGIN="relay"
+  local AGENT_RELAY_REPLY_TARGET="${3:-}"
   (( $+functions[relay_mark_busy] )) && relay_mark_busy || true
   {
     _agent_run_turn "$context" relay "$display"

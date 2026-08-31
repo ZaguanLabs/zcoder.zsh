@@ -77,7 +77,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..844"
+print -r -- "1..850"
 
 input_reset
 input_layout 20 4
@@ -219,13 +219,22 @@ tools_schema_json
 assert_contains "$REPLY" '"name":"list_agents"' "local user turns expose agent discovery"
 assert_contains "$REPLY" '"name":"send_agent_message"' "local user turns expose agent delivery"
 AGENT_TURN_ORIGIN=relay
+AGENT_RELAY_REPLY_TARGET=""
 tools_schema_json
 assert_contains "$REPLY" '"name":"list_agents"' "relayed turns retain read-only agent discovery"
-assert_not_contains "$REPLY" '"name":"send_agent_message"' "relayed turns cannot recursively forward work"
+assert_not_contains "$REPLY" '"name":"send_agent_message"' "relay turns without a sender cannot deliver messages"
 tool_dispatch send_agent_message '{"target_instance_id":"blocked","message":"do not forward"}'
-assert_failure "dispatch rejects a hidden relay send tool" $?
-assert_contains "$TOOL_RESULT" "unavailable for this turn" "dispatch enforces the relay forwarding guard"
+assert_failure "dispatch rejects delivery without a relay reply target" $?
+assert_contains "$TOOL_RESULT" "unavailable for this turn" "dispatch requires turn-scoped reply authority"
+AGENT_RELAY_REPLY_TARGET="$relay_peer_id"
+tools_schema_json
+assert_contains "$REPLY" '"name":"send_agent_message"' "relayed turns expose delivery for a direct reply"
+assert_contains "$REPLY" "forwarding to any other agent is blocked" "relay delivery schema describes its narrow reply scope"
+tool_dispatch send_agent_message '{"target_instance_id":"blocked","message":"do not forward"}'
+assert_failure "dispatch rejects forwarding to a third agent" $?
+assert_contains "$TOOL_RESULT" "may reply only to its sender" "dispatch enforces the exact relay sender"
 AGENT_TURN_ORIGIN=user
+AGENT_RELAY_REPLY_TARGET=""
 
 relay_message=$'users.name became users.display_name\nVerify the focused consumer test. ÆØÅ'
 relay_tool_send_agent_message "$relay_peer_id" "$relay_message"
@@ -236,6 +245,17 @@ while [[ ! -f "$relay_peer_received" ]] && (( EPOCHREALTIME < relay_deadline ));
 relay_received="${mapfile[$relay_peer_received]:-}"
 assert_contains "$relay_received" "relay-parent-project" "receiving peer retains sender identity"
 assert_contains "$relay_received" "$relay_message" "receiving peer preserves multiline Unicode task text"
+
+AGENT_TURN_ORIGIN=relay
+AGENT_RELAY_REPLY_TARGET="$relay_peer_id"
+relay_reply="Second message in the same inter-agent exchange."
+tool_dispatch send_agent_message "{\"target_instance_id\":\"${relay_peer_id}\",\"message\":\"${relay_reply}\"}"
+assert_success "a relayed turn can send a second message back to its sender" $?
+relay_deadline=$(( EPOCHREALTIME + 3.0 ))
+while [[ "${mapfile[$relay_peer_received]:-}" != *"$relay_reply"* ]] && (( EPOCHREALTIME < relay_deadline )); do zselect -t 2 2>/dev/null; done
+assert_contains "${mapfile[$relay_peer_received]:-}" "$relay_reply" "the second message reaches the exact peer"
+AGENT_TURN_ORIGIN=user
+AGENT_RELAY_REPLY_TARGET=""
 
 relay_pause
 assert_success "relay can pause incoming delivery" $?

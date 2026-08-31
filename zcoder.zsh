@@ -8,7 +8,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.9.3"
+typeset -gr ZCODER_VERSION="0.9.4"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -631,7 +631,7 @@ main_tui() {
       if (( relay_claim_status == 0 )); then
         relay_relay_context; relay_context="$REPLY"
         relay_relay_display; relay_display="$REPLY"
-        agent_relay_turn "$relay_context" "$relay_display"
+        agent_relay_turn "$relay_context" "$relay_display" "$RELAY_CLAIM_SENDER_ID"
         relay_complete_claim || ui_append_message error "Could not finalize relayed message ${RELAY_CLAIM_MESSAGE_ID}."
         zcoder_refresh_sessions
         continue

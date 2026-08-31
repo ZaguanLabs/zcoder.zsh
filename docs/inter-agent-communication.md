@@ -58,7 +58,7 @@ The initial implementation supports:
 - processes owned by the same operating-system user
 - processes on the same machine
 - interactive, local-mode zcoder instances
-- one-way task delivery with an acceptance acknowledgement
+- direct request/reply exchanges with an acceptance acknowledgement
 - FIFO queuing while the receiver is busy
 - the current selected session in the receiving instance
 - the existing coding and sysadmin profiles
@@ -68,9 +68,9 @@ The initial implementation does not support:
 - TCP, SSH, HTTP, VPN, or any other cross-host transport
 - relaying through a remote client to its remote server
 - headless `--server` or one-shot `--prompt` processes
-- completion callbacks or request/reply conversations
+- completion callbacks or synchronous request/reply waits
 - broadcast, agent groups, or automatic fan-out
-- recursive forwarding by a turn that originated from another agent
+- forwarding a relayed turn to any instance other than its exact sender
 - persistent delivery across receiver shutdown or machine restart
 
 Headless server support can be added later on the server host. A remote client
@@ -345,10 +345,11 @@ Its tool description and system guidance must state:
 - do not claim the target completed anything after an `accepted` response
 - do not include secrets or unrelated transcript history
 
-Do not expose `send_agent_message` during a relay-originated turn. This prevents
-implicit forwarding, cycles, and model-created agent swarms. `list_agents` may
-remain available for diagnosis, but an inbound task cannot relay again until a
-local user explicitly asks in a later turn.
+During a relay-originated turn, expose `send_agent_message` only as a reply path
+to that turn's exact sender instance. Dispatch must independently enforce the
+same target restriction. This permits multi-message A↔B exchanges while still
+blocking forwarding, fan-out, and model-created agent swarms. `list_agents` may
+remain available for diagnosis, but it does not expand the reply authority.
 
 ## Slash-command discovery
 
@@ -389,7 +390,7 @@ new `agent_relay_turn` entry point that:
 2. adds a labelled user-role context record with `agent_add_context_message`
 3. does not append the relay body to `AGENT_USER_MESSAGES`
 4. does not use the relay text to title a new session
-5. disables the send tool for the duration of that turn
+5. limits the send tool to the exact sender for the duration of that turn
 6. runs the same prepare, Ollama, tool, completion, loop-detection, and
    persistence path as a local user turn
 
@@ -533,7 +534,7 @@ Queue semantics:
 - duplicate message IDs execute no more than once
 - queue limit, pause/resume, sender timeout, receiver exit, and listener crash
 - one queued message is claimed atomically by only one foreground path
-- a relayed turn cannot call `send_agent_message`
+- a relayed turn can reply only to its exact sender and cannot target a third agent
 
 Agent integration:
 
