@@ -17,6 +17,7 @@ typeset -g REMOTE_MODEL_ERROR=""
 typeset -g REMOTE_HARNESSES=""
 typeset -gi REMOTE_SESSIONS_SUPPORTED=0
 typeset -gi REMOTE_HARNESS_DISCOVERY_SUPPORTED=0
+typeset -gi REMOTE_GOALS_SUPPORTED=0
 typeset -gi REMOTE_SESSION_EMPTY=0
 typeset -gi REMOTE_SERVER_WORKER=0
 typeset -gi REMOTE_MAX_REQUEST_BYTES="${ZCODER_REMOTE_MAX_REQUEST_BYTES:-1048576}"
@@ -109,7 +110,7 @@ remote_client_request() {
 }
 
 remote_client_handshake() {
-  local protocol="" server_name="" workspace="" model="" profile="" command_policy="" sessions="" harnesses=""
+  local protocol="" server_name="" workspace="" model="" profile="" command_policy="" sessions="" harnesses="" goals=""
   remote_load_token "$REMOTE_TOKEN_FILE" || return 1
   remote_client_request GET /v1/hello || return 1
   json_parse_flat_object "$HTTP_BODY" || { REMOTE_ERROR="invalid server handshake: ${JSON_ERROR:-parse error}"; return 1; }
@@ -120,6 +121,7 @@ remote_client_handshake() {
   profile="${JSON_OBJECT[profile]:-coding}"
   command_policy="${JSON_OBJECT[command_policy]:-ask}"
   sessions="${JSON_OBJECT[sessions]:-false}"
+  goals="${JSON_OBJECT[goals]:-false}"
   [[ "$protocol" == 1 ]] || { REMOTE_ERROR="unsupported remote protocol: ${protocol:-missing}"; return 1; }
   REMOTE_SERVER_NAME="$server_name"
   ZCODER_WORKSPACE="$workspace"
@@ -148,6 +150,7 @@ remote_client_handshake() {
   else
     REMOTE_SESSIONS_SUPPORTED=0
   fi
+  [[ "$goals" == true ]] && REMOTE_GOALS_SUPPORTED=1 || REMOTE_GOALS_SUPPORTED=0
 }
 
 remote_client_start_session() {
@@ -855,9 +858,14 @@ _remote_server_turn_worker() {
   if [[ "$ZCODER_PROFILE" == coding && "$saved_policy" == allow ]]; then
     ZCODER_COMMAND_POLICY="allow"
   fi
-  state_note_user "$prompt"
-  ui_append_message user "$prompt"
-  agent_user_turn "$prompt" || exit_code=$?
+  if [[ "$prompt" == /goal || "$prompt" == /goal\ * ]]; then
+    ui_append_message user "$prompt"
+    goal_handle_command "$prompt" || exit_code=$?
+  else
+    state_note_user "$prompt"
+    ui_append_message user "$prompt"
+    agent_user_turn "$prompt" || exit_code=$?
+  fi
   state_save_session || true
   mapfile[$REMOTE_RUNTIME_DIR/command_policy]="$ZCODER_COMMAND_POLICY" || true
   _remote_server_publish_json "{\"event\":\"complete\",\"exit_code\":${exit_code}}"
@@ -904,7 +912,7 @@ _remote_server_progress_pending_turn() {
 }
 
 _remote_server_cancel_turn() {
-  local pid="${mapfile[$REMOTE_RUNTIME_DIR/active.pid]:-}"
+  local pid="${mapfile[$REMOTE_RUNTIME_DIR/active.pid]:-}" session_dir="" goal_status=""
   if [[ -f "$REMOTE_RUNTIME_DIR/pending_prompt" ]]; then
     zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" 2>/dev/null
     remote_server_emit_status "Stopped"
@@ -915,6 +923,15 @@ _remote_server_cancel_turn() {
   if kill -0 "$pid" 2>/dev/null; then
     kill -TERM "$pid" 2>/dev/null
     wait "$pid" 2>/dev/null || true
+  fi
+  session_dir="$ZCODER_SESSIONS_DIR/${REMOTE_SESSION_ID}.session"
+  if _state_valid_id "$REMOTE_SESSION_ID" && [[ -d "$session_dir" ]]; then
+    goal_status="${mapfile[$session_dir/goal_status]:-none}"
+    if [[ "$goal_status" == active || "$goal_status" == verifying ]]; then
+      mapfile[$session_dir/goal_status]="paused"
+      mapfile[$session_dir/goal_block_reason]="remote goal execution stopped by user"
+      mapfile[$session_dir/goal_updated_at]="$EPOCHSECONDS"
+    fi
   fi
   zf_rm -f "$REMOTE_RUNTIME_DIR/active.pid" "$REMOTE_RUNTIME_DIR/pending_approval" 2>/dev/null
   if [[ ! -f "$REMOTE_RUNTIME_DIR/worker.done" ]]; then
@@ -944,7 +961,7 @@ _remote_server_hello_json() {
   json_quote "$REMOTE_MODEL_STATUS"; model_status_json="$REPLY"
   json_quote "$REMOTE_MODEL_ERROR"; model_error_json="$REPLY"
   json_quote "$harnesses"; harnesses_json="$REPLY"
-  REPLY="{\"protocol\":1,\"server_name\":${name_json},\"workspace\":${workspace_json},\"model\":${model_json},\"profile\":${profile_json},\"command_policy\":${policy_json},\"model_status\":${model_status_json},\"model_error\":${model_error_json},\"harnesses\":${harnesses_json},\"sessions\":true}"
+  REPLY="{\"protocol\":1,\"server_name\":${name_json},\"workspace\":${workspace_json},\"model\":${model_json},\"profile\":${profile_json},\"command_policy\":${policy_json},\"model_status\":${model_status_json},\"model_error\":${model_error_json},\"harnesses\":${harnesses_json},\"sessions\":true,\"goals\":true}"
 }
 
 _remote_server_handle_connection() {

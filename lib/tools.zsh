@@ -13,6 +13,10 @@ _tool_patch_contract() {
 }
 
 tools_schema_json() {
+  if (( ${GOAL_VERIFIER_ACTIVE:-0} )) && (( $+functions[goal_verifier_tools_schema_json] )); then
+    goal_verifier_tools_schema_json
+    return
+  fi
   local output='[' mcp_schemas="" patch_contract="" patch_description="" patch_argument_description=""
   _tool_patch_contract
   patch_contract="$REPLY"

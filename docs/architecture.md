@@ -11,6 +11,7 @@ zcoder.zsh              CLI and curses event loop
 lib/
   agent.zsh             Ollama messages and iterative tool loop
   compact.zsh           token accounting and conversation checkpoints
+  goal.zsh              persistent goals and read-only completion verifier
   delegate.zsh          external harness consultations and editing workers
   http.zsh              native TCP/HTTP client
   input.zsh             multiline editor, viewport, and history
@@ -209,11 +210,49 @@ a plan without execution or for a JSON-only response bypass LFM recovery.
 
 Set `ZCODER_REQUIRE_FINISH_TOOL=1` for strict structural completion.
 
+## Persistent goal loop
+
+`/goal OBJECTIVE` changes completion from a single model decision into a
+persisted worker/verifier loop:
+
+```text
+objective → work → candidate finish → read-only verification
+                ↑                         │
+                └──── rejection feedback ┘
+```
+
+An active goal always requires `finish` as the only completion tool. A
+`complete` finish is a candidate, not the terminal result. zcoder forks the
+current transcript into a separate Ollama inference with a verifier-only system
+prompt and only `list_files`, `read_file`, `read_file_range`, and `search` for
+evidence. The verifier must return `verify_goal` with `accept` or `reject`.
+Verifier tool dispatch is a separate allowlist, so an invented write, MCP,
+relay, or command call is rejected even though it was not advertised.
+
+Acceptance records the goal as complete. Rejection adds the reason, next
+action, and missing evidence to the worker history and resumes the same goal
+from current memory and workspace state. Three rejected candidates stop as
+blocked by default. A worker-reported genuine blocker, repeated tool loop,
+repeated patch failure, transport/compaction failure, verifier failure, or
+optional token limit also stops safely. Escape pauses local and remote goal
+work; `/goal resume` begins a fresh rejection audit without changing the saved
+objective. Resuming a token-limited stop removes the exhausted limit.
+
+Goal metadata, objective, feedback, candidate counts, and cumulative Ollama
+token counts live with the saved session. Compaction cannot erase the objective
+because the active goal prompt injects it into every worker request. A session
+loaded after an interrupted worker or verifier is marked paused rather than
+silently pretending the loop is still running.
+
 ## Remote transport
 
 Remote mode moves the complete agent loop behind a small authenticated HTTP API.
 The local TUI submits a turn and polls ordered, sequence-numbered events. A
 server worker owns the Ollama request, tools, and session state.
+
+Protocol-1 handshakes advertise goal support with `"goals":true`. Goal slash
+commands use the ordinary authenticated turn/event channel, and older servers
+that omit the capability remain usable but reject goal commands client-side.
 
 The initial handshake and every turn boundary check whether the server's
 configured model is resident in Ollama. An absent model is warmed

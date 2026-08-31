@@ -8,7 +8,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.9.4"
+typeset -gr ZCODER_VERSION="0.9.5"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -40,7 +40,7 @@ if [[ "${1:-}" == mcp ]]; then
   exit "$mcp_status"
 fi
 
-zcoder_require util json mcp http instructions skills input ui tools compact agent state
+zcoder_require util json mcp http instructions skills input ui tools compact goal agent state
 
 # The remote-mode default participates in option parsing before lib/remote.zsh
 # loads; that library preserves any value already set here.
@@ -293,6 +293,20 @@ handle_slash_command() {
     return 0
   fi
   case "$text" in
+    /goal|/goal\ *)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        if (( ${REMOTE_GOALS_SUPPORTED:-0} )); then
+          remote_client_user_turn "$text"
+        else
+          ui_append_message error "Persistent goals are not supported by this remote server."
+        fi
+      else
+        goal_handle_command "$text"
+      fi
+      (( $+functions[zcoder_refresh_sessions] )) && zcoder_refresh_sessions
+      ui_refresh_all
+      return 0
+      ;;
     /new|/clear)
       if [[ "$REMOTE_MODE" == client ]]; then
         if ! remote_client_new_session; then
@@ -582,7 +596,7 @@ handle_slash_command() {
       fi
       ;;
     /help|/\?)
-      ui_append_message system $'Enter sends a prompt. Shift+Enter inserts a newline; Alt+Enter is the fallback for terminals that do not report Shift+Enter separately. Pasted multiline text keeps its formatting. Escape stops a running Ollama response or external delegate.\nTab moves focus between the prompt, session sidebar, and transcript. Use Up/Down in the sidebar to resume another job. Ctrl+Y or /copy opens a stable plain-text view for native terminal selection and copying.\nCtrl+O selects an Ollama model. Ctrl+R toggles reasoning. Ctrl+N starts a new saved session. PgUp/PgDn scroll. Ctrl+U clears input. Ctrl+W deletes a word. Ctrl+Q exits.\n/claude REQUEST, /codex REQUEST, /agy REQUEST, and /opencode REQUEST run read-only consultations. Add ! to run an explicitly workspace-editing worker, for example /codex! REQUEST. /opencode with no request selects its provider/model. /list-agents lists other local zcoder instances; /agents pause or /agents resume controls incoming work. /mcp shows configured servers and live status; /mcp reload reloads configuration. /skills lists installed Agent Skills; /skill NAME activates one. Prefix a request with $skill-name for explicit activation. /model opens the Ollama picker; /host HOST changes Ollama; /instructions lists active AGENTS.md files; /compact creates a context checkpoint; /context shows the token budget; /sessions focuses saved jobs; /new starts a saved job.'
+      ui_append_message system $'Enter sends a prompt. Shift+Enter inserts a newline; Alt+Enter is the fallback for terminals that do not report Shift+Enter separately. Pasted multiline text keeps its formatting. Escape stops a running Ollama response or external delegate.\nTab moves focus between the prompt, session sidebar, and transcript. Use Up/Down in the sidebar to resume another job. Ctrl+Y or /copy opens a stable plain-text view for native terminal selection and copying.\nCtrl+O selects an Ollama model. Ctrl+R toggles reasoning. Ctrl+N starts a new saved session. PgUp/PgDn scroll. Ctrl+U clears input. Ctrl+W deletes a word. Ctrl+Q exits.\n/goal OBJECTIVE runs a persistent, independently verified goal; /goal shows status, and /goal pause, /goal resume, or /goal clear control it. Add --tokens N before the objective for a token limit. /claude REQUEST, /codex REQUEST, /agy REQUEST, and /opencode REQUEST run read-only consultations. Add ! to run an explicitly workspace-editing worker, for example /codex! REQUEST. /opencode with no request selects its provider/model. /list-agents lists other local zcoder instances; /agents pause or /agents resume controls incoming work. /mcp shows configured servers and live status; /mcp reload reloads configuration. /skills lists installed Agent Skills; /skill NAME activates one. Prefix a request with $skill-name for explicit activation. /model opens the Ollama picker; /host HOST changes Ollama; /instructions lists active AGENTS.md files; /compact creates a context checkpoint; /context shows the token budget; /sessions focuses saved jobs; /new starts a saved job.'
       zcoder_delegate_availability_summary
       ui_append_message system "$REPLY"
       ;;
@@ -759,7 +773,11 @@ if [[ "$REMOTE_MODE" == server ]]; then
   [[ -z "$ONE_SHOT_PROMPT" ]] || { print -u2 -- "Error: --server and --prompt cannot be combined"; exit 2; }
   remote_server_main
 elif [[ -n "$ONE_SHOT_PROMPT" ]]; then
-  agent_user_turn "$ONE_SHOT_PROMPT"
+  if [[ "$ONE_SHOT_PROMPT" == /goal || "$ONE_SHOT_PROMPT" == /goal\ * ]]; then
+    goal_handle_command "$ONE_SHOT_PROMPT"
+  else
+    agent_user_turn "$ONE_SHOT_PROMPT"
+  fi
 else
   [[ -t 0 && -t 1 ]] || { print -u2 -- "Error: interactive mode requires a terminal; use --prompt for one-shot mode"; exit 2; }
   main_tui

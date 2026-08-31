@@ -155,11 +155,18 @@ Relevant settings:
 | `ZCODER_INCOMPLETE_RETRY_LIMIT` | 3 | Empty or malformed response retries |
 | `ZCODER_TRANSPORT_RETRY_LIMIT` | 1 | Retries after a transient failure before any Ollama response |
 | `ZCODER_REQUIRE_FINISH_TOOL` | 0 | Require structural `finish` completion when set to 1 |
+| `ZCODER_GOAL_MAX_REJECTIONS` | 3 | Independent verifier rejections before stopping a goal |
+| `ZCODER_GOAL_VERIFIER_MAX_STEPS` | 8 | Read-only verifier turns allowed for one candidate |
 
 See [Architecture](architecture.md) for how these controls affect the agent loop.
 Response timeouts are not retried: replaying a generation that already consumed
 the full timeout would restart the same expensive work. Increase
 `ZCODER_HTTP_READ_TIMEOUT` for slower hardware or very large contexts.
+
+`/goal --tokens N OBJECTIVE` applies a cumulative Ollama prompt-plus-output
+token limit to that goal. Omitting `--tokens` leaves the goal unlimited except
+for the rejection, loop, error, and cancellation guards. `/goal resume` removes
+an exhausted token limit; start a new goal with `--tokens` to apply a new one.
 
 ## Debug logs
 

@@ -89,6 +89,10 @@ the TUI.
 | `/skill NAME` | Activate a Skill |
 | `/compact` | Create a context checkpoint |
 | `/context` | Show context use and compaction threshold |
+| `/goal OBJECTIVE` | Run a persisted goal with independent completion verification |
+| `/goal --tokens N OBJECTIVE` | Run a goal with a cumulative model-token limit |
+| `/goal`, `/goal status` | Show the saved goal state, attempts, and usage |
+| `/goal pause`, `/goal resume`, `/goal clear` | Control the saved goal |
 | `/sessions` | Focus saved jobs |
 | `/list-agents` | List other live local zcoder instances |
 | `/agents` | Show this instance's relay state and queue depth |
@@ -100,6 +104,20 @@ the TUI.
 
 Some controls are intentionally unavailable in remote-client mode because the
 server owns that state.
+
+## Persistent goals
+
+A goal continues through tool calls until the worker calls `finish`. Candidate
+completion is then checked by a separate read-only model inference. An accepted
+candidate ends the goal; a rejected candidate returns its evidence-based
+feedback to the worker and the loop continues. The final answer is shown only
+after acceptance. A genuine blocker can stop the goal without pretending it
+completed.
+
+Goal state follows the saved session. Escape pauses an active local or remote
+goal, and an interrupted goal loads as paused after restart. Use `/goal resume`
+to continue the same objective, or `/goal clear` to discard it. Remote clients
+enable these commands only when the server advertises goal support.
 
 ## Local agent handoffs
 

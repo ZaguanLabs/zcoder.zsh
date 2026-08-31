@@ -115,6 +115,18 @@ state_save_session() {
   mapfile[$session_dir/last_prompt_tokens]="$AGENT_LAST_PROMPT_TOKENS"
   mapfile[$session_dir/last_output_tokens]="$AGENT_LAST_OUTPUT_TOKENS"
   mapfile[$session_dir/last_payload_bytes]="$AGENT_LAST_PAYLOAD_BYTES"
+  mapfile[$session_dir/goal_id]="${GOAL_ID:-}"
+  mapfile[$session_dir/goal_status]="${GOAL_STATUS:-none}"
+  mapfile[$session_dir/goal_objective]="${GOAL_OBJECTIVE:-}"
+  mapfile[$session_dir/goal_feedback]="${GOAL_FEEDBACK:-}"
+  mapfile[$session_dir/goal_block_reason]="${GOAL_BLOCK_REASON:-}"
+  mapfile[$session_dir/goal_candidate_response]="${GOAL_CANDIDATE_RESPONSE:-}"
+  mapfile[$session_dir/goal_created_at]="${GOAL_CREATED_AT:-0}"
+  mapfile[$session_dir/goal_updated_at]="${GOAL_UPDATED_AT:-0}"
+  mapfile[$session_dir/goal_attempts]="${GOAL_ATTEMPTS:-0}"
+  mapfile[$session_dir/goal_rejections]="${GOAL_REJECTIONS:-0}"
+  mapfile[$session_dir/goal_tokens_used]="${GOAL_TOKENS_USED:-0}"
+  mapfile[$session_dir/goal_token_budget]="${GOAL_TOKEN_BUDGET:-0}"
 
   for (( i=agent_start; i<=${#AGENT_MESSAGES}; i++ )); do
     printf -v seq '%06d' "$i"
@@ -224,6 +236,28 @@ state_load_session() {
   _state_nonnegative "${mapfile[$session_dir/last_prompt_tokens]:-0}"; AGENT_LAST_PROMPT_TOKENS=$REPLY
   _state_nonnegative "${mapfile[$session_dir/last_output_tokens]:-0}"; AGENT_LAST_OUTPUT_TOKENS=$REPLY
   _state_nonnegative "${mapfile[$session_dir/last_payload_bytes]:-0}"; AGENT_LAST_PAYLOAD_BYTES=$REPLY
+
+  GOAL_ID="${mapfile[$session_dir/goal_id]}"
+  case "${mapfile[$session_dir/goal_status]:-none}" in
+    none|active|verifying|paused|blocked|budget_limited|complete) GOAL_STATUS="${mapfile[$session_dir/goal_status]:-none}" ;;
+    *) GOAL_STATUS="none" ;;
+  esac
+  # A process cannot resume an in-flight worker or verifier frame. Preserve the
+  # goal and make continuation explicit after a crash or session switch.
+  if [[ "$GOAL_STATUS" == active || "$GOAL_STATUS" == verifying ]]; then
+    GOAL_STATUS="paused"
+    [[ -n "${mapfile[$session_dir/goal_block_reason]}" ]] || GOAL_BLOCK_REASON="goal execution was interrupted"
+  fi
+  GOAL_OBJECTIVE="${mapfile[$session_dir/goal_objective]}"
+  GOAL_FEEDBACK="${mapfile[$session_dir/goal_feedback]}"
+  [[ -n "$GOAL_BLOCK_REASON" ]] || GOAL_BLOCK_REASON="${mapfile[$session_dir/goal_block_reason]}"
+  GOAL_CANDIDATE_RESPONSE="${mapfile[$session_dir/goal_candidate_response]}"
+  _state_nonnegative "${mapfile[$session_dir/goal_created_at]:-0}"; GOAL_CREATED_AT=$REPLY
+  _state_nonnegative "${mapfile[$session_dir/goal_updated_at]:-0}"; GOAL_UPDATED_AT=$REPLY
+  _state_nonnegative "${mapfile[$session_dir/goal_attempts]:-0}"; GOAL_ATTEMPTS=$REPLY
+  _state_nonnegative "${mapfile[$session_dir/goal_rejections]:-0}"; GOAL_REJECTIONS=$REPLY
+  _state_nonnegative "${mapfile[$session_dir/goal_tokens_used]:-0}"; GOAL_TOKENS_USED=$REPLY
+  _state_nonnegative "${mapfile[$session_dir/goal_token_budget]:-0}"; GOAL_TOKEN_BUDGET=$REPLY
 
   users_dir="$session_dir/context_users"
   _state_nonnegative "${mapfile[$session_dir/context_user_count]:-0}"; count=$REPLY

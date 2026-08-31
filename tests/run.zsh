@@ -18,6 +18,7 @@ source "${PROJECT_DIR}/lib/skills.zsh"
 source "${PROJECT_DIR}/lib/input.zsh"
 source "${PROJECT_DIR}/lib/tools.zsh"
 source "${PROJECT_DIR}/lib/compact.zsh"
+source "${PROJECT_DIR}/lib/goal.zsh"
 source "${PROJECT_DIR}/lib/agent.zsh"
 source "${PROJECT_DIR}/lib/state.zsh"
 source "${PROJECT_DIR}/lib/delegate.zsh"
@@ -77,7 +78,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..850"
+print -r -- "1..879"
 
 input_reset
 input_layout 20 4
@@ -831,6 +832,10 @@ wait "$remote_approval_pid"
 assert_eq "0:y" "${mapfile[$remote_approval_result]}" "remote command approval resumes only with the matching response"
 
 _remote_server_clear_turn_runtime
+zf_mkdir -p "$ZCODER_SESSIONS_DIR/7777777777_888.session"
+saved_remote_cancel_session_id="$REMOTE_SESSION_ID"
+REMOTE_SESSION_ID="7777777777_888"
+mapfile[$ZCODER_SESSIONS_DIR/$REMOTE_SESSION_ID.session/goal_status]="active"
 (while true; do zselect -t 10; done) &
 remote_cancel_pid=$!
 mapfile[$remote_runtime/active.pid]="$remote_cancel_pid"
@@ -843,6 +848,8 @@ assert_success "remote turn cancellation clears the active marker" "$remote_canc
 _remote_server_next_event 1
 assert_success "remote turn cancellation publishes a completion event" $?
 assert_contains "$REPLY" '"exit_code":130' "remote cancellation completion carries the stopped status"
+assert_eq "paused" "${mapfile[$ZCODER_SESSIONS_DIR/$REMOTE_SESSION_ID.session/goal_status]}" "remote cancellation persists an active goal as paused"
+REMOTE_SESSION_ID="$saved_remote_cancel_session_id"
 
 saved_remote_context_lookup="${functions[ollama_get_running_context]}"
 saved_remote_warmup_start="${functions[_remote_server_model_start_warmup]}"
@@ -1262,6 +1269,27 @@ assert_contains "$REPLY" "PROJECT SHARED BODY" "active skills survive conversati
 agent_reset
 assert_eq "0" "${#SKILL_ACTIVE_NAMES}" "new conversations clear active skills"
 
+# Persistent goals force structural completion and expose a separate read-only
+# verifier surface.
+goal_begin "Implement and verify the requested feature" 5000
+assert_success "a persistent goal starts with a concrete objective" $?
+assert_eq "active" "$GOAL_STATUS" "new goals enter the active state"
+assert_eq "Implement and verify the requested feature" "$GOAL_OBJECTIVE" "goal state preserves the exact objective"
+agent_completion_instructions
+assert_contains "$REPLY" "Turn completion is structural" "active goals require the finish control tool"
+goal_prompt_block
+assert_contains "$REPLY" "separate read-only verifier" "active goals explain independent candidate verification"
+goal_verifier_system_prompt
+assert_contains "$REPLY" "Implement and verify the requested feature" "verifier prompts retain the exact objective independently of compacted history"
+GOAL_VERIFIER_ACTIVE=1
+tools_schema_json
+assert_contains "$REPLY" '"name":"read_file_range"' "goal verifiers receive read-only evidence tools"
+assert_not_contains "$REPLY" '"name":"write_file"' "goal verifier schemas omit workspace writes"
+assert_not_contains "$REPLY" '"name":"run_command"' "goal verifier schemas omit command execution"
+goal_verifier_dispatch_read write_file '{"path":"verifier-escape","content":"no"}'
+assert_failure "goal verifier dispatch rejects invented write calls" $?
+GOAL_VERIFIER_ACTIVE=0
+
 # The transcript exporter is UI code but does not require curses to be active.
 source "${PROJECT_DIR}/lib/ui.zsh"
 
@@ -1291,6 +1319,17 @@ AGENT_COMPACTION_REARM_TOKENS=1234
 AGENT_LAST_PROMPT_TOKENS=4321
 AGENT_LAST_OUTPUT_TOKENS=55
 AGENT_LAST_PAYLOAD_BYTES=9876
+GOAL_STATUS="active"
+GOAL_ID="123_456"
+GOAL_OBJECTIVE="Persist this exact goal"
+GOAL_FEEDBACK="Need a broader test"
+GOAL_BLOCK_REASON="paused for restart"
+GOAL_CREATED_AT=100
+GOAL_UPDATED_AT=200
+GOAL_ATTEMPTS=2
+GOAL_REJECTIONS=1
+GOAL_TOKENS_USED=321
+GOAL_TOKEN_BUDGET=999
 skills_activate folded-skill >/dev/null
 state_save_and_refresh
 assert_eq "Repair the deployment without losing conte" "$SESSION_TITLE" "first user request becomes a bounded resumable session title"
@@ -1339,6 +1378,10 @@ assert_eq "durable resumed checkpoint" "$AGENT_COMPACTION_SUMMARY" "resuming res
 assert_eq "2" "$AGENT_COMPACTION_COUNT" "resuming restores compaction metadata"
 assert_eq "Repair the deployment" "${AGENT_USER_MESSAGES[1]}" "resuming restores the exact-user ledger"
 assert_contains "${(j:,:)SKILL_ACTIVE_NAMES}" "folded-skill" "resuming reactivates available Skills"
+assert_eq "paused" "$GOAL_STATUS" "resuming converts interrupted active goal work to an explicit pause"
+assert_eq "Persist this exact goal" "$GOAL_OBJECTIVE" "resuming restores the exact goal objective"
+assert_eq "321" "$GOAL_TOKENS_USED" "resuming restores cumulative goal token use"
+assert_eq "999" "$GOAL_TOKEN_BUDGET" "resuming restores the goal token budget"
 
 CURRENT_SESSION_ID=""
 ZCODER_MODEL_OVERRIDE=1
@@ -1362,6 +1405,7 @@ state_new_session
 assert_success "new chat creates a separate saved session" $?
 assert_eq "0" "${#AGENT_MESSAGES}" "new sessions clear model history"
 assert_eq "0" "${#UI_ROLES}" "new sessions clear the visible transcript"
+assert_eq "none" "$GOAL_STATUS" "new sessions clear persistent goal state"
 saved_remote_runtime_dir="$REMOTE_RUNTIME_DIR"
 REMOTE_RUNTIME_DIR="$TEST_TMP/remote-session-create-runtime"
 zf_mkdir -p "$REMOTE_RUNTIME_DIR"
@@ -2270,6 +2314,63 @@ assert_eq "1" "$MOCK_INCOMPLETE_TURNS" "disabled continuation accepts the first 
 AGENT_INCOMPLETE_RETRY_LIMIT=3
 AGENT_REQUIRE_FINISH_TOOL=0
 
+functions[_test_pre_goal_chat]="${functions[agent_ollama_chat]}"
+typeset -gi MOCK_GOAL_WORKER_CALLS=0 MOCK_GOAL_VERIFIER_CALLS=0
+agent_ollama_chat() {
+  if (( ${GOAL_VERIFIER_ACTIVE:-0} )); then
+    (( MOCK_GOAL_VERIFIER_CALLS++ ))
+    HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"verify_goal","arguments":{"verdict":"accept","reason":"The transcript and workspace evidence satisfy the objective."}}}]},"prompt_eval_count":80,"eval_count":12}'
+  else
+    (( MOCK_GOAL_WORKER_CALLS++ ))
+    HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"complete","response":"Verified feature delivered."}}}]},"prompt_eval_count":100,"eval_count":16}'
+  fi
+  HTTP_ERROR=""
+  return 0
+}
+agent_reset
+goal_begin "Deliver the verified feature" 0
+agent_goal_turn "$GOAL_OBJECTIVE" >/dev/null 2>&1
+goal_accept_status=$?
+assert_success "goal completion succeeds only after an accepting verifier verdict" "$goal_accept_status"
+assert_eq "complete" "$GOAL_STATUS" "an accepted candidate completes the persistent goal"
+assert_eq "1" "$GOAL_ATTEMPTS" "accepted goal completion records one candidate attempt"
+assert_eq "Verified feature delivered." "$AGENT_LAST_RESPONSE" "accepted goal completion returns the worker's candidate response"
+assert_success "goal accounting includes worker and verifier model usage" $(( GOAL_TOKENS_USED > 0 ? 0 : 1 ))
+
+MOCK_GOAL_WORKER_CALLS=0
+MOCK_GOAL_VERIFIER_CALLS=0
+agent_ollama_chat() {
+  if (( ${GOAL_VERIFIER_ACTIVE:-0} )); then
+    (( MOCK_GOAL_VERIFIER_CALLS++ ))
+    if (( MOCK_GOAL_VERIFIER_CALLS == 1 )); then
+      HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"verify_goal","arguments":{"verdict":"reject","reason":"Required verification evidence is missing.","next_action":"Run the required check and report its result.","missing_evidence":"A passing test result."}}}]},"prompt_eval_count":85,"eval_count":18}'
+    else
+      HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"verify_goal","arguments":{"verdict":"accept","reason":"The corrected transcript now includes the required evidence."}}}]},"prompt_eval_count":90,"eval_count":14}'
+    fi
+  else
+    (( MOCK_GOAL_WORKER_CALLS++ ))
+    if (( MOCK_GOAL_WORKER_CALLS == 1 )); then
+      HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"complete","response":"First unsupported candidate."}}}]},"prompt_eval_count":100,"eval_count":15}'
+    else
+      HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"complete","response":"Corrected and evidenced result."}}}]},"prompt_eval_count":110,"eval_count":17}'
+    fi
+  fi
+  HTTP_ERROR=""
+  return 0
+}
+agent_reset
+goal_begin "Require evidence before completion" 0
+agent_goal_turn "$GOAL_OBJECTIVE" >/dev/null 2>&1
+goal_retry_status=$?
+assert_success "a rejected goal candidate automatically returns to work" "$goal_retry_status"
+assert_eq "complete" "$GOAL_STATUS" "a later accepted candidate completes a rejected goal"
+assert_eq "2" "$GOAL_ATTEMPTS" "verifier rejection causes a second candidate attempt"
+assert_eq "1" "$GOAL_REJECTIONS" "goal state records independent verifier rejections"
+assert_contains "${(j:\n:)AGENT_MESSAGES}" "finish rejected by independent goal verifier" "verifier feedback is retained in worker history"
+functions[agent_ollama_chat]="${functions[_test_pre_goal_chat]}"
+unfunction _test_pre_goal_chat
+goal_reset
+
 agent_loop_reset
 agent_loop_record "read:a" "read:a=result"
 agent_loop_record "read:a" "read:a=result"
@@ -2416,6 +2517,7 @@ remote_harness_hello="$REPLY"
 json_parse_flat_object "$remote_harness_hello"
 assert_success "remote hello with harness capabilities remains flat JSON" $?
 assert_eq "claude,codex" "${JSON_OBJECT[harnesses]}" "remote hello advertises commands installed on the server host"
+assert_eq "true" "${JSON_OBJECT[goals]}" "remote hello advertises persistent goal support"
 REMOTE_RUNTIME_DIR="$saved_remote_hello_runtime"
 
 saved_remote_handshake_load_token="${functions[remote_load_token]}"
@@ -2426,13 +2528,14 @@ saved_remote_handshake_profile="$ZCODER_PROFILE"
 saved_remote_handshake_name="$REMOTE_SERVER_NAME"
 remote_load_token() { return 0; }
 remote_client_request() {
-  HTTP_BODY='{"protocol":1,"server_name":"test-server","workspace":"/srv/test-server","model":"server-model","profile":"coding","command_policy":"ask","model_status":"ready","model_error":"","harnesses":"claude,codex","sessions":false}'
+  HTTP_BODY='{"protocol":1,"server_name":"test-server","workspace":"/srv/test-server","model":"server-model","profile":"coding","command_policy":"ask","model_status":"ready","model_error":"","harnesses":"claude,codex","sessions":false,"goals":true}'
   return 0
 }
 remote_client_handshake
 assert_success "remote handshake accepts advertised harness capabilities" $?
 assert_eq "1" "$REMOTE_HARNESS_DISCOVERY_SUPPORTED" "remote clients recognize harness-aware servers"
 assert_eq "claude,codex" "$REMOTE_HARNESSES" "remote clients retain the server-authored harness list"
+assert_eq "1" "$REMOTE_GOALS_SUPPORTED" "remote clients recognize goal-aware servers"
 delegate_available codex
 assert_success "remote availability enables a server-installed harness" $?
 delegate_available agy
@@ -2445,6 +2548,7 @@ remote_client_handshake
 assert_success "remote handshake remains compatible with legacy capability responses" $?
 assert_eq "0" "$REMOTE_HARNESS_DISCOVERY_SUPPORTED" "legacy servers leave harness availability unknown"
 assert_eq "" "$REMOTE_HARNESSES" "legacy handshakes clear stale remote harness snapshots"
+assert_eq "0" "$REMOTE_GOALS_SUPPORTED" "legacy handshakes leave persistent goals disabled"
 functions[remote_load_token]="$saved_remote_handshake_load_token"
 functions[remote_client_request]="$saved_remote_handshake_request"
 functions[delegate_command_available]="$saved_delegate_command_available"

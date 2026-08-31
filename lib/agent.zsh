@@ -56,7 +56,9 @@ agent_select_profile() {
 }
 
 agent_completion_instructions() {
-  if (( AGENT_REQUIRE_FINISH_TOOL )); then
+  local -i strict_completion=$AGENT_REQUIRE_FINISH_TOOL
+  (( $+functions[goal_is_running] )) && goal_is_running && strict_completion=1
+  if (( strict_completion )); then
     REPLY="Turn completion is structural, not linguistic. When the task is complete or genuinely blocked, call finish as the only tool call, with status complete or blocked and the final user-facing response. Do not return a final answer as plain assistant content, and do not call finish alongside another tool."
   else
     REPLY="When the task is complete or genuinely blocked, prefer calling finish as the only tool call, with status complete or blocked and the final user-facing response. A complete non-empty plain assistant response is also accepted as final. Never use a tool-free response as a preamble while work remains; call the next work tool in that response instead. Do not call finish alongside another tool."
@@ -284,6 +286,7 @@ agent_reset() {
   (( $+functions[skills_reset_activations] )) && skills_reset_activations
   agent_loop_reset
   agent_compaction_reset
+  (( $+functions[goal_reset] )) && goal_reset
 }
 
 agent_loop_reset() {
@@ -410,6 +413,10 @@ agent_add_assistant_message() {
 }
 
 agent_resolve_system_prompt() {
+  if (( ${GOAL_VERIFIER_ACTIVE:-0} )) && (( $+functions[goal_verifier_system_prompt] )); then
+    goal_verifier_system_prompt
+    return
+  fi
   local prompt="$AGENT_SYSTEM_PROMPT"
   [[ -n "$prompt" ]] || { agent_default_system_prompt; prompt="$REPLY"; }
   agent_lfm_prompt_block
@@ -436,6 +443,10 @@ agent_resolve_system_prompt() {
   fi
   if (( $+functions[instructions_completion_block] )); then
     instructions_completion_block
+    prompt+="$REPLY"
+  fi
+  if (( $+functions[goal_prompt_block] )); then
+    goal_prompt_block
     prompt+="$REPLY"
   fi
   [[ -n "$AGENT_LOOP_NUDGE" ]] && prompt+=$'\n\n'"$AGENT_LOOP_NUDGE"
@@ -947,10 +958,15 @@ agent_relay_turn() {
 _agent_run_turn() {
   local user_content="$1" payload="" response="" content="" thinking="" calls_json="[]"
   local turn_origin="${2:-user}" display_content="${3:-$1}"
+  local display_role="$turn_origin"
   local tool_name="" tool_args="" result="" summary="" display_result=""
   local request_signature="" outcome_signature="" loop_notice="" continuation_notice=""
   local -a call_names=() call_args=()
-  local -i step i request_status prepare_status incomplete_retries=0 transport_retries=0 needs_continuation=0 lfm_command_plan=0 lfm_tool_refusal=0 lfm_path_conclusion=0 lfm_plan_only=0 loop_cycle=0 loop_count=0 patch_failures=0 patch_failure_limit=0
+  local -i step i request_status prepare_status incomplete_retries=0 invalid_finish_retries=0 transport_retries=0 needs_continuation=0 lfm_command_plan=0 lfm_tool_refusal=0 lfm_path_conclusion=0 lfm_plan_only=0 loop_cycle=0 loop_count=0 patch_failures=0 patch_failure_limit=0 goal_turn=0
+  local -i AGENT_REQUIRE_FINISH_TOOL=$AGENT_REQUIRE_FINISH_TOOL
+
+  [[ "$turn_origin" == goal || "$turn_origin" == goal_resume ]] && goal_turn=1
+  (( goal_turn )) && AGENT_REQUIRE_FINISH_TOOL=1
 
   (( AGENT_WARMUP_ACTIVE )) && agent_warmup_cancel "${turn_origin} prompt submitted"
   agent_patch_failure_limit
@@ -963,15 +979,16 @@ _agent_run_turn() {
     skills_activate_explicit_from_text "$user_content"
     zcoder_debug explicit_skills "active=${(j:,:)SKILL_ACTIVE_NAMES}"
   fi
-  if [[ "$turn_origin" == relay ]]; then
+  if [[ "$turn_origin" == relay || "$turn_origin" == goal_resume ]]; then
     agent_add_context_message "$user_content"
   else
     agent_add_message user "$user_content"
   fi
   zcoder_debug "${turn_origin}_turn_start" "content=${(qqq)user_content}"
   if (( $+functions[ui_append_message] && ${UI_ACTIVE:-0} )); then
-    ui_append_message "$turn_origin" "$display_content"
-    [[ "$turn_origin" == user ]] && (( $+functions[state_note_user] )) && state_note_user "$user_content"
+    [[ "$turn_origin" == goal ]] && display_role="user"
+    [[ "$turn_origin" == goal_resume ]] || ui_append_message "$display_role" "$display_content"
+    [[ "$turn_origin" == user || "$turn_origin" == goal ]] && (( $+functions[state_note_user] )) && state_note_user "$user_content"
     (( $+functions[state_save_and_refresh] )) && state_save_and_refresh
     ui_refresh_all
   fi
@@ -985,12 +1002,14 @@ _agent_run_turn() {
     if (( prepare_status != 0 )); then
       zcoder_debug payload_error "step=$step cancelled=$AGENT_CANCELLED error=${(qqq)HTTP_ERROR}"
       if (( AGENT_CANCELLED )); then
+        (( goal_turn )) && goal_pause "response generation stopped by user" || true
         agent_add_message assistant "[Response generation stopped by user.]"
         agent_emit system "⏹ Response generation stopped."
         agent_set_status "Stopped"
         return 130
       fi
       agent_emit error "Compaction failed: ${HTTP_ERROR:-Ollama request failed}"
+      (( goal_turn )) && goal_mark_blocked "compaction failed: ${HTTP_ERROR:-Ollama request failed}" || true
       agent_set_status "Compaction error"
       return 1
     fi
@@ -1012,6 +1031,7 @@ _agent_run_turn() {
     done
     if (( request_status != 0 )); then
       if (( AGENT_CANCELLED )); then
+        (( goal_turn )) && goal_pause "response generation stopped by user" || true
         agent_add_message assistant "[Response generation stopped by user.]"
         agent_emit system "⏹ Response generation stopped."
         agent_set_status "Stopped"
@@ -1022,6 +1042,7 @@ _agent_run_turn() {
         response="$JSON_RESPONSE_ERROR"
       fi
       agent_emit error "${response:-Ollama request failed}"
+      (( goal_turn )) && goal_mark_blocked "${response:-Ollama request failed}" || true
       agent_set_status "Error"
       return 1
     fi
@@ -1044,12 +1065,14 @@ _agent_run_turn() {
         continue
       fi
       agent_emit error "Could not parse Ollama response: ${JSON_ERROR:-unknown JSON error}"
+      (( goal_turn )) && goal_mark_blocked "could not parse Ollama response: ${JSON_ERROR:-unknown JSON error}" || true
       agent_set_status "Error"
       return 1
     fi
     if [[ -n "$JSON_RESPONSE_ERROR" ]]; then
       zcoder_debug response_error "step=$step error=${(qqq)JSON_RESPONSE_ERROR}"
       agent_emit error "$JSON_RESPONSE_ERROR"
+      (( goal_turn )) && goal_mark_blocked "$JSON_RESPONSE_ERROR" || true
       agent_set_status "Error"
       return 1
     fi
@@ -1059,6 +1082,7 @@ _agent_run_turn() {
     AGENT_LAST_PROMPT_TOKENS="$JSON_RESPONSE_PROMPT_TOKENS"
     AGENT_LAST_OUTPUT_TOKENS="$JSON_RESPONSE_OUTPUT_TOKENS"
     agent_context_refresh_after_response
+    (( goal_turn )) && goal_account_tokens "$JSON_RESPONSE_PROMPT_TOKENS" "$JSON_RESPONSE_OUTPUT_TOKENS"
 
     content="$JSON_RESPONSE_CONTENT"
     thinking="$JSON_RESPONSE_THINKING"
@@ -1070,6 +1094,16 @@ _agent_run_turn() {
     thinking="$AGENT_NORMALIZED_THINKING"
     zcoder_debug response_parsed "step=$step content=${(qqq)content} thinking_chars=${#thinking} tool_calls=${#call_names} prompt_tokens=$JSON_RESPONSE_PROMPT_TOKENS output_tokens=$JSON_RESPONSE_OUTPUT_TOKENS"
     agent_add_assistant_message "$content" "$thinking" "$calls_json"
+
+    if (( goal_turn )) && goal_budget_exhausted && ! { (( ${#call_names} == 1 )) && [[ "${call_names[1]}" == finish ]]; }; then
+      GOAL_STATUS="budget_limited"
+      GOAL_BLOCK_REASON="goal token budget of ${GOAL_TOKEN_BUDGET} was reached"
+      GOAL_UPDATED_AT=$EPOCHSECONDS
+      (( $+functions[state_save_session] )) && state_save_session || true
+      agent_emit error "Goal paused at its token budget (${GOAL_TOKENS_USED}/${GOAL_TOKEN_BUDGET}). Use /goal resume to continue without changing the saved objective."
+      agent_set_status "Goal budget"
+      return 1
+    fi
 
     needs_continuation=0
     lfm_command_plan=0
@@ -1126,17 +1160,95 @@ _agent_run_turn() {
       fi
       zcoder_debug continuation_exhausted "step=$step retries=$incomplete_retries reason=${(qqq)AGENT_CONTINUATION_REASON}"
       agent_set_status "Incomplete"
+      (( goal_turn )) && goal_mark_blocked "model stopped before a valid work or finish action" || true
       return 1
     fi
 
     if (( ${#call_names} == 1 )) && [[ "${call_names[1]}" == finish ]]; then
       tool_args="${call_args[1]}"
       if agent_parse_finish "$tool_args"; then
+        if (( goal_turn )) && [[ "$AGENT_FINISH_STATUS" == complete ]]; then
+          (( GOAL_ATTEMPTS++ ))
+          GOAL_STATUS="verifying"
+          GOAL_CANDIDATE_RESPONSE="$AGENT_FINISH_RESPONSE"
+          GOAL_UPDATED_AT=$EPOCHSECONDS
+          (( $+functions[state_save_session] )) && state_save_session || true
+          agent_emit system "◇ Verifying candidate completion (${GOAL_ATTEMPTS})."
+          goal_verify_candidate "$AGENT_FINISH_RESPONSE"
+          request_status=$?
+          if (( request_status == 0 )); then
+            agent_add_message tool "finish accepted by independent goal verifier: ${GOAL_VERIFIER_REASON}" finish
+            agent_add_message assistant "$AGENT_FINISH_RESPONSE"
+            AGENT_LAST_RESPONSE="$AGENT_FINISH_RESPONSE"
+            goal_mark_complete
+            agent_emit assistant "$AGENT_FINISH_RESPONSE" "$thinking"
+            agent_emit system "✓ Goal verified complete."
+            agent_set_status "Goal complete"
+            zcoder_debug goal_verified "step=$step attempt=$GOAL_ATTEMPTS reason=${(qqq)GOAL_VERIFIER_REASON}"
+            return 0
+          elif (( request_status == 1 )); then
+            (( GOAL_REJECTIONS++ ))
+            GOAL_STATUS="active"
+            goal_rejection_feedback
+            GOAL_FEEDBACK="$REPLY"
+            GOAL_UPDATED_AT=$EPOCHSECONDS
+            agent_add_message tool "finish rejected by independent goal verifier: ${GOAL_FEEDBACK}" finish
+            agent_add_context_message "The candidate completion was rejected. Continue the same goal from current workspace state. Address this verifier feedback before proposing completion again:"$'\n'"${GOAL_FEEDBACK}"
+            agent_emit system "↻ Goal verification rejected the candidate: ${GOAL_FEEDBACK}"
+            (( $+functions[state_save_session] )) && state_save_session || true
+            if (( GOAL_REJECTIONS >= ZCODER_GOAL_MAX_REJECTIONS )); then
+              goal_mark_blocked "independent verification rejected ${GOAL_REJECTIONS} candidate completions; latest: ${GOAL_VERIFIER_REASON}"
+              AGENT_LAST_RESPONSE="Goal stopped after ${GOAL_REJECTIONS} verifier rejections. ${GOAL_VERIFIER_REASON}"
+              agent_emit error "$AGENT_LAST_RESPONSE"
+              agent_set_status "Goal blocked"
+              return 1
+            fi
+            if goal_budget_exhausted; then
+              GOAL_STATUS="budget_limited"
+              GOAL_BLOCK_REASON="goal token budget of ${GOAL_TOKEN_BUDGET} was reached"
+              (( $+functions[state_save_session] )) && state_save_session || true
+              agent_emit error "Goal paused at its token budget after verification rejection. Use /goal resume to continue."
+              agent_set_status "Goal budget"
+              return 1
+            fi
+            incomplete_retries=0
+            agent_loop_reset
+            continue
+          else
+            if (( request_status == 130 )); then
+              agent_add_message tool "finish verification stopped by user" finish
+              goal_pause "goal verification stopped by user" || true
+              agent_emit system "⏹ Goal verification stopped. Use /goal resume to continue."
+              agent_set_status "Goal paused"
+              return 130
+            fi
+            if (( request_status == 3 )); then
+              agent_add_message tool "finish verification paused at the goal token budget" finish
+              GOAL_STATUS="budget_limited"
+              GOAL_BLOCK_REASON="$GOAL_VERIFIER_REASON"
+              GOAL_UPDATED_AT=$EPOCHSECONDS
+              (( $+functions[state_save_session] )) && state_save_session || true
+              agent_emit error "Goal paused at its token budget during verification. Use /goal resume to continue."
+              agent_set_status "Goal budget"
+              return 1
+            fi
+            agent_add_message tool "finish verification failed: ${GOAL_VERIFIER_REASON}" finish
+            goal_mark_blocked "independent verifier failed: ${GOAL_VERIFIER_REASON}"
+            agent_emit error "Goal verification could not complete: ${GOAL_VERIFIER_REASON}"
+            agent_set_status "Goal blocked"
+            return 1
+          fi
+        fi
         agent_add_message tool "finish accepted (${AGENT_FINISH_STATUS})" finish
         agent_add_message assistant "$AGENT_FINISH_RESPONSE"
         AGENT_LAST_RESPONSE="$AGENT_FINISH_RESPONSE"
         agent_emit assistant "$AGENT_FINISH_RESPONSE" "$thinking"
-        [[ "$AGENT_FINISH_STATUS" == blocked ]] && agent_set_status "Blocked" || agent_set_status "Ready"
+        if (( goal_turn )) && [[ "$AGENT_FINISH_STATUS" == blocked ]]; then
+          goal_mark_blocked "$AGENT_FINISH_RESPONSE"
+          agent_set_status "Goal blocked"
+        else
+          [[ "$AGENT_FINISH_STATUS" == blocked ]] && agent_set_status "Blocked" || agent_set_status "Ready"
+        fi
         zcoder_debug finish "step=$step status=$AGENT_FINISH_STATUS response=${(qqq)AGENT_FINISH_RESPONSE}"
         return 0
       fi
@@ -1144,6 +1256,14 @@ _agent_run_turn() {
       agent_add_message tool "$result" finish
       agent_emit error "$result"
       zcoder_debug finish_rejected "step=$step error=${(qqq)AGENT_FINISH_ERROR} args=${(qqq)tool_args}"
+      if (( goal_turn )); then
+        (( invalid_finish_retries++ ))
+        if (( invalid_finish_retries > AGENT_INCOMPLETE_RETRY_LIMIT )); then
+          goal_mark_blocked "model repeatedly returned invalid finish arguments: ${AGENT_FINISH_ERROR}"
+          agent_set_status "Goal blocked"
+          return 1
+        fi
+      fi
       continue
     fi
 
@@ -1176,6 +1296,7 @@ _agent_run_turn() {
         agent_emit error "Loop guard rejected the repeated tool round without executing it. The model ignored its final recovery warning: ${AGENT_LOOP_REASON}."
         zcoder_debug loop_violation "step=$step request=${(qqq)request_signature} reason=${(qqq)AGENT_LOOP_REASON}"
         agent_set_status "Loop stopped"
+        (( goal_turn )) && goal_mark_blocked "loop guard rejected a repeated tool round: ${AGENT_LOOP_REASON}" || true
         return 1
       fi
       zcoder_debug loop_recovered "step=$step previous_reason=${(qqq)AGENT_LOOP_REASON} request=${(qqq)request_signature}"
@@ -1229,6 +1350,7 @@ _agent_run_turn() {
             AGENT_LOOP_REASON="apply_patch was rejected ${patch_failures} times without a successful correction"
             agent_emit error "Stopped after ${patch_failures} rejected patch attempts. Inspect the exact patch errors and current file before trying again in a new turn."
             agent_set_status "Patch stopped"
+            (( goal_turn )) && goal_mark_blocked "apply_patch was rejected ${patch_failures} times" || true
             return 1
           fi
         fi
