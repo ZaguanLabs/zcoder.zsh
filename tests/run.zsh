@@ -78,7 +78,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..889"
+print -r -- "1..939"
 
 input_reset
 input_layout 20 4
@@ -479,7 +479,9 @@ assert_contains "$REPLY" "short tool name 'find-symbol'" "MCP schemas teach mode
 mcp_prompt_block
 assert_contains "$REPLY" 'modern/find-symbol -> mcp__modern__find_symbol' "MCP prompt supplies an exact short-name routing map"
 assert_contains "$REPLY" "mandatory tool-selection rules" "MCP prompt makes required project routing mandatory"
-assert_contains "$REPLY" "On the first model turn of each user request" "MCP prompt requires designated orientation before built-ins"
+assert_contains "$REPLY" "applicable repository investigation" "MCP prompt scopes designated orientation to repository investigations"
+assert_contains "$REPLY" "mere mention of a repository" "MCP prompt does not treat repository nouns as investigation requests"
+assert_contains "$REPLY" "respond directly without calling an MCP tool" "MCP prompt preserves direct responses when no evidence is needed"
 tools_schema_json
 first_name_marker='"name":"'
 first_exposed_tool="${REPLY#*${first_name_marker}}"; first_exposed_tool="${first_exposed_tool%%\"*}"
@@ -488,6 +490,41 @@ assert_success "connected MCP tools precede generic built-ins" $?
 assert_contains "$REPLY" "only when project instructions do not designate an MCP navigation tool" "search schema defers to project-designated MCP navigation"
 agent_build_payload
 assert_contains "$REPLY" 'modern/find-symbol -> mcp__modern__find_symbol' "regular Ollama payloads include connected MCP routing"
+saved_tool_phase="$AGENT_TOOL_PHASE"
+AGENT_TOOL_PHASE=routing
+tools_schema_json
+assert_eq "[]" "$REPLY" "routing phase exposes no executable tool schema"
+assert_not_contains "$REPLY" '"name":"list_files"' "routing phase withholds workspace tools"
+assert_not_contains "$REPLY" '"name":"run_command"' "routing phase withholds command execution"
+assert_not_contains "$REPLY" '"name":"mcp__modern__find_symbol"' "routing phase withholds MCP tools"
+assert_not_contains "$REPLY" '"name":"finish"' "ordinary routing completes through plain assistant content"
+agent_build_payload
+assert_contains "$REPLY" '"format":{"type":"object"' "routing payload requests a structured decision"
+assert_contains "$REPLY" '"enum":["respond","tools"]' "routing schema uses a binary decision"
+assert_contains "$REPLY" '"think":false' "routing decision disables model thinking"
+assert_not_contains "$REPLY" '"tools":' "routing payload omits the native tool channel"
+agent_resolve_system_prompt
+assert_contains "$REPLY" "begins in a non-thinking routing phase" "routing payload uses the short phase-specific prompt"
+assert_contains "$REPLY" "mention of a repository" "routing prompt rejects noun-triggered discovery"
+assert_contains "$REPLY" "literal requested outcome" "routing prompt rejects invented research subtasks"
+assert_contains "$REPLY" "If both modes could satisfy the request, choose respond" "routing prompt resolves ambiguous optional discovery without tools"
+assert_not_contains "$REPLY" 'modern/find-symbol -> mcp__modern__find_symbol' "routing prompt withholds the MCP function map"
+agent_parse_route '{"mode":"respond","response":"Hello","reason":""}'
+assert_success "valid direct routing decisions parse" $?
+assert_eq "Hello" "$AGENT_ROUTE_RESPONSE" "direct routing preserves the user-facing response"
+agent_parse_route '{"mode":"tools","response":"","reason":"Current README contents are required."}'
+assert_success "valid tool routing decisions parse" $?
+assert_eq "tools" "$AGENT_ROUTE_MODE" "tool routing preserves the binary mode"
+agent_parse_route '{"mode":"maybe","response":"","reason":"uncertain"}'
+assert_failure "unknown routing modes are rejected" $?
+tool_dispatch run_command '{"command":"print should-not-run"}'
+assert_failure "dispatcher rejects a hidden capability" $?
+assert_contains "$TOOL_RESULT" "not enabled" "hidden-tool rejection identifies the exposure boundary"
+AGENT_TOOL_PHASE=full
+tools_schema_json
+assert_contains "$REPLY" '"name":"mcp__modern__find_symbol"' "full execution restores installed MCP tools"
+assert_contains "$REPLY" '"name":"list_files"' "full execution restores workspace tools"
+AGENT_TOOL_PHASE="$saved_tool_phase"
 saved_agent_messages=("${AGENT_MESSAGES[@]}")
 saved_agent_user_messages=("${AGENT_USER_MESSAGES[@]}")
 AGENT_MESSAGES=()
@@ -1478,6 +1515,13 @@ assert_failure "unknown prompt profiles are rejected" $?
 assert_eq "sysadmin" "$ZCODER_PROFILE" "invalid profile selection preserves the active profile"
 agent_select_profile coding
 assert_success "coding prompt profile is accepted" $?
+agent_select_tool_exposure staged
+assert_success "staged tool exposure is accepted" $?
+assert_eq "staged" "$ZCODER_TOOL_EXPOSURE" "tool exposure selection updates agent state"
+agent_select_tool_exposure invalid
+assert_failure "unknown tool exposure modes are rejected" $?
+assert_eq "staged" "$ZCODER_TOOL_EXPOSURE" "invalid tool exposure preserves the active mode"
+agent_select_tool_exposure full
 agent_default_system_prompt
 assert_contains "$REPLY" "Project instructions are mandatory requirements for the entire task" "system prompt makes project instructions authoritative"
 assert_contains "$REPLY" "MCP navigation tool returns a relevant source range" "system prompt routes MCP locations into bounded reads"
@@ -1485,7 +1529,11 @@ assert_contains "$REPLY" "Use search first" "system prompt prefers indexed searc
 assert_contains "$REPLY" "Use read_file_range" "system prompt directs large-file inspection to ranges"
 assert_contains "$REPLY" "rg --files, rg -n, grep, sed -n, or awk" "system prompt names shell text-processing fallbacks"
 assert_contains "$REPLY" "OBSERVE → DECIDE → ACT → CHECK" "system prompt supplies a deterministic operating loop"
+assert_contains "$REPLY" "ACT does not necessarily mean calling a tool" "system prompt separates reasoning actions from tool calls"
 assert_contains "$REPLY" "reason privately" "system prompt assigns planning to private reasoning"
+assert_contains "$REPLY" "answer directly without tools" "system prompt routes self-contained requests to direct responses"
+assert_contains "$REPLY" "does not by itself require inspecting it" "system prompt does not infer discovery from a project mention"
+assert_contains "$REPLY" "Do not turn a simple response into a repository investigation" "system prompt guards against disproportionate discovery"
 assert_contains "$REPLY" "Do not emit this private plan as a tool-free preamble" "system prompt prevents visible plan-only turns"
 assert_contains "$REPLY" "analyze the exact error" "system prompt requires evidence-based failure recovery"
 assert_contains "$REPLY" "Never repeat an unchanged failed call" "system prompt prevents unchanged retries"
@@ -1522,6 +1570,12 @@ assert_contains "$warmup_payload" '"think":false' "warm-up disables model reason
 assert_contains "$warmup_payload" '"num_predict":8' "warm-up bounds readiness generation"
 assert_not_contains "$warmup_payload" "WARMUP HISTORY SENTINEL" "warm-up excludes saved conversation history"
 assert_eq "WARMUP USER SENTINEL" "${AGENT_USER_MESSAGES[1]}" "building warm-up leaves the user-message ledger unchanged"
+ZCODER_TOOL_EXPOSURE=staged
+agent_build_warmup_payload
+assert_contains "$REPLY" '"enum":["respond","tools"]' "staged warm-up caches the routing schema"
+assert_not_contains "$REPLY" '"tools":' "staged warm-up does not preload hidden work schemas"
+assert_contains "$REPLY" "begins in a non-thinking routing phase" "staged warm-up caches the routing prompt"
+ZCODER_TOOL_EXPOSURE=full
 
 saved_warmup_payload_builder="${functions[agent_build_warmup_payload]}"
 saved_warmup_status_setter="${functions[agent_set_status]}"
@@ -1857,6 +1911,72 @@ functions[_test_real_agent_set_status]="${functions[agent_set_status]}"
 functions[_test_real_ui_refresh_all]="${functions[ui_refresh_all]}"
 agent_set_status() { return 0; }
 ui_refresh_all() { return 0; }
+
+typeset -gi MOCK_STAGED_TURNS=0 MOCK_STAGED_DISPATCHES=0
+typeset -g MOCK_STAGED_FIRST_PAYLOAD="" MOCK_STAGED_SECOND_PAYLOAD=""
+agent_ollama_chat() {
+  (( MOCK_STAGED_TURNS++ ))
+  MOCK_STAGED_FIRST_PAYLOAD="$1"
+  HTTP_BODY='{"message":{"content":"{\"mode\":\"respond\",\"response\":\"Hello, zcoder.zsh visitors!\",\"reason\":\"\"}"},"prompt_eval_count":70,"eval_count":8}'
+  HTTP_ERROR=""
+  return 0
+}
+tool_dispatch() {
+  (( MOCK_STAGED_DISPATCHES++ ))
+  TOOL_RESULT="unexpected staged dispatch"
+  TOOL_RESULT_OK=1
+  return 0
+}
+ZCODER_TOOL_EXPOSURE=staged
+ZCODER_CONTEXT_WINDOW=32768
+AGENT_CONTEXT_MODEL=""
+agent_reset
+UI_ACTIVE=0
+agent_user_turn "Say hello to visitors of the zcoder.zsh repository." >/dev/null 2>&1
+staged_direct_status=$?
+assert_success "staged direct response completes" "$staged_direct_status"
+assert_eq "1" "$MOCK_STAGED_TURNS" "staged direct response uses one model turn"
+assert_eq "0" "$MOCK_STAGED_DISPATCHES" "staged direct response executes no work tool"
+assert_contains "$MOCK_STAGED_FIRST_PAYLOAD" '"enum":["respond","tools"]' "staged first request exposes structured routing"
+assert_not_contains "$MOCK_STAGED_FIRST_PAYLOAD" '"name":"list_files"' "staged first request withholds workspace tools"
+assert_eq "Hello, zcoder.zsh visitors!" "$AGENT_LAST_RESPONSE" "staged direct response is returned unchanged"
+
+MOCK_STAGED_TURNS=0
+MOCK_STAGED_DISPATCHES=0
+MOCK_STAGED_FIRST_PAYLOAD=""
+MOCK_STAGED_SECOND_PAYLOAD=""
+agent_ollama_chat() {
+  (( MOCK_STAGED_TURNS++ ))
+  if (( MOCK_STAGED_TURNS == 1 )); then
+    MOCK_STAGED_FIRST_PAYLOAD="$1"
+    HTTP_BODY='{"message":{"content":"{\"mode\":\"tools\",\"response\":\"\",\"reason\":\"The requested file contents are not supplied.\"}"},"prompt_eval_count":75,"eval_count":12}'
+  elif (( MOCK_STAGED_TURNS == 2 )); then
+    MOCK_STAGED_SECOND_PAYLOAD="$1"
+    HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"read_file","arguments":{"path":"note.txt"}}}]},"prompt_eval_count":90,"eval_count":7}'
+  else
+    HTTP_BODY='{"message":{"content":"The current note says staged evidence."},"prompt_eval_count":105,"eval_count":9}'
+  fi
+  HTTP_ERROR=""
+  return 0
+}
+tool_dispatch() {
+  (( MOCK_STAGED_DISPATCHES++ ))
+  TOOL_RESULT="staged evidence"
+  TOOL_RESULT_OK=1
+  return 0
+}
+agent_reset
+agent_user_turn "What does note.txt currently say?" >/dev/null 2>&1
+staged_workspace_status=$?
+assert_success "staged workspace request completes after routing" "$staged_workspace_status"
+assert_eq "3" "$MOCK_STAGED_TURNS" "structured routing adds one bounded model turn"
+assert_eq "1" "$MOCK_STAGED_DISPATCHES" "the execution-phase workspace tool runs once"
+assert_not_contains "$MOCK_STAGED_FIRST_PAYLOAD" '"name":"read_file"' "workspace tool is absent before admission"
+assert_contains "$MOCK_STAGED_SECOND_PAYLOAD" '"name":"read_file"' "workspace tool appears after admission"
+assert_contains "$MOCK_STAGED_SECOND_PAYLOAD" '"name":"run_command"' "full execution tools appear only after admission"
+assert_contains "${(j:\n:)AGENT_MESSAGES}" "Tool use was admitted" "routing transition is recorded in model history"
+assert_eq "The current note says staged evidence." "$AGENT_LAST_RESPONSE" "staged execution returns the evidence-based response"
+ZCODER_TOOL_EXPOSURE=full
 
 typeset -gi MOCK_REASONING_TURNS=0 MOCK_REASONING_DISPATCHES=0
 typeset -g MOCK_REASONING_SECOND_PAYLOAD=""

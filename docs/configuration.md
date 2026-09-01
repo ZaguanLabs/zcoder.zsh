@@ -16,12 +16,39 @@ Run `./zcoder.zsh --help` for the complete CLI reference.
 | `ZCODER_COMMAND_POLICY` | `ask` | `ask`, `allow`, or `deny` |
 | `ZCODER_THINK` | `true` | Request model reasoning |
 | `ZCODER_WARMUP` | `true` | Warm the selected model and stable prompt context before interactive work |
+| `ZCODER_TOOL_EXPOSURE` | `full` | `full` exposes all tools immediately; experimental `staged` routes before exposing tools |
 | `ZCODER_HTTP_READ_TIMEOUT` | 900 | Idle seconds allowed while waiting for Ollama response data |
 | `ZCODER_MAX_TOOL_OUTPUT` | 32768 | Maximum returned tool-output characters |
 | `ZCODER_MAX_OUTPUT_TOKENS` | 8192 | Maximum tokens requested from a normal model turn |
 | `ZCODER_HOME` | `${XDG_CONFIG_HOME:-$HOME/.config}/zcoder` | User configuration and sessions |
 
 Command-line values take precedence where an equivalent flag exists.
+
+## Tool exposure
+
+The default `full` mode preserves the single-phase agent loop. Experimental
+`staged` mode starts each ordinary user turn with a short, non-thinking,
+structured routing request. This request has no native `tools` field and must
+choose between two outcomes: return a complete response, or admit tool use
+because the outcome depends on unobserved state or an external action.
+
+A direct response ends the turn without entering the agent loop. A tool
+decision enters the existing full tool loop for the rest of that turn. The
+router itself performs no external operation, and the dispatcher rejects a
+native tool call emitted during routing. Shell command approval, workspace
+confinement, and all existing safety checks are unchanged.
+
+Enable staged exposure for one run with:
+
+```sh
+./zcoder.zsh --tool-exposure staged
+```
+
+or set `ZCODER_TOOL_EXPOSURE=staged`. Goal workers and relayed turns continue
+to receive full tool exposure because they already represent explicit agentic
+work. The binary boundary is intentional: asking a small model to select a
+fine-grained capability set made tool vocabulary itself act as a discovery
+cue, while the tool-free decision keeps routing separate from execution.
 
 ## Local agent relay
 

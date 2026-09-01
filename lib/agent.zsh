@@ -24,7 +24,13 @@ typeset -g ZCODER_MODEL="${ZCODER_MODEL:-qwen3-coder:latest}"
 typeset -g ZCODER_THINK="${ZCODER_THINK:-true}"
 typeset -g ZCODER_PROFILE="${ZCODER_PROFILE:-coding}"
 typeset -g ZCODER_WARMUP="${ZCODER_WARMUP:-true}"
+typeset -g ZCODER_TOOL_EXPOSURE="${ZCODER_TOOL_EXPOSURE:-full}"
 typeset -gi ZCODER_MAX_OUTPUT_TOKENS="${ZCODER_MAX_OUTPUT_TOKENS:-8192}"
+typeset -g AGENT_TOOL_PHASE="full"
+typeset -g AGENT_ROUTE_MODE=""
+typeset -g AGENT_ROUTE_RESPONSE=""
+typeset -g AGENT_ROUTE_REASON=""
+typeset -g AGENT_ROUTE_ERROR=""
 typeset -gi AGENT_WARMUP_ACTIVE=0
 typeset -g AGENT_WARMUP_MODEL=""
 typeset -g AGENT_WARMUP_HOST=""
@@ -40,6 +46,7 @@ typeset -gi AGENT_LFM_BALANCED_CALL_OBJECTS=0
 (( AGENT_TRANSPORT_RETRY_LIMIT >= 0 )) || AGENT_TRANSPORT_RETRY_LIMIT=1
 (( AGENT_REQUIRE_FINISH_TOOL == 0 || AGENT_REQUIRE_FINISH_TOOL == 1 )) || AGENT_REQUIRE_FINISH_TOOL=0
 (( ZCODER_MAX_OUTPUT_TOKENS >= 256 )) || ZCODER_MAX_OUTPUT_TOKENS=8192
+[[ "$ZCODER_TOOL_EXPOSURE" == full || "$ZCODER_TOOL_EXPOSURE" == staged ]] || ZCODER_TOOL_EXPOSURE=full
 
 agent_select_profile() {
   case "$1" in
@@ -55,6 +62,80 @@ agent_select_profile() {
   esac
 }
 
+agent_select_tool_exposure() {
+  case "$1" in
+    full|staged)
+      ZCODER_TOOL_EXPOSURE="$1"
+      REPLY=""
+      return 0
+      ;;
+    *)
+      REPLY="tool exposure must be full or staged"
+      return 1
+      ;;
+  esac
+}
+
+agent_tool_is_admitted() {
+  case "${AGENT_TOOL_PHASE:-full}" in
+    full) return 0 ;;
+    routing) return 1 ;;
+    *) return 1 ;;
+  esac
+}
+
+agent_route_schema_json() {
+  REPLY='{"type":"object","properties":{"mode":{"type":"string","enum":["respond","tools"]},"response":{"type":"string"},"reason":{"type":"string"}},"required":["mode","response","reason"]}'
+}
+
+agent_parse_route() {
+  local content="$1" mode="" response="" reason=""
+  AGENT_ROUTE_MODE=""
+  AGENT_ROUTE_RESPONSE=""
+  AGENT_ROUTE_REASON=""
+  AGENT_ROUTE_ERROR=""
+  if ! json_parse_flat_object "$content"; then
+    AGENT_ROUTE_ERROR="invalid structured routing response: ${JSON_ERROR:-parse error}"
+    return 1
+  fi
+  mode="${JSON_OBJECT[mode]:-}"
+  response="${JSON_OBJECT[response]:-}"
+  reason="${JSON_OBJECT[reason]:-}"
+  case "$mode" in
+    respond)
+      [[ -n "$response" ]] || {
+        AGENT_ROUTE_ERROR="routing response selected respond but omitted the user-facing response"
+        return 1
+      }
+      ;;
+    tools)
+      [[ -n "$reason" ]] || {
+        AGENT_ROUTE_ERROR="routing response selected tools but omitted the required reason"
+        return 1
+      }
+      ;;
+    *)
+      AGENT_ROUTE_ERROR="routing mode must be respond or tools"
+      return 1
+      ;;
+  esac
+  AGENT_ROUTE_MODE="$mode"
+  AGENT_ROUTE_RESPONSE="$response"
+  AGENT_ROUTE_REASON="$reason"
+  return 0
+}
+
+agent_routing_system_prompt() {
+  local profile_note=""
+  [[ "$ZCODER_PROFILE" == sysadmin ]] && profile_note=$'\nDo not infer permission to inspect or change the host. Host observation or action requires entering the tool phase and remains subject to exact command approval.'
+  REPLY="You are zcoder, an AI coding agent operating in this workspace: ${ZCODER_WORKSPACE:A}.
+This request begins in a non-thinking routing phase with no executable tools.
+Classify the user's literal requested outcome. Do not invent a more ambitious or more personalized subtask.
+Choose respond when the literal outcome can be completed from the message and already supplied context. Greetings, drafting, rewriting supplied text, casual conversation, and general explanations use respond. An audience or subject such as visitors of a named repository is context for the response, not a request to inspect that repository.
+Select tools only when the literal outcome genuinely requires observing or changing state that is not already supplied. A mention of a repository, project, file, command, library, website, or product does not by itself justify tools. Do not select tools merely to improve, verify, personalize, or add background to an otherwise complete answer. Questions that explicitly ask about current workspace contents, or requests to change, fetch, inspect, test, or execute something, do require tools. If both modes could satisfy the request, choose respond.
+When mode is respond, put the complete user-facing answer in response. When mode is tools, leave response empty and identify the specific missing state or required action in reason. Never claim state was inspected or changed unless a later tool result proves it.${profile_note}"
+}
+
 agent_completion_instructions() {
   local -i strict_completion=$AGENT_REQUIRE_FINISH_TOOL
   (( $+functions[goal_is_running] )) && goal_is_running && strict_completion=1
@@ -66,7 +147,7 @@ agent_completion_instructions() {
 }
 
 agent_operating_loop_instructions() {
-  REPLY=$'Reasoning and execution protocol:\nFor each user request, follow this cycle: OBSERVE → DECIDE → ACT → CHECK.\nBefore the first action, reason privately:\n- Define the requested outcome and applicable constraints.\n- Identify the evidence needed before modifying anything.\n- Choose the smallest useful next action and how its result will be verified.\nDo not emit this private plan as a tool-free preamble.\nExecution rules:\n- Inspect only until enough evidence exists, then act.\n- After each tool result, update the plan from the observed evidence. Re-plan only when a result is unexpected, incomplete, or unsuccessful.\n- On failure, analyze the exact error before choosing the next action. Never repeat an unchanged failed call or bypass a failed focused operation with a broader operation.\n- You may return multiple tool calls in one response. zcoder serializes them in emitted order and applies normal validation, safety, and approval checks to every tool. Put a prerequisite before the call that depends on it. Do not call finish alongside another tool.\n- After changing code or configuration, run the smallest meaningful syntax, test, build, or read-back verification. Broaden verification when the change carries wider risk.\n- Never claim verification that was not actually observed.\n- Before completing, confirm that the requested outcome was addressed, relevant verification passed, and any remaining limitation is stated.'
+  REPLY=$'Reasoning and execution protocol:\nFor each user request, follow this cycle: OBSERVE → DECIDE → ACT → CHECK. This cycle is a reasoning discipline; ACT does not necessarily mean calling a tool.\nBefore the first action, reason privately:\n- Define the requested outcome and applicable constraints.\n- Decide whether the outcome materially depends on current workspace or external state.\n- Identify only the evidence genuinely needed before modifying anything.\n- Choose the smallest useful next action and how its result will be verified.\nDo not emit this private plan as a tool-free preamble.\nIntent and evidence gate:\n- If the complete answer can be produced from the user request and already supplied context, answer directly without tools. Greetings, casual conversation, drafting, rewriting supplied text, and general explanations normally need no discovery.\n- A mention of a project, repository, file, command, library, or product does not by itself require inspecting it. Use tools only when the requested outcome depends on facts not already in context.\n- If missing information would materially change the result, obtain only that information with the narrowest applicable tool or ask one focused question. Do not turn a simple response into a repository investigation.\nExecution rules when tools are needed:\n- Inspect only until enough evidence exists, then act.\n- After each tool result, update the plan from the observed evidence. Re-plan only when a result is unexpected, incomplete, or unsuccessful.\n- On failure, analyze the exact error before choosing the next action. Never repeat an unchanged failed call or bypass a failed focused operation with a broader operation.\n- You may return multiple tool calls in one response. zcoder serializes them in emitted order and applies normal validation, safety, and approval checks to every tool. Put a prerequisite before the call that depends on it. Do not call finish alongside another tool.\n- After changing code or configuration, run the smallest meaningful syntax, test, build, or read-back verification. Broaden verification when the change carries wider risk.\n- Never claim verification that was not actually observed.\n- Before completing, confirm that the requested outcome was addressed, relevant verification passed, and any remaining limitation is stated.'
 }
 
 agent_patch_instructions() {
@@ -82,10 +163,10 @@ agent_coding_system_prompt() {
   agent_patch_instructions
   patch_instructions="$REPLY"
   REPLY="You are zcoder, an AI coding agent operating in this workspace: ${ZCODER_WORKSPACE:A}.
-Use the supplied tools to inspect the project, make requested changes, and verify your work.
+When the requested outcome depends on current project state, use the supplied tools to inspect the project, make requested changes, and verify your work. Otherwise respond directly from the information already available.
 ${operating_instructions}
 Project instructions are mandatory requirements for the entire task. They override conflicting default workflow guidance below, but cannot relax workspace, approval, or safety boundaries. If they require an installed MCP server or one of its short tool names, use the mapped mcp__SERVER__TOOL function as the primary route. Otherwise choose the most task-specific available tool and do not call tools speculatively.
-Minimize data collection and context use. Do not begin by reading whole source files or recursively listing the entire project. Follow this inspection order:
+When the task requires workspace evidence, minimize data collection and context use. Do not begin by reading whole source files or recursively listing the entire project. Follow this inspection order:
 1. Use search first for literals, regular expressions, unmodeled text, or when no project-designated MCP navigation tool applies. It is backed by ripgrep.
    Once search returns a usable location, read that range; do not repeat discovery with minor query variations unless the result is ambiguous.
 2. Use list_files only when the project shape is unknown, with the narrowest useful path and a modest max_entries value.
@@ -417,23 +498,36 @@ agent_resolve_system_prompt() {
     goal_verifier_system_prompt
     return
   fi
-  local prompt="$AGENT_SYSTEM_PROMPT"
-  [[ -n "$prompt" ]] || { agent_default_system_prompt; prompt="$REPLY"; }
-  agent_lfm_prompt_block
-  prompt+="$REPLY"
+  local prompt="$AGENT_SYSTEM_PROMPT" routing_instructions=""
+  if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
+    agent_routing_system_prompt
+    routing_instructions="$REPLY"
+    if [[ -n "$prompt" ]]; then
+      prompt+=$'\n\n<tool_routing>\n'"${routing_instructions}"$'\n</tool_routing>'
+    else
+      prompt="$routing_instructions"
+    fi
+  else
+    [[ -n "$prompt" ]] || { agent_default_system_prompt; prompt="$REPLY"; }
+    agent_lfm_prompt_block
+    prompt+="$REPLY"
+  fi
   if (( $+functions[instructions_prompt_block] )); then
     instructions_prompt_block
     prompt+="$REPLY"
   fi
-  if (( $+functions[skills_prompt_block] )); then
+  if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]] && (( $+functions[skills_active_prompt_block] )); then
+    skills_active_prompt_block
+    prompt+="$REPLY"
+  elif (( $+functions[skills_prompt_block] )); then
     skills_prompt_block
     prompt+="$REPLY"
   fi
-  if (( $+functions[mcp_prompt_block] )); then
+  if (( $+functions[mcp_prompt_block] )) && [[ "${AGENT_TOOL_PHASE:-full}" == full ]]; then
     mcp_prompt_block
     prompt+="$REPLY"
   fi
-  if (( $+functions[relay_prompt_block] )); then
+  if (( $+functions[relay_prompt_block] )) && [[ "${AGENT_TOOL_PHASE:-full}" == full ]]; then
     relay_prompt_block
     prompt+="$REPLY"
   fi
@@ -454,7 +548,7 @@ agent_resolve_system_prompt() {
 }
 
 agent_build_payload() {
-  local model_json="" system_json="" messages="[" history="" think="true" tools="" options="" prompt=""
+  local model_json="" system_json="" messages="[" history="" think="true" tools="" options="" prompt="" format=""
   # MCP discovery must precede prompt assembly. Besides producing Ollama's
   # schemas, it gives small models an exact short-name -> function-name map.
   tools_schema_json
@@ -474,6 +568,12 @@ agent_build_payload() {
   messages+="]"
   agent_context_options_json
   options="$REPLY"
+  if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
+    agent_route_schema_json
+    format="$REPLY"
+    REPLY="{\"model\":${model_json},\"messages\":${messages},\"format\":${format},\"stream\":false,\"think\":false,\"options\":{${options}\"num_predict\":${ZCODER_MAX_OUTPUT_TOKENS}}}"
+    return 0
+  fi
   [[ "$ZCODER_THINK" == true || "$ZCODER_THINK" == false ]] || think="false"
   [[ "$ZCODER_THINK" == false ]] && think="false"
   REPLY="{\"model\":${model_json},\"messages\":${messages},\"tools\":${tools},\"stream\":false,\"think\":${think},\"options\":{${options}\"num_predict\":${ZCODER_MAX_OUTPUT_TOKENS}}}"
@@ -499,22 +599,36 @@ agent_context_bill() {
   local -i base_tokens=0 instruction_tokens=0 skill_tokens=0 mcp_tokens=0
   local -i compacted_tokens=0 tool_schema_tokens=0 user_tokens=0 assistant_tokens=0 tool_result_tokens=0
 
-  if [[ -n "$AGENT_SYSTEM_PROMPT" ]]; then
+  if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
+    agent_routing_system_prompt; base="$REPLY"
+  elif [[ -n "$AGENT_SYSTEM_PROMPT" ]]; then
     base="$AGENT_SYSTEM_PROMPT"
   else
     agent_default_system_prompt; base="$REPLY"
   fi
-  agent_lfm_prompt_block; base+="$REPLY"
+  if [[ "${AGENT_TOOL_PHASE:-full}" != routing ]]; then
+    agent_lfm_prompt_block; base+="$REPLY"
+  fi
   if (( $+functions[instructions_prompt_block] )); then
     instructions_prompt_block; instructions="$REPLY"
     if (( $+functions[instructions_completion_block] )); then
       instructions_completion_block; instructions+="$REPLY"
     fi
   fi
-  (( $+functions[skills_prompt_block] )) && { skills_prompt_block; skills="$REPLY"; }
-  (( $+functions[mcp_prompt_block] )) && { mcp_prompt_block; mcp="$REPLY"; }
+  if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]] && (( $+functions[skills_active_prompt_block] )); then
+    skills_active_prompt_block; skills="$REPLY"
+  elif (( $+functions[skills_prompt_block] )); then
+    skills_prompt_block; skills="$REPLY"
+  fi
+  if (( $+functions[mcp_prompt_block] )) && [[ "${AGENT_TOOL_PHASE:-full}" == full ]]; then
+    mcp_prompt_block; mcp="$REPLY"
+  fi
   (( $+functions[agent_compaction_prompt_block] )) && { agent_compaction_prompt_block; compacted="$REPLY"; }
-  tools_schema_json; tools="$REPLY"
+  if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
+    agent_route_schema_json; tools="$REPLY"
+  else
+    tools_schema_json; tools="$REPLY"
+  fi
 
   agent_context_component_tokens "$base"; base_tokens=$REPLY
   agent_context_component_tokens "$instructions"; instruction_tokens=$REPLY
@@ -538,7 +652,9 @@ agent_context_bill() {
 # Ollama an opportunity to cache the stable system/tool prefix. The synthetic
 # exchange is never added to AGENT_MESSAGES or persistent session state.
 agent_build_warmup_payload() {
-  local model_json="" system_json="" user_json="" tools="" options="" prompt=""
+  local model_json="" system_json="" user_json="" tools="" options="" prompt="" format=""
+  local AGENT_TOOL_PHASE="full"
+  [[ "$ZCODER_TOOL_EXPOSURE" == staged ]] && AGENT_TOOL_PHASE="routing"
   agent_context_configure
   tools_schema_json
   tools="$REPLY"
@@ -546,9 +662,19 @@ agent_build_warmup_payload() {
   prompt="$REPLY"
   json_quote "$ZCODER_MODEL"; model_json="$REPLY"
   json_quote "$prompt"; system_json="$REPLY"
-  json_quote "Initialization check only. Do not call tools. After reading all instructions and context, respond with exactly Ready and nothing else."; user_json="$REPLY"
+  if [[ "$AGENT_TOOL_PHASE" == routing ]]; then
+    json_quote "Initialization check only. Return the routing object with mode respond, response Ready, and an empty reason."; user_json="$REPLY"
+  else
+    json_quote "Initialization check only. Do not call tools. After reading all instructions and context, respond with exactly Ready and nothing else."; user_json="$REPLY"
+  fi
   agent_context_options_json
   options="$REPLY"
+  if [[ "$AGENT_TOOL_PHASE" == routing ]]; then
+    agent_route_schema_json
+    format="$REPLY"
+    REPLY="{\"model\":${model_json},\"messages\":[{\"role\":\"system\",\"content\":${system_json}},{\"role\":\"user\",\"content\":${user_json}}],\"format\":${format},\"stream\":false,\"think\":false,\"options\":{${options}\"num_predict\":64,\"temperature\":0}}"
+    return 0
+  fi
   REPLY="{\"model\":${model_json},\"messages\":[{\"role\":\"system\",\"content\":${system_json}},{\"role\":\"user\",\"content\":${user_json}}],\"tools\":${tools},\"stream\":false,\"think\":false,\"options\":{${options}\"num_predict\":8,\"temperature\":0}}"
 }
 
@@ -961,12 +1087,14 @@ _agent_run_turn() {
   local display_role="$turn_origin"
   local tool_name="" tool_args="" result="" summary="" display_result=""
   local request_signature="" outcome_signature="" loop_notice="" continuation_notice=""
+  local AGENT_TOOL_PHASE="full"
   local -a call_names=() call_args=()
   local -i step i request_status prepare_status incomplete_retries=0 invalid_finish_retries=0 transport_retries=0 needs_continuation=0 lfm_command_plan=0 lfm_tool_refusal=0 lfm_path_conclusion=0 lfm_plan_only=0 loop_cycle=0 loop_count=0 patch_failures=0 patch_failure_limit=0 goal_turn=0
   local -i AGENT_REQUIRE_FINISH_TOOL=$AGENT_REQUIRE_FINISH_TOOL
 
   [[ "$turn_origin" == goal || "$turn_origin" == goal_resume ]] && goal_turn=1
   (( goal_turn )) && AGENT_REQUIRE_FINISH_TOOL=1
+  [[ "$ZCODER_TOOL_EXPOSURE" == staged && "$turn_origin" == user && goal_turn -eq 0 ]] && AGENT_TOOL_PHASE="routing"
 
   (( AGENT_WARMUP_ACTIVE )) && agent_warmup_cancel "${turn_origin} prompt submitted"
   agent_patch_failure_limit
@@ -1093,6 +1221,38 @@ _agent_run_turn() {
     content="$AGENT_NORMALIZED_CONTENT"
     thinking="$AGENT_NORMALIZED_THINKING"
     zcoder_debug response_parsed "step=$step content=${(qqq)content} thinking_chars=${#thinking} tool_calls=${#call_names} prompt_tokens=$JSON_RESPONSE_PROMPT_TOKENS output_tokens=$JSON_RESPONSE_OUTPUT_TOKENS"
+
+    if [[ "$AGENT_TOOL_PHASE" == routing ]]; then
+      AGENT_ROUTE_ERROR=""
+      if (( ${#call_names} == 0 )) && agent_parse_route "$content"; then
+        if [[ "$AGENT_ROUTE_MODE" == respond ]]; then
+          agent_add_assistant_message "$AGENT_ROUTE_RESPONSE" "" "[]"
+          AGENT_LAST_RESPONSE="$AGENT_ROUTE_RESPONSE"
+          agent_emit assistant "$AGENT_ROUTE_RESPONSE"
+          agent_set_status "Ready"
+          zcoder_debug routing_complete "step=$step response=${(qqq)AGENT_ROUTE_RESPONSE}"
+          return 0
+        fi
+        AGENT_TOOL_PHASE="full"
+        agent_add_context_message $'<tool_routing>\nTool use was admitted for this turn because: '"${AGENT_ROUTE_REASON}"$'\nContinue the original request with the available tools.\n</tool_routing>'
+        agent_emit system "◇ Tools enabled for this turn."
+        zcoder_debug routing_admitted "step=$step reason=${(qqq)AGENT_ROUTE_REASON}"
+        incomplete_retries=0
+        continue
+      fi
+      (( ${#call_names} > 0 )) && AGENT_ROUTE_ERROR="routing response emitted a native tool call even though no tools were available"
+      if (( incomplete_retries < AGENT_INCOMPLETE_RETRY_LIMIT )); then
+        (( incomplete_retries++ ))
+        agent_add_context_message "The routing response was rejected: ${AGENT_ROUTE_ERROR:-invalid structured response}. Return only the required structured routing object with mode respond or tools."
+        agent_emit system "↻ Model returned an invalid routing decision; retrying (${incomplete_retries}/${AGENT_INCOMPLETE_RETRY_LIMIT})."
+        zcoder_debug routing_rejected "step=$step retry=$incomplete_retries error=${(qqq)AGENT_ROUTE_ERROR}"
+        continue
+      fi
+      agent_emit error "The model did not return a valid routing decision after ${AGENT_INCOMPLETE_RETRY_LIMIT} recovery attempt(s): ${AGENT_ROUTE_ERROR:-invalid structured response}"
+      agent_set_status "Incomplete"
+      return 1
+    fi
+
     agent_add_assistant_message "$content" "$thinking" "$calls_json"
 
     if (( goal_turn )) && goal_budget_exhausted && ! { (( ${#call_names} == 1 )) && [[ "${call_names[1]}" == finish ]]; }; then

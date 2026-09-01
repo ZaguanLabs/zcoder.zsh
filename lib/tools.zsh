@@ -17,7 +17,11 @@ tools_schema_json() {
     goal_verifier_tools_schema_json
     return
   fi
-  local output='[' mcp_schemas="" patch_contract="" patch_description="" patch_argument_description=""
+  local output='[' comma="" mcp_schemas="" patch_contract="" patch_description="" patch_argument_description=""
+  if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
+    REPLY="[]"
+    return 0
+  fi
   _tool_patch_contract
   patch_contract="$REPLY"
   json_quote $'Apply a focused workspace edit using a raw standard unified diff.\n'"${patch_contract}"$'\nIf rejected, re-read the exact target lines and retry apply_patch. write_file remains unavailable until the corrected patch succeeds or a new user request begins.'
@@ -30,9 +34,12 @@ tools_schema_json() {
   if (( $+functions[mcp_tools_schema_json] && ${#MCP_NAMES} > 0 )); then
     mcp_tools_schema_json
     mcp_schemas="$REPLY"
-    [[ -n "$mcp_schemas" ]] && output+="${mcp_schemas},"
+    if [[ -n "$mcp_schemas" ]]; then
+      output+="$mcp_schemas"
+      comma=,
+    fi
   fi
-  output+='
+  output+="${comma}"'
 {"type":"function","function":{"name":"list_files","description":"List files and directories below a workspace path while honoring .gitignore even outside a Git repository and excluding common dependency/build trees. Use a narrow path and modest max_entries only when project structure is unknown.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Narrow workspace-relative directory; defaults to ."},"max_entries":{"type":"integer","description":"Maximum entries; prefer a small limit; defaults to 100"}}}}},
 {"type":"function","function":{"name":"read_file","description":"Read a complete UTF-8 text file. Expensive for context: use only for clearly small files or when every line is required. Do not use when search, MCP navigation, or project instructions already supplied a relevant source range; use read_file_range.","parameters":{"type":"object","required":["path"],"properties":{"path":{"type":"string","description":"Workspace-relative path to a small file whose complete contents are needed"}}}}},
 {"type":"function","function":{"name":"read_file_range","description":"Read an inclusive line range. This is the preferred file-reading tool after search or MCP navigation locates the relevant section; normally request at most 200 lines.","parameters":{"type":"object","required":["path","start_line","end_line"],"properties":{"path":{"type":"string","description":"Workspace-relative file path"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1,"description":"Inclusive end line; normally no more than 200 lines after start_line"}}}}}'
@@ -44,11 +51,15 @@ tools_schema_json() {
   fi
   output+=',
 {"type":"function","function":{"name":"apply_patch","description":'"${patch_description}"',"parameters":{"type":"object","required":["patch"],"properties":{"patch":{"type":"string","description":'"${patch_argument_description}"'}}}}},
-{"type":"function","function":{"name":"search","description":"Search workspace text with ripgrep for literals, regular expressions, or unmodeled text. Use it as the first inspection tool only when project instructions do not designate an MCP navigation tool. After finding a usable location, read its range instead of rephrasing the same search.","parameters":{"type":"object","required":["query"],"properties":{"query":{"type":"string","description":"Focused regular expression"},"path":{"type":"string","description":"Narrow workspace-relative search root; defaults to ."},"max_results":{"type":"integer","description":"Maximum matching lines; defaults to 50"}}}}},
+{"type":"function","function":{"name":"search","description":"Search workspace text with ripgrep for literals, regular expressions, or unmodeled text. Use it as the first inspection tool only when project instructions do not designate an MCP navigation tool. After finding a usable location, read its range instead of rephrasing the same search.","parameters":{"type":"object","required":["query"],"properties":{"query":{"type":"string","description":"Focused regular expression"},"path":{"type":"string","description":"Narrow workspace-relative search root; defaults to ."},"max_results":{"type":"integer","description":"Maximum matching lines; defaults to 50"}}}}}'
+  comma=,
+  output+="${comma}"'
 {"type":"function","function":{"name":"run_command","description":"Run a shell command in the workspace after explicit user approval. Use for tests, builds, formatting, git status, and diagnostics.","parameters":{"type":"object","required":["command"],"properties":{"command":{"type":"string"},"cwd":{"type":"string","description":"Workspace-relative working directory; defaults to ."},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600}}}}}'
+  comma=,
   if (( $+functions[relay_tool_list_agents] && ${RELAY_AVAILABLE:-0} )); then
-    output+=',
+    output+="${comma}"'
 {"type":"function","function":{"name":"list_agents","description":"List other live zcoder instances owned by this user on this machine. Returns exact instance IDs, projects, workspaces, models, profiles, and states. Use before send_agent_message when the user explicitly asks to contact another agent.","parameters":{"type":"object","properties":{}}}}'
+    comma=,
     if [[ "${AGENT_TURN_ORIGIN:-user}" == user ]]; then
       output+=',
 {"type":"function","function":{"name":"send_agent_message","description":"Hand a concise task to one exact local zcoder instance. Call only when the current user explicitly asked to contact another zcoder agent. An accepted delivery does not mean the task completed. Never send secrets or unrelated transcript history.","parameters":{"type":"object","required":["target_instance_id","message"],"properties":{"target_instance_id":{"type":"string","description":"Exact live ID returned by list_agents"},"message":{"type":"string","description":"Small self-contained task and relevant facts for the receiving agent"}}}}}'
@@ -59,9 +70,12 @@ tools_schema_json() {
   fi
   if (( $+functions[skills_tools_schema_json] && ${#SKILL_CATALOG_NAMES} > 0 )); then
     skills_tools_schema_json
-    output+=",${REPLY}"
+    if [[ -n "$REPLY" ]]; then
+      output+="${comma}${REPLY}"
+      comma=,
+    fi
   fi
-  output+=',
+  output+="${comma}"'
 {"type":"function","function":{"name":"finish","description":"End the current user turn. Call this as the only tool call when the task is complete or genuinely blocked; otherwise call a work tool instead. Put the complete user-facing final answer in response.","parameters":{"type":"object","required":["status","response"],"properties":{"status":{"type":"string","enum":["complete","blocked"]},"response":{"type":"string","description":"Complete user-facing result or exact blocker, in the same language as the user"}}}}}
 ]'
   REPLY="$output"
@@ -621,6 +635,10 @@ tool_run_command() {
 
 tool_dispatch() {
   local name="$1" args_json="$2"
+  if (( $+functions[agent_tool_is_admitted] )) && ! agent_tool_is_admitted "$name"; then
+    _tool_fail "tool $name is not enabled in the current tool-exposure phase"
+    return 1
+  fi
   if [[ "$name" == mcp__* ]] && (( $+functions[mcp_call_tool] )); then
     mcp_call_tool "$name" "$args_json"
     return $?

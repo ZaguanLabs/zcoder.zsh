@@ -32,6 +32,7 @@ typeset -g ZCODER_WORKSPACE="$EVAL_ROOT"
 typeset -g ZCODER_COMMAND_POLICY=deny
 typeset -g ZCODER_CONTEXT_WINDOW="${ZCODER_EVAL_CONTEXT_WINDOW:-65536}"
 typeset -g ZCODER_THINK="${ZCODER_EVAL_THINK:-true}"
+typeset -g ZCODER_TOOL_EXPOSURE="${ZCODER_EVAL_TOOL_EXPOSURE:-full}"
 
 source "${EVAL_PROJECT_DIR}/lib/util.zsh"
 source "${EVAL_PROJECT_DIR}/lib/json.zsh"
@@ -48,7 +49,7 @@ typeset -g scenarios_text="${ZCODER_EVAL_SCENARIOS:-}"
 typeset -gi eval_repeats="${ZCODER_EVAL_REPEATS:-3}"
 typeset -g baseline_file="${ZCODER_EVAL_BASELINE_PROMPT_FILE:-}"
 typeset -ga eval_models=() eval_variants=(current)
-typeset -ga all_scenarios=(independent_reads dependent_search edit_verify failure_replan project_instructions implicit_skill skill_nonmatch conversational)
+typeset -ga all_scenarios=(independent_reads dependent_search edit_verify failure_replan project_instructions implicit_skill skill_nonmatch conversational direct_response)
 typeset -ga scenarios=()
 
 if [[ -z "$models_text" ]]; then
@@ -87,6 +88,20 @@ eval_count_calls() {
   local -i calls=0
   for message in "${AGENT_MESSAGES[@]}"; do
     [[ "$message" == *'"tool_calls"'* ]] && (( calls++ ))
+  done
+  REPLY="$calls"
+}
+
+eval_count_work_calls() {
+  local message name
+  local -i i calls=0
+  for message in "${AGENT_MESSAGES[@]}"; do
+    [[ "$message" == '{"role":"assistant",'* && "$message" == *'"tool_calls"'* ]] || continue
+    json_parse_ollama_response "{\"message\":${message}}" || continue
+    for (( i=1; i<=${#JSON_TOOL_NAMES}; i++ )); do
+      name="${JSON_TOOL_NAMES[i]}"
+      [[ "$name" == finish ]] || (( calls++ ))
+    done
   done
   REPLY="$calls"
 }
@@ -132,14 +147,16 @@ eval_history_verifies_after_edit() {
 
 eval_first_tool_call_is() {
   local expected_name="$1" expected_path="$2" message=""
+  local -i i
   for message in "${AGENT_MESSAGES[@]}"; do
     [[ "$message" == '{"role":"assistant",'* && "$message" == *'"tool_calls"'* ]] || continue
     json_parse_ollama_response "{\"message\":${message}}" || return 1
-    (( ${#JSON_TOOL_NAMES} > 0 )) || continue
-    [[ "${JSON_TOOL_NAMES[1]}" == "$expected_name" ]] || return 1
-    json_parse_flat_object "${JSON_TOOL_ARGS[1]}" || return 1
-    [[ "${JSON_OBJECT[path]:-}" == "$expected_path" ]]
-    return $?
+    for (( i=1; i<=${#JSON_TOOL_NAMES}; i++ )); do
+      [[ "${JSON_TOOL_NAMES[i]}" == "$expected_name" ]] || return 1
+      json_parse_flat_object "${JSON_TOOL_ARGS[i]}" || return 1
+      [[ "${JSON_OBJECT[path]:-}" == "$expected_path" ]]
+      return $?
+    done
   done
   return 1
 }
@@ -190,6 +207,9 @@ eval_prepare_fixture() {
     conversational)
       REPLY="Reply with exactly: evaluation ready"
       ;;
+    direct_response)
+      REPLY="Say hello to the visitors of the zcoder.zsh GitHub repository."
+      ;;
   esac
 }
 
@@ -237,14 +257,19 @@ eval_scenario_passed() {
     conversational)
       [[ "$AGENT_LAST_RESPONSE" == "evaluation ready" ]]
       ;;
+    direct_response)
+      ! eval_history_contains '"tool_calls"' &&
+        [[ "${(L)AGENT_LAST_RESPONSE}" == *zcoder.zsh* ]] &&
+        [[ "${(L)AGENT_LAST_RESPONSE}" == *hello* || "${(L)AGENT_LAST_RESPONSE}" == *welcome* ]]
+      ;;
   esac
 }
 
 typeset -g model variant scenario run_dir request transcript history_path baseline_prompt="" result="" tab=$'\t'
 typeset -F eval_started eval_elapsed
-typeset -gi repeat run_status passed calls transport_retries loops duration_ms
+typeset -gi repeat run_status passed calls work_calls transport_retries loops duration_ms
 
-print -r -- $'model\tvariant\tscenario\trepeat\tpass\tstatus\ttool_turns\ttransport_retry\tloop_stopped\tprompt_tokens\toutput_tokens\tduration_ms\ttranscript\thistory'
+print -r -- $'model\tvariant\texposure\tscenario\trepeat\tpass\tstatus\ttool_turns\twork_calls\ttransport_retry\tloop_stopped\tprompt_tokens\toutput_tokens\tduration_ms\ttranscript\thistory'
 for model in "${eval_models[@]}"; do
   for variant in "${eval_variants[@]}"; do
     for scenario in "${scenarios[@]}"; do
@@ -275,13 +300,15 @@ for model in "${eval_models[@]}"; do
         }
         eval_count_calls
         calls=$REPLY
+        eval_count_work_calls
+        work_calls=$REPLY
         transport_retries=0
         eval_history_contains "Ollama connection failed before a response" && transport_retries=1
         loops=0
         [[ -n "$AGENT_LOOP_REASON" && $run_status -ne 0 ]] && loops=1
         passed=0
         (( run_status == 0 )) && eval_scenario_passed "$scenario" "$run_dir" && passed=1
-        print -r -- "${model}${tab}${variant}${tab}${scenario}${tab}${repeat}${tab}${passed}${tab}${run_status}${tab}${calls}${tab}${transport_retries}${tab}${loops}${tab}${AGENT_LAST_PROMPT_TOKENS}${tab}${AGENT_LAST_OUTPUT_TOKENS}${tab}${duration_ms}${tab}${transcript}${tab}${history_path}"
+        print -r -- "${model}${tab}${variant}${tab}${ZCODER_TOOL_EXPOSURE}${tab}${scenario}${tab}${repeat}${tab}${passed}${tab}${run_status}${tab}${calls}${tab}${work_calls}${tab}${transport_retries}${tab}${loops}${tab}${AGENT_LAST_PROMPT_TOKENS}${tab}${AGENT_LAST_OUTPUT_TOKENS}${tab}${duration_ms}${tab}${transcript}${tab}${history_path}"
       done
     done
   done

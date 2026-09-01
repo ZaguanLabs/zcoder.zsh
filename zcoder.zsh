@@ -8,7 +8,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.10.0"
+typeset -gr ZCODER_VERSION="0.10.1"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -65,6 +65,7 @@ usage() {
   print -r -- "      --connect HOST     Connect this UI to a remote-agent server"
   print -r -- "      --token-file PATH  Shared remote authentication token file"
   print -r -- "      --profile NAME     System prompt profile: coding or sysadmin (default: ${ZCODER_PROFILE})"
+  print -r -- "      --tool-exposure MODE  Tool schemas: full or staged (default: ${ZCODER_TOOL_EXPOSURE})"
   print -r -- "  -p, --prompt TEXT      Run one prompt without the full-screen UI"
   print -r -- "      --context-window N Context tokens to request, or auto (default: ${ZCODER_CONTEXT_WINDOW})"
   print -r -- "      --compact-at PCT   Compact at this context percentage (default: ${ZCODER_COMPACT_PERCENT})"
@@ -114,6 +115,11 @@ while (( $# > 0 )); do
       if ! agent_select_profile "$2"; then print -u2 -- "Error: $REPLY"; exit 2; fi
       shift
       ;;
+    --tool-exposure)
+      require_option_value "$1" "${2:-}"
+      if ! agent_select_tool_exposure "$2"; then print -u2 -- "Error: $REPLY"; exit 2; fi
+      shift
+      ;;
     -p|--prompt) require_option_value "$1" "${2:-}"; ONE_SHOT_PROMPT="$2"; shift ;;
     --context-window)
       require_option_value "$1" "${2:-}"
@@ -157,6 +163,10 @@ if ! agent_select_profile "$ZCODER_PROFILE"; then
   print -u2 -- "Error: $REPLY"
   exit 2
 fi
+if ! agent_select_tool_exposure "$ZCODER_TOOL_EXPOSURE"; then
+  print -u2 -- "Error: $REPLY"
+  exit 2
+fi
 if [[ "$ZCODER_PROFILE" == sysadmin && "$ZCODER_COMMAND_POLICY" == allow ]]; then
   print -u2 -- "Error: --yes and ZCODER_COMMAND_POLICY=allow are disabled by the sysadmin profile"
   exit 2
@@ -167,7 +177,7 @@ if [[ -n "$ZCODER_DEBUG_LOG" ]]; then
   if ! zcoder_debug_init; then
     print -u2 -- "Warning: could not open debug log: $ZCODER_DEBUG_LOG"
   else
-    zcoder_debug session "version=$ZCODER_VERSION profile=$ZCODER_PROFILE model=${(qqq)ZCODER_MODEL} host=${(qqq)OLLAMA_HOST} workspace=${(qqq)ZCODER_WORKSPACE}"
+    zcoder_debug session "version=$ZCODER_VERSION profile=$ZCODER_PROFILE tool_exposure=$ZCODER_TOOL_EXPOSURE model=${(qqq)ZCODER_MODEL} host=${(qqq)OLLAMA_HOST} workspace=${(qqq)ZCODER_WORKSPACE}"
   fi
 fi
 if [[ "$REMOTE_MODE" == client ]]; then
