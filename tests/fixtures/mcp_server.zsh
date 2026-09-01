@@ -38,7 +38,7 @@ while IFS= read -r line; do
       if [[ "$mode" == modern && "$line" != *'"io.modelcontextprotocol/clientCapabilities"'* ]]; then
         print -r -- "{\"jsonrpc\":\"2.0\",\"id\":${id},\"error\":{\"code\":-32602,\"message\":\"missing request metadata\"}}"
       elif [[ "$mode" == modern && "$line" != *'"cursor":"page-2"'* ]]; then
-        print -r -- "{\"jsonrpc\":\"2.0\",\"id\":${id},\"result\":{\"tools\":[{\"name\":\"find-symbol\",\"description\":\"Find a symbol without reading whole files\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}],\"nextCursor\":\"page-2\"}}"
+        print -r -- "{\"jsonrpc\":\"2.0\",\"id\":${id},\"result\":{\"tools\":[{\"name\":\"find-symbol\",\"description\":\"Find a symbol without reading whole files\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]},\"annotations\":{\"readOnlyHint\":true,\"openWorldHint\":false}},{\"name\":\"create-pull-request\",\"description\":\"Create an externally visible pull request\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"repository\":{\"type\":\"string\"}},\"required\":[\"repository\"]},\"annotations\":{\"readOnlyHint\":false,\"destructiveHint\":false,\"openWorldHint\":true}}],\"nextCursor\":\"page-2\"}}"
       else
         print -r -- "{\"jsonrpc\":\"2.0\",\"id\":${id},\"result\":{\"tools\":[{\"name\":\"echo.data\",\"description\":\"Echo structured arguments\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"payload\":{\"type\":\"object\"}}}}]}}"
       fi

@@ -28,15 +28,19 @@ Command-line values take precedence where an equivalent flag exists.
 
 The default `full` mode preserves the single-phase agent loop. Experimental
 `staged` mode starts each ordinary user turn with a short, non-thinking,
-structured routing request. This request has no native `tools` field and must
-choose between two outcomes: return a complete response, or admit tool use
-because the outcome depends on unobserved state or an external action.
+structured routing request. This request has no native `tools` field and
+classifies the requested outcome as `respond`, `workspace`, or `external`.
+`respond` returns the complete answer immediately. `workspace` admits core
+workspace tools and non-external MCP capabilities. `external` is reserved for
+an explicitly requested, externally visible write through a named destination.
 
-A direct response ends the turn without entering the agent loop. A tool
-decision enters the existing full tool loop for the rest of that turn. The
-router itself performs no external operation, and the dispatcher rejects a
-native tool call emitted during routing. Shell command approval, workspace
-confinement, and all existing safety checks are unchanged.
+A direct response ends the turn without entering the agent loop. A workspace
+decision withholds inter-agent delivery and MCP tools classified as external
+writes. An external decision exposes those capabilities, but each externally
+visible MCP mutation still requires one explicit confirmation at dispatch. The
+router itself performs no operation, and the dispatcher rejects a native tool
+call emitted during routing. Shell command approval and workspace confinement
+remain separate, unchanged boundaries.
 
 Enable staged exposure for one run with:
 
@@ -46,9 +50,9 @@ Enable staged exposure for one run with:
 
 or set `ZCODER_TOOL_EXPOSURE=staged`. Goal workers and relayed turns continue
 to receive full tool exposure because they already represent explicit agentic
-work. The binary boundary is intentional: asking a small model to select a
-fine-grained capability set made tool vocabulary itself act as a discovery
-cue, while the tool-free decision keeps routing separate from execution.
+work. The three outcomes describe authority classes rather than individual
+tools, keeping tool vocabulary out of the routing request while separating
+ordinary workspace work from externally visible side effects.
 
 ## Local agent relay
 

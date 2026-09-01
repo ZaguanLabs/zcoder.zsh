@@ -1126,21 +1126,29 @@ ui_select_opencode_model() {
   (( accepted ))
 }
 
-ui_confirm_command() {
-  local command_text="$1" ch="" key="" mouse="" answer="n" line="" display_command=""
+_ui_confirm_action() {
+  local kind="$1" action_text="$2" ch="" key="" mouse="" answer="n" line="" display_action=""
+  local title="" intro="" terminal_title="" terminal_prompt=""
   local -a wrapped=()
-  local -i per_command=0
-  [[ "$ZCODER_PROFILE" == sysadmin ]] && per_command=1
+  local -i allow_session=0
+  if [[ "$kind" == external ]]; then
+    title=" External action confirmation "
+    intro="The model wants to perform:"
+    terminal_title="External action confirmation required:"
+    terminal_prompt="Allow this exact external action once? [y/N]: "
+  else
+    [[ "$ZCODER_PROFILE" != sysadmin ]] && allow_session=1
+    [[ "$ZCODER_PROFILE" == sysadmin ]] && title=" Sysadmin command approval " || title=" Shell command approval "
+    intro="The model wants to run:"
+    terminal_title="Command approval requested:"
+    (( allow_session )) && terminal_prompt="Allow? [y] once / [a] session / [N] deny: " || terminal_prompt="Allow this exact command once? [y/N]: "
+  fi
   if (( ! UI_ACTIVE )); then
     if [[ -r /dev/tty && -w /dev/tty ]]; then
-      zcoder_terminal_safe "$command_text"; display_command="$REPLY"
-      print -r -- $'\n'"Command approval requested:" > /dev/tty
-      print -r -- "  $display_command" > /dev/tty
-      if (( per_command )); then
-        print -rn -- "Allow this exact command once? [y/N]: " > /dev/tty
-      else
-        print -rn -- "Allow? [y] once / [a] session / [N] deny: " > /dev/tty
-      fi
+      zcoder_terminal_safe "$action_text"; display_action="$REPLY"
+      print -r -- $'\n'"$terminal_title" > /dev/tty
+      print -r -- "  $display_action" > /dev/tty
+      print -rn -- "$terminal_prompt" > /dev/tty
       read -r answer < /dev/tty
     fi
     REPLY="$answer"
@@ -1154,19 +1162,21 @@ ui_confirm_command() {
   zcurses addwin approval_win $h $w $y $x 2>/dev/null || { REPLY="n"; return 1; }
   zcurses clear approval_win; zcurses attr approval_win bold yellow/black; zcurses border approval_win
   zcurses move approval_win 0 2; zcurses attr approval_win bold white/black
-  (( per_command )) && zcurses string approval_win " Sysadmin command approval " || zcurses string approval_win " Shell command approval "
-  zcurses move approval_win 2 2; zcurses attr approval_win dim white/black; zcurses string approval_win "The model wants to run:"
-  zcoder_wrap "$command_text" $(( w - 6 )); wrapped=("${ZCODER_WRAPPED[@]}")
+  zcurses string approval_win "$title"
+  zcurses move approval_win 2 2; zcurses attr approval_win dim white/black; zcurses string approval_win "$intro"
+  zcoder_wrap "$action_text" $(( w - 6 )); wrapped=("${ZCODER_WRAPPED[@]}")
   for line in "${wrapped[@]}"; do
     (( row >= h - 3 )) && break
     zcurses move approval_win $row 3; zcurses attr approval_win bold yellow/black; zcurses string approval_win "${line[1,$(( w - 6 ))]}"
     (( row++ ))
   done
   zcurses move approval_win $(( h - 2 )) 2; zcurses attr approval_win bold white/black
-  if (( per_command )); then
-    zcurses string approval_win "[y] Allow this exact command once   [n/Esc] Deny"
-  else
+  if (( allow_session )); then
     zcurses string approval_win "[y] Allow once   [a] Allow session   [n/Esc] Deny"
+  elif [[ "$kind" == external ]]; then
+    zcurses string approval_win "[y] Allow exact external action   [n/Esc] Deny"
+  else
+    zcurses string approval_win "[y] Allow this exact command once   [n/Esc] Deny"
   fi
   zcurses refresh approval_win
   while true; do
@@ -1175,11 +1185,19 @@ ui_confirm_command() {
     zcurses input approval_win ch key mouse
     case "${(L)ch}" in
       y) answer="y"; break ;;
-      a) (( per_command )) || { answer="a"; break; } ;;
+      a) (( allow_session )) && { answer="a"; break; } ;;
       n|q|$'\x1b'|$'\x03') answer="n"; break ;;
     esac
   done
   zcurses delwin approval_win 2>/dev/null
   ui_refresh_all
   REPLY="$answer"
+}
+
+ui_confirm_command() {
+  _ui_confirm_action command "$1"
+}
+
+ui_confirm_external_action() {
+  _ui_confirm_action external "$1"
 }

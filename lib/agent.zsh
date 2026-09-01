@@ -77,15 +77,31 @@ agent_select_tool_exposure() {
 }
 
 agent_tool_is_admitted() {
+  local name="$1" effect=""
   case "${AGENT_TOOL_PHASE:-full}" in
-    full) return 0 ;;
+    full|external) return 0 ;;
+    workspace)
+      case "$name" in
+        list_agents|send_agent_message) return 1 ;;
+        mcp__*)
+          if (( $+functions[mcp_tool_effect] )); then
+            mcp_tool_effect "$name"
+            effect="$REPLY"
+            [[ "$effect" != external_write ]]
+            return $?
+          fi
+          return 1
+          ;;
+        *) return 0 ;;
+      esac
+      ;;
     routing) return 1 ;;
     *) return 1 ;;
   esac
 }
 
 agent_route_schema_json() {
-  REPLY='{"type":"object","properties":{"mode":{"type":"string","enum":["respond","tools"]},"response":{"type":"string"},"reason":{"type":"string"}},"required":["mode","response","reason"]}'
+  REPLY='{"type":"object","properties":{"mode":{"type":"string","enum":["respond","workspace","external"]},"response":{"type":"string"},"reason":{"type":"string"}},"required":["mode","response","reason"]}'
 }
 
 agent_parse_route() {
@@ -108,14 +124,14 @@ agent_parse_route() {
         return 1
       }
       ;;
-    tools)
+    workspace|external)
       [[ -n "$reason" ]] || {
-        AGENT_ROUTE_ERROR="routing response selected tools but omitted the required reason"
+        AGENT_ROUTE_ERROR="routing response selected $mode but omitted the required reason"
         return 1
       }
       ;;
     *)
-      AGENT_ROUTE_ERROR="routing mode must be respond or tools"
+      AGENT_ROUTE_ERROR="routing mode must be respond, workspace, or external"
       return 1
       ;;
   esac
@@ -127,13 +143,17 @@ agent_parse_route() {
 
 agent_routing_system_prompt() {
   local profile_note=""
-  [[ "$ZCODER_PROFILE" == sysadmin ]] && profile_note=$'\nDo not infer permission to inspect or change the host. Host observation or action requires entering the tool phase and remains subject to exact command approval.'
-  REPLY="You are zcoder, an AI coding agent operating in this workspace: ${ZCODER_WORKSPACE:A}.
-This request begins in a non-thinking routing phase with no executable tools.
-Classify the user's literal requested outcome. Do not invent a more ambitious or more personalized subtask.
-Choose respond when the literal outcome can be completed from the message and already supplied context. Greetings, drafting, rewriting supplied text, casual conversation, and general explanations use respond. An audience or subject such as visitors of a named repository is context for the response, not a request to inspect that repository.
-Select tools only when the literal outcome genuinely requires observing or changing state that is not already supplied. A mention of a repository, project, file, command, library, website, or product does not by itself justify tools. Do not select tools merely to improve, verify, personalize, or add background to an otherwise complete answer. Questions that explicitly ask about current workspace contents, or requests to change, fetch, inspect, test, or execute something, do require tools. If both modes could satisfy the request, choose respond.
-When mode is respond, put the complete user-facing answer in response. When mode is tools, leave response empty and identify the specific missing state or required action in reason. Never claim state was inspected or changed unless a later tool result proves it.${profile_note}"
+  [[ "$ZCODER_PROFILE" == sysadmin ]] && profile_note=$'\nHost observation or action uses workspace mode and remains subject to exact command approval.'
+  REPLY="You are a routing layer with no executable tools. Classify the requested outcome, not individual words.
+RESPOND: Produce text, an explanation, or an answer from the message and supplied context.
+WORKSPACE: The outcome explicitly requires observing current workspace, host, web, or service state; changing workspace files; or running or testing something.
+EXTERNAL: The user explicitly requests an externally visible write through a named service, channel, account, or destination.
+An audience, repository, product, or person mentioned as the subject of generated text is context, not a delivery destination. Communication wording alone does not authorize delivery. If uncertain between respond and another mode, choose respond.
+Examples:
+- Send a greeting to visitors of repository X. -> respond with the greeting.
+- Add a greeting to repository X's README. -> workspace.
+- Publish the greeting as an issue in repository X. -> external.
+For respond, put the complete user-facing answer in response and leave reason empty. For workspace or external, leave response empty and state the exact missing state or requested action in reason. Never claim an unobserved result.${profile_note}"
 }
 
 agent_completion_instructions() {
@@ -523,11 +543,11 @@ agent_resolve_system_prompt() {
     skills_prompt_block
     prompt+="$REPLY"
   fi
-  if (( $+functions[mcp_prompt_block] )) && [[ "${AGENT_TOOL_PHASE:-full}" == full ]]; then
+  if (( $+functions[mcp_prompt_block] )) && [[ "${AGENT_TOOL_PHASE:-full}" != routing ]]; then
     mcp_prompt_block
     prompt+="$REPLY"
   fi
-  if (( $+functions[relay_prompt_block] )) && [[ "${AGENT_TOOL_PHASE:-full}" == full ]]; then
+  if (( $+functions[relay_prompt_block] )) && [[ "${AGENT_TOOL_PHASE:-full}" == full || "${AGENT_TOOL_PHASE:-full}" == external ]]; then
     relay_prompt_block
     prompt+="$REPLY"
   fi
@@ -620,7 +640,7 @@ agent_context_bill() {
   elif (( $+functions[skills_prompt_block] )); then
     skills_prompt_block; skills="$REPLY"
   fi
-  if (( $+functions[mcp_prompt_block] )) && [[ "${AGENT_TOOL_PHASE:-full}" == full ]]; then
+  if (( $+functions[mcp_prompt_block] )) && [[ "${AGENT_TOOL_PHASE:-full}" != routing ]]; then
     mcp_prompt_block; mcp="$REPLY"
   fi
   (( $+functions[agent_compaction_prompt_block] )) && { agent_compaction_prompt_block; compacted="$REPLY"; }
@@ -1233,17 +1253,22 @@ _agent_run_turn() {
           zcoder_debug routing_complete "step=$step response=${(qqq)AGENT_ROUTE_RESPONSE}"
           return 0
         fi
-        AGENT_TOOL_PHASE="full"
-        agent_add_context_message $'<tool_routing>\nTool use was admitted for this turn because: '"${AGENT_ROUTE_REASON}"$'\nContinue the original request with the available tools.\n</tool_routing>'
-        agent_emit system "◇ Tools enabled for this turn."
-        zcoder_debug routing_admitted "step=$step reason=${(qqq)AGENT_ROUTE_REASON}"
+        AGENT_TOOL_PHASE="$AGENT_ROUTE_MODE"
+        if [[ "$AGENT_TOOL_PHASE" == external ]]; then
+          agent_add_context_message $'<tool_routing>\nExternal action tools were admitted because: '"${AGENT_ROUTE_REASON}"$'\nContinue the original request. Every externally visible mutation still requires the user\x27s per-call confirmation.\n</tool_routing>'
+          agent_emit system "◇ External tools enabled; visible mutations require confirmation."
+        else
+          agent_add_context_message $'<tool_routing>\nWorkspace tools were admitted because: '"${AGENT_ROUTE_REASON}"$'\nContinue the original request with non-external capabilities only.\n</tool_routing>'
+          agent_emit system "◇ Workspace tools enabled for this turn."
+        fi
+        zcoder_debug routing_admitted "step=$step mode=$AGENT_TOOL_PHASE reason=${(qqq)AGENT_ROUTE_REASON}"
         incomplete_retries=0
         continue
       fi
       (( ${#call_names} > 0 )) && AGENT_ROUTE_ERROR="routing response emitted a native tool call even though no tools were available"
       if (( incomplete_retries < AGENT_INCOMPLETE_RETRY_LIMIT )); then
         (( incomplete_retries++ ))
-        agent_add_context_message "The routing response was rejected: ${AGENT_ROUTE_ERROR:-invalid structured response}. Return only the required structured routing object with mode respond or tools."
+        agent_add_context_message "The routing response was rejected: ${AGENT_ROUTE_ERROR:-invalid structured response}. Return only the required structured routing object with mode respond, workspace, or external."
         agent_emit system "↻ Model returned an invalid routing decision; retrying (${incomplete_retries}/${AGENT_INCOMPLETE_RETRY_LIMIT})."
         zcoder_debug routing_rejected "step=$step retry=$incomplete_retries error=${(qqq)AGENT_ROUTE_ERROR}"
         continue

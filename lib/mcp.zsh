@@ -28,7 +28,7 @@ typeset -gA MCP_ENV=() MCP_CWD=() MCP_URL=() MCP_ENABLED=()
 typeset -gA MCP_STATUS=() MCP_PROTOCOL=() MCP_DETAIL=() MCP_SERVER_TOOLS=()
 typeset -gA MCP_BROKER_PID=() MCP_BROKER_DIR=() MCP_BROKER_SEQ=()
 typeset -ga MCP_NAMES=() MCP_TOOL_NAMES=()
-typeset -gA MCP_TOOL_SERVER=() MCP_TOOL_ORIGINAL=() MCP_TOOL_SCHEMA=()
+typeset -gA MCP_TOOL_SERVER=() MCP_TOOL_ORIGINAL=() MCP_TOOL_SCHEMA=() MCP_TOOL_EFFECT=()
 typeset -gi MCP_PROMPT_MAX_BYTES="${MCP_PROMPT_MAX_BYTES:-8192}"
 
 _mcp_valid_name() {
@@ -322,7 +322,7 @@ mcp_load() {
   MCP_USER_RAW=(); MCP_PROJECT_RAW=(); MCP_RAW=(); MCP_SCOPE=(); MCP_TYPE=(); MCP_COMMAND=()
   MCP_ARGS=(); MCP_ENV=(); MCP_CWD=(); MCP_URL=(); MCP_ENABLED=(); MCP_STATUS=()
   MCP_PROTOCOL=(); MCP_DETAIL=(); MCP_SERVER_TOOLS=(); MCP_NAMES=()
-  MCP_TOOL_NAMES=(); MCP_TOOL_SERVER=(); MCP_TOOL_ORIGINAL=(); MCP_TOOL_SCHEMA=()
+  MCP_TOOL_NAMES=(); MCP_TOOL_SERVER=(); MCP_TOOL_ORIGINAL=(); MCP_TOOL_SCHEMA=(); MCP_TOOL_EFFECT=()
   MCP_USER_CONFIG="${ZCODER_HOME}/mcp.json"
   MCP_PROJECT_CONFIG="${ZCODER_WORKSPACE:A}/.mcp.json"
   _mcp_config_read "$MCP_USER_CONFIG" user || return 1
@@ -633,10 +633,45 @@ _mcp_exposed_name() {
   REPLY="$value"
 }
 
+# MCP annotations are capability hints supplied by the server. Prefer their
+# explicit read/write and open-world declarations; when an older server omits
+# them, admit only clearly read-shaped names without external confirmation.
+_mcp_tool_effect_from_record() {
+  local original="$1" tool_raw="$2" annotations="" read_only="" open_world="" destructive=""
+  local normalized="${(L)original}"
+  normalized="${normalized//[^a-z0-9]/_}"
+  if _mcp_raw_member "$tool_raw" annotations; then
+    annotations="$REPLY"
+    _mcp_raw_member "$annotations" readOnlyHint && read_only="$REPLY"
+    _mcp_raw_member "$annotations" openWorldHint && open_world="$REPLY"
+    _mcp_raw_member "$annotations" destructiveHint && destructive="$REPLY"
+  fi
+  if [[ "$destructive" == true ]]; then
+    REPLY="external_write"
+    return 0
+  fi
+  if [[ "$read_only" == true ]]; then
+    REPLY="read_only"
+    return 0
+  fi
+  if [[ "$read_only" == false ]]; then
+    [[ "$open_world" == false ]] && REPLY="workspace_write" || REPLY="external_write"
+    return 0
+  fi
+  case "$normalized" in
+    get*|list*|read*|search*|find*|fetch*|show*|view*|inspect*|lookup*|query*|status*|check*|resolve*|describe*|explain*|analy[sz]e*|locate*|scan*|echo*) REPLY="read_only" ;;
+    *) REPLY="external_write" ;;
+  esac
+}
+
+mcp_tool_effect() {
+  REPLY="${MCP_TOOL_EFFECT[$1]:-external_write}"
+}
+
 _mcp_rebuild_tool_catalog() {
-  local server="" array_raw="" tool_raw="" original="" description="" schema="" exposed=""
+  local server="" array_raw="" tool_raw="" original="" description="" schema="" exposed="" effect="" effect_note=""
   local -a tool_records=()
-  MCP_TOOL_NAMES=(); MCP_TOOL_SERVER=(); MCP_TOOL_ORIGINAL=(); MCP_TOOL_SCHEMA=()
+  MCP_TOOL_NAMES=(); MCP_TOOL_SERVER=(); MCP_TOOL_ORIGINAL=(); MCP_TOOL_SCHEMA=(); MCP_TOOL_EFFECT=()
   for server in "${MCP_NAMES[@]}"; do
     [[ "${MCP_STATUS[$server]}" == connected ]] || continue
     array_raw="${MCP_SERVER_TOOLS[$server]:-[]}"
@@ -647,6 +682,12 @@ _mcp_rebuild_tool_catalog() {
       [[ -n "$original" ]] || continue
       if _mcp_raw_member "$tool_raw" description && _mcp_json_string "$REPLY"; then description="$REPLY"; else description="MCP tool ${server}/${original}"; fi
       if _mcp_raw_member "$tool_raw" inputSchema; then schema="$REPLY"; else schema='{"type":"object"}'; fi
+      _mcp_tool_effect_from_record "$original" "$tool_raw"; effect="$REPLY"
+      case "$effect" in
+        read_only) effect_note="read-only capability" ;;
+        workspace_write) effect_note="workspace mutation" ;;
+        *) effect_note="external mutation; per-call user confirmation required" ;;
+      esac
       _mcp_exposed_name "$server" "$original"; exposed="$REPLY"
       if [[ -n "${MCP_TOOL_SERVER[$exposed]:-}" ]]; then
         MCP_DETAIL[$server]="tool name collision: $exposed"
@@ -654,8 +695,9 @@ _mcp_rebuild_tool_catalog() {
         MCP_TOOL_NAMES+=("$exposed")
         MCP_TOOL_SERVER[$exposed]="$server"
         MCP_TOOL_ORIGINAL[$exposed]="$original"
+        MCP_TOOL_EFFECT[$exposed]="$effect"
         json_quote "$exposed"; local exposed_json="$REPLY"
-        json_quote "[MCP server '$server'; short tool name '$original'. When instructions mention '$original', call this exact function.] $description"; local description_json="$REPLY"
+        json_quote "[MCP server '$server'; short tool name '$original'; $effect_note. When instructions mention '$original', call this exact function.] $description"; local description_json="$REPLY"
         MCP_TOOL_SCHEMA[$exposed]="{\"type\":\"function\",\"function\":{\"name\":${exposed_json},\"description\":${description_json},\"parameters\":${schema}}}"
       fi
     done
@@ -713,7 +755,10 @@ mcp_connect_all() {
 mcp_tools_schema_json() {
   local name="" output="" comma=""
   mcp_connect_all >/dev/null 2>&1 || true
-  for name in "${MCP_TOOL_NAMES[@]}"; do output+="${comma}${MCP_TOOL_SCHEMA[$name]}"; comma=,; done
+  for name in "${MCP_TOOL_NAMES[@]}"; do
+    (( $+functions[agent_tool_is_admitted] )) && ! agent_tool_is_admitted "$name" && continue
+    output+="${comma}${MCP_TOOL_SCHEMA[$name]}"; comma=,
+  done
   REPLY="$output"
 }
 
@@ -722,12 +767,13 @@ mcp_prompt_block() {
   local -i bytes=0 line_bytes=0 truncated=0
   (( ${#MCP_TOOL_NAMES} > 0 )) || { REPLY=""; return 0; }
   [[ "$MCP_PROMPT_MAX_BYTES" == <256-> ]] || MCP_PROMPT_MAX_BYTES=8192
-  output=$'\n\n<mcp_tool_routing>\nInstalled MCP servers are trusted, model-callable capabilities. Project instructions that explicitly require an MCP server or short tool name for the current kind of task are mandatory tool-selection rules. For an applicable repository investigation that needs orientation or navigation, call the designated MCP tool before built-in search, read_file, list_files, or run_command. Do not interpret a mere mention of a repository, codebase, file, or tool as a request to investigate it. If the request can be answered completely from the user message and existing context, respond directly without calling an MCP tool. Do not substitute a generic built-in merely because it appears familiar. After an MCP navigation result identifies a relevant source range, follow project reading instructions and use that exact range instead of reading the whole file. MCP function names are namespaced, so use this exact map when instructions mention a short name:\n'
+  output=$'\n\n<mcp_tool_routing>\nInstalled MCP servers provide model-callable capabilities. Read-only tools may inspect their declared systems. An external-write tool is not authority to publish, message, deploy, or mutate external state; every call still requires the user\x27s explicit confirmation. Project instructions that explicitly require an MCP server or short tool name for the current kind of task are mandatory tool-selection rules. For an applicable repository investigation that needs orientation or navigation, call the designated MCP tool before built-in search, read_file, list_files, or run_command. Do not interpret a mere mention of a repository, codebase, file, or tool as a request to investigate it. If the request can be answered completely from the user message and existing context, respond directly without calling an MCP tool. Do not substitute a generic built-in merely because it appears familiar. After an MCP navigation result identifies a relevant source range, follow project reading instructions and use that exact range instead of reading the whole file. MCP function names are namespaced, so use this exact map when instructions mention a short name:\n'
   _mcp_byte_length "$output"
   bytes=$REPLY
   for exposed in "${MCP_TOOL_NAMES[@]}"; do
+    (( $+functions[agent_tool_is_admitted] )) && ! agent_tool_is_admitted "$exposed" && continue
     server="${MCP_TOOL_SERVER[$exposed]}"; original="${MCP_TOOL_ORIGINAL[$exposed]}"
-    line="- ${server}/${original} -> ${exposed}"$'\n'
+    line="- ${server}/${original} [${MCP_TOOL_EFFECT[$exposed]:-external_write}] -> ${exposed}"$'\n'
     _mcp_byte_length "$line"
     line_bytes=$REPLY
     if (( bytes + line_bytes + 21 > MCP_PROMPT_MAX_BYTES )); then truncated=1; break; fi

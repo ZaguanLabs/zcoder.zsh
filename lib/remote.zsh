@@ -386,7 +386,7 @@ remote_client_cancel_turn() {
 
 remote_client_user_turn() {
   local user_content="$1" prompt_json="" event="" role="" content="" thinking="" event_status=""
-  local approval_id="" command_text="" answer="n" decision="n" approval_json="" exit_code="0"
+  local approval_id="" approval_kind="" command_text="" answer="n" decision="n" approval_json="" exit_code="0"
   local -i poll_status=0
   AGENT_LAST_RESPONSE=""
   if (( ${UI_ACTIVE:-0} )); then
@@ -434,6 +434,7 @@ remote_client_user_turn() {
     thinking="${JSON_OBJECT[thinking]:-}"
     event_status="${JSON_OBJECT[status]:-}"
     approval_id="${JSON_OBJECT[id]:-}"
+    approval_kind="${JSON_OBJECT[kind]:-command}"
     command_text="${JSON_OBJECT[command]:-}"
     exit_code="${JSON_OBJECT[exit_code]:-0}"
     case "$event" in
@@ -453,20 +454,24 @@ remote_client_user_turn() {
         _remote_client_emit_event "$event" "$role" "$content" "$thinking" "$event_status"
         ;;
       approval_required)
-        if (( $+functions[ui_confirm_command] )); then
+        answer="n"
+        if [[ "$approval_kind" == external ]] && (( $+functions[ui_confirm_external_action] )); then
+          ui_confirm_external_action "$command_text"
+          answer="$REPLY"
+        elif (( $+functions[ui_confirm_command] )); then
           ui_confirm_command "$command_text"
           answer="$REPLY"
         fi
         case "${(L)answer}" in
           y|yes|once) decision="y" ;;
-          a|always|session) decision="a" ;;
+          a|always|session) [[ "$approval_kind" == external ]] && decision="n" || decision="a" ;;
           *) decision="n" ;;
         esac
         json_quote "$approval_id"; approval_id="$REPLY"
         json_quote "$decision"; decision="$REPLY"
         approval_json="{\"id\":${approval_id},\"decision\":${decision}}"
         if ! remote_client_request POST /v1/approval "$approval_json"; then
-          agent_emit error "Could not send command approval: $REMOTE_ERROR"
+          agent_emit error "Could not send approval response: $REMOTE_ERROR"
           remote_client_cancel_turn
           return 1
         fi
@@ -619,14 +624,16 @@ _remote_server_model_ensure() {
 }
 
 remote_server_request_approval() {
-  local command_text="$1" approval_id="${REMOTE_TURN_ID}_${RANDOM}" id_json="" command_json=""
+  local command_text="$1" approval_kind="${2:-command}" approval_id="${REMOTE_TURN_ID}_${RANDOM}" id_json="" command_json="" kind_json=""
   local pending="$REMOTE_RUNTIME_DIR/pending_approval" response="$REMOTE_RUNTIME_DIR/approvals/${approval_id}.response"
   local decision="n"
   local -F deadline=$(( EPOCHREALTIME + REMOTE_APPROVAL_TIMEOUT ))
   json_quote "$approval_id"; id_json="$REPLY"
   json_quote "$command_text"; command_json="$REPLY"
+  [[ "$approval_kind" == external ]] || approval_kind="command"
+  json_quote "$approval_kind"; kind_json="$REPLY"
   mapfile[$pending]="$approval_id" || { REPLY="n"; return 1; }
-  _remote_server_publish_json "{\"event\":\"approval_required\",\"id\":${id_json},\"command\":${command_json}}" || {
+  _remote_server_publish_json "{\"event\":\"approval_required\",\"id\":${id_json},\"kind\":${kind_json},\"command\":${command_json}}" || {
     zf_rm -f "$pending" 2>/dev/null
     REPLY="n"
     return 1

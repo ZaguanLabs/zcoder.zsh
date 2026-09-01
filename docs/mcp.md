@@ -75,10 +75,19 @@ when their tools are first needed.
 
 ## Trust boundary
 
-Adding and enabling a server is the permission boundary. Its tools are exposed
-to the model and run without another per-call approval prompt. This does not
-change `run_command`: shell commands requested through zcoder retain the normal
-approval policy.
+Adding and enabling a server admits its catalog, but selecting a tool is not
+authority to create an externally visible side effect. zcoder classifies each
+MCP tool from the standard `readOnlyHint`, `openWorldHint`, and
+`destructiveHint` annotations. For older servers without annotations, clearly
+read-shaped tool names remain read-only and unknown capabilities fail toward
+the externally mutating class.
+
+Read-only and explicitly local workspace tools execute under the server trust
+boundary. Tools classified as `external_write` require confirmation for every
+call, even when shell commands have been allowed for the session. In staged
+exposure, those tools are absent from the workspace phase and appear only after
+the router identifies an explicitly requested external action. This does not
+change `run_command`: shell commands retain their separate approval policy.
 
 Review server commands, arguments, environment values, and project `.mcp.json`
 before enabling them.

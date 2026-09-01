@@ -250,8 +250,12 @@ assert_contains "$relay_received" "$relay_message" "receiving peer preserves mul
 AGENT_TURN_ORIGIN=relay
 AGENT_RELAY_REPLY_TARGET="$relay_peer_id"
 relay_reply="Second message in the same inter-agent exchange."
+typeset -g MOCK_RELAY_APPROVAL_TEXT=""
+ui_confirm_external_action() { MOCK_RELAY_APPROVAL_TEXT="$1"; REPLY="y"; }
 tool_dispatch send_agent_message "{\"target_instance_id\":\"${relay_peer_id}\",\"message\":\"${relay_reply}\"}"
 assert_success "a relayed turn can send a second message back to its sender" $?
+assert_contains "$MOCK_RELAY_APPROVAL_TEXT" "$relay_peer_id" "inter-agent dispatch confirms the exact recipient"
+unfunction ui_confirm_external_action
 relay_deadline=$(( EPOCHREALTIME + 3.0 ))
 while [[ "${mapfile[$relay_peer_received]:-}" != *"$relay_reply"* ]] && (( EPOCHREALTIME < relay_deadline )); do zselect -t 2 2>/dev/null; done
 assert_contains "${mapfile[$relay_peer_received]:-}" "$relay_reply" "the second message reaches the exact peer"
@@ -471,13 +475,18 @@ assert_eq '{"tools":[{"description":"mentions \"result\""}]}' "$MCP_RESPONSE_RES
 mcp_connect modern
 assert_success "modern stdio MCP server connects" $?
 assert_eq "$MCP_VERSION_MODERN" "${MCP_PROTOCOL[modern]}" "server/discover negotiates the 2026 protocol"
-assert_eq "2" "${#MCP_TOOL_NAMES}" "paginated modern tool discovery loads every page"
+assert_eq "3" "${#MCP_TOOL_NAMES}" "paginated modern tool discovery loads every page"
+assert_eq "read_only" "${MCP_TOOL_EFFECT[mcp__modern__find_symbol]}" "MCP read-only annotations classify inspection tools"
+assert_eq "external_write" "${MCP_TOOL_EFFECT[mcp__modern__create_pull_request]}" "MCP open-world writes classify as external mutations"
+_mcp_tool_effect_from_record contradictory '{"annotations":{"readOnlyHint":true,"destructiveHint":true,"openWorldHint":false}}'
+assert_eq "external_write" "$REPLY" "destructive MCP metadata wins over a contradictory read-only hint"
 mcp_tools_schema_json
 assert_contains "$REPLY" '"name":"mcp__modern__find_symbol"' "MCP tool names are namespaced and normalized for Ollama"
 assert_contains "$REPLY" '"required":["query"]' "MCP input schemas remain intact in Ollama tool definitions"
 assert_contains "$REPLY" "short tool name 'find-symbol'" "MCP schemas teach models how short instruction names map to functions"
+assert_contains "$REPLY" "per-call user confirmation required" "MCP schemas disclose the external-write confirmation boundary"
 mcp_prompt_block
-assert_contains "$REPLY" 'modern/find-symbol -> mcp__modern__find_symbol' "MCP prompt supplies an exact short-name routing map"
+assert_contains "$REPLY" 'modern/find-symbol [read_only] -> mcp__modern__find_symbol' "MCP prompt supplies an exact short-name routing map and effect"
 assert_contains "$REPLY" "mandatory tool-selection rules" "MCP prompt makes required project routing mandatory"
 assert_contains "$REPLY" "applicable repository investigation" "MCP prompt scopes designated orientation to repository investigations"
 assert_contains "$REPLY" "mere mention of a repository" "MCP prompt does not treat repository nouns as investigation requests"
@@ -489,7 +498,7 @@ first_exposed_tool="${REPLY#*${first_name_marker}}"; first_exposed_tool="${first
 assert_success "connected MCP tools precede generic built-ins" $?
 assert_contains "$REPLY" "only when project instructions do not designate an MCP navigation tool" "search schema defers to project-designated MCP navigation"
 agent_build_payload
-assert_contains "$REPLY" 'modern/find-symbol -> mcp__modern__find_symbol' "regular Ollama payloads include connected MCP routing"
+assert_contains "$REPLY" 'modern/find-symbol [read_only] -> mcp__modern__find_symbol' "regular Ollama payloads include connected MCP routing"
 saved_tool_phase="$AGENT_TOOL_PHASE"
 AGENT_TOOL_PHASE=routing
 tools_schema_json
@@ -500,30 +509,40 @@ assert_not_contains "$REPLY" '"name":"mcp__modern__find_symbol"' "routing phase 
 assert_not_contains "$REPLY" '"name":"finish"' "ordinary routing completes through plain assistant content"
 agent_build_payload
 assert_contains "$REPLY" '"format":{"type":"object"' "routing payload requests a structured decision"
-assert_contains "$REPLY" '"enum":["respond","tools"]' "routing schema uses a binary decision"
+assert_contains "$REPLY" '"enum":["respond","workspace","external"]' "routing schema separates direct, workspace, and external outcomes"
 assert_contains "$REPLY" '"think":false' "routing decision disables model thinking"
 assert_not_contains "$REPLY" '"tools":' "routing payload omits the native tool channel"
 agent_resolve_system_prompt
-assert_contains "$REPLY" "begins in a non-thinking routing phase" "routing payload uses the short phase-specific prompt"
-assert_contains "$REPLY" "mention of a repository" "routing prompt rejects noun-triggered discovery"
-assert_contains "$REPLY" "literal requested outcome" "routing prompt rejects invented research subtasks"
-assert_contains "$REPLY" "If both modes could satisfy the request, choose respond" "routing prompt resolves ambiguous optional discovery without tools"
-assert_not_contains "$REPLY" 'modern/find-symbol -> mcp__modern__find_symbol' "routing prompt withholds the MCP function map"
+assert_contains "$REPLY" "routing layer with no executable tools" "routing payload uses the short phase-specific prompt"
+assert_contains "$REPLY" "Classify the requested outcome, not individual words" "routing prompt avoids keyword-triggered discovery"
+assert_contains "$REPLY" "context, not a delivery destination" "routing prompt separates audiences from external destinations"
+assert_contains "$REPLY" "If uncertain between respond and another mode, choose respond" "routing prompt resolves ambiguity without tools"
+assert_not_contains "$REPLY" 'modern/find-symbol [read_only] -> mcp__modern__find_symbol' "routing prompt withholds the MCP function map"
 agent_parse_route '{"mode":"respond","response":"Hello","reason":""}'
 assert_success "valid direct routing decisions parse" $?
 assert_eq "Hello" "$AGENT_ROUTE_RESPONSE" "direct routing preserves the user-facing response"
-agent_parse_route '{"mode":"tools","response":"","reason":"Current README contents are required."}'
-assert_success "valid tool routing decisions parse" $?
-assert_eq "tools" "$AGENT_ROUTE_MODE" "tool routing preserves the binary mode"
+agent_parse_route '{"mode":"workspace","response":"","reason":"Current README contents are required."}'
+assert_success "valid workspace routing decisions parse" $?
+assert_eq "workspace" "$AGENT_ROUTE_MODE" "workspace routing preserves its capability mode"
+agent_parse_route '{"mode":"external","response":"","reason":"Publish an issue to the named repository."}'
+assert_success "valid external routing decisions parse" $?
+assert_eq "external" "$AGENT_ROUTE_MODE" "external routing preserves its capability mode"
 agent_parse_route '{"mode":"maybe","response":"","reason":"uncertain"}'
 assert_failure "unknown routing modes are rejected" $?
 tool_dispatch run_command '{"command":"print should-not-run"}'
 assert_failure "dispatcher rejects a hidden capability" $?
 assert_contains "$TOOL_RESULT" "not enabled" "hidden-tool rejection identifies the exposure boundary"
-AGENT_TOOL_PHASE=full
+AGENT_TOOL_PHASE=workspace
 tools_schema_json
-assert_contains "$REPLY" '"name":"mcp__modern__find_symbol"' "full execution restores installed MCP tools"
-assert_contains "$REPLY" '"name":"list_files"' "full execution restores workspace tools"
+assert_contains "$REPLY" '"name":"mcp__modern__find_symbol"' "workspace execution exposes read-only MCP tools"
+assert_not_contains "$REPLY" '"name":"mcp__modern__create_pull_request"' "workspace execution withholds external MCP mutations"
+assert_not_contains "$REPLY" '"name":"send_agent_message"' "workspace execution withholds inter-agent delivery"
+assert_contains "$REPLY" '"name":"list_files"' "workspace execution restores core workspace tools"
+tool_dispatch mcp__modern__create_pull_request '{"repository":"example/repo"}'
+assert_failure "workspace dispatcher rejects a hidden external mutation" $?
+AGENT_TOOL_PHASE=external
+tools_schema_json
+assert_contains "$REPLY" '"name":"mcp__modern__create_pull_request"' "external execution exposes confirmed mutation tools"
 AGENT_TOOL_PHASE="$saved_tool_phase"
 saved_agent_messages=("${AGENT_MESSAGES[@]}")
 saved_agent_user_messages=("${AGENT_USER_MESSAGES[@]}")
@@ -545,6 +564,23 @@ assert_success "nested MCP tool arguments bypass the flat built-in decoder" $?
 assert_contains "$TOOL_RESULT" "fixture call completed" "MCP tool results return to the model context"
 assert_contains "${mapfile[$mcp_modern_log]}" '"io.modelcontextprotocol/clientCapabilities"' "modern MCP requests carry namespaced client metadata"
 assert_contains "${mapfile[$mcp_modern_log]}" '"cursor":"page-2"' "MCP tool discovery follows pagination cursors"
+
+saved_command_policy="$ZCODER_COMMAND_POLICY"
+ZCODER_COMMAND_POLICY=allow
+typeset -g MOCK_EXTERNAL_APPROVAL_TEXT=""
+ui_confirm_external_action() { MOCK_EXTERNAL_APPROVAL_TEXT="$1"; REPLY="n"; }
+modern_log_before="${mapfile[$mcp_modern_log]}"
+tool_dispatch mcp__modern__create_pull_request '{"repository":"example/repo"}'
+assert_failure "external MCP mutations fail closed when confirmation is denied" $?
+assert_contains "$TOOL_RESULT" "user denied external action" "external denial is reported distinctly from command denial"
+assert_contains "$MOCK_EXTERNAL_APPROVAL_TEXT" "modern/create-pull-request" "external confirmation names the exact MCP capability"
+assert_eq "$modern_log_before" "${mapfile[$mcp_modern_log]}" "denied external mutations never reach the MCP server"
+ui_confirm_external_action() { MOCK_EXTERNAL_APPROVAL_TEXT="$1"; REPLY="y"; }
+tool_dispatch mcp__modern__create_pull_request '{"repository":"example/repo"}'
+assert_success "one confirmed external MCP mutation executes" $?
+assert_contains "$TOOL_RESULT" "fixture call completed" "confirmed external MCP results return normally"
+unfunction ui_confirm_external_action
+ZCODER_COMMAND_POLICY="$saved_command_policy"
 
 mcp_connect legacy
 assert_success "legacy stdio MCP server connects after the discovery probe" $?
@@ -863,6 +899,7 @@ assert_success "remote command approval publishes a one-use identifier" $?
 _remote_server_next_event 0
 assert_success "remote command approval emits an event for the client" $?
 assert_contains "$REPLY" '"event":"approval_required"' "remote approval events identify their purpose"
+assert_contains "$REPLY" '"kind":"command"' "remote command approval events retain their approval kind"
 mapfile[$remote_runtime/approvals/${remote_approval_id}.response.tmp]="y"
 zf_mv -f "$remote_runtime/approvals/${remote_approval_id}.response.tmp" "$remote_runtime/approvals/${remote_approval_id}.response"
 wait "$remote_approval_pid"
@@ -1572,9 +1609,9 @@ assert_not_contains "$warmup_payload" "WARMUP HISTORY SENTINEL" "warm-up exclude
 assert_eq "WARMUP USER SENTINEL" "${AGENT_USER_MESSAGES[1]}" "building warm-up leaves the user-message ledger unchanged"
 ZCODER_TOOL_EXPOSURE=staged
 agent_build_warmup_payload
-assert_contains "$REPLY" '"enum":["respond","tools"]' "staged warm-up caches the routing schema"
+assert_contains "$REPLY" '"enum":["respond","workspace","external"]' "staged warm-up caches the routing schema"
 assert_not_contains "$REPLY" '"tools":' "staged warm-up does not preload hidden work schemas"
-assert_contains "$REPLY" "begins in a non-thinking routing phase" "staged warm-up caches the routing prompt"
+assert_contains "$REPLY" "routing layer with no executable tools" "staged warm-up caches the routing prompt"
 ZCODER_TOOL_EXPOSURE=full
 
 saved_warmup_payload_builder="${functions[agent_build_warmup_payload]}"
@@ -1937,7 +1974,7 @@ staged_direct_status=$?
 assert_success "staged direct response completes" "$staged_direct_status"
 assert_eq "1" "$MOCK_STAGED_TURNS" "staged direct response uses one model turn"
 assert_eq "0" "$MOCK_STAGED_DISPATCHES" "staged direct response executes no work tool"
-assert_contains "$MOCK_STAGED_FIRST_PAYLOAD" '"enum":["respond","tools"]' "staged first request exposes structured routing"
+assert_contains "$MOCK_STAGED_FIRST_PAYLOAD" '"enum":["respond","workspace","external"]' "staged first request exposes structured routing"
 assert_not_contains "$MOCK_STAGED_FIRST_PAYLOAD" '"name":"list_files"' "staged first request withholds workspace tools"
 assert_eq "Hello, zcoder.zsh visitors!" "$AGENT_LAST_RESPONSE" "staged direct response is returned unchanged"
 
@@ -1949,7 +1986,7 @@ agent_ollama_chat() {
   (( MOCK_STAGED_TURNS++ ))
   if (( MOCK_STAGED_TURNS == 1 )); then
     MOCK_STAGED_FIRST_PAYLOAD="$1"
-    HTTP_BODY='{"message":{"content":"{\"mode\":\"tools\",\"response\":\"\",\"reason\":\"The requested file contents are not supplied.\"}"},"prompt_eval_count":75,"eval_count":12}'
+    HTTP_BODY='{"message":{"content":"{\"mode\":\"workspace\",\"response\":\"\",\"reason\":\"The requested file contents are not supplied.\"}"},"prompt_eval_count":75,"eval_count":12}'
   elif (( MOCK_STAGED_TURNS == 2 )); then
     MOCK_STAGED_SECOND_PAYLOAD="$1"
     HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"read_file","arguments":{"path":"note.txt"}}}]},"prompt_eval_count":90,"eval_count":7}'
@@ -1974,7 +2011,7 @@ assert_eq "1" "$MOCK_STAGED_DISPATCHES" "the execution-phase workspace tool runs
 assert_not_contains "$MOCK_STAGED_FIRST_PAYLOAD" '"name":"read_file"' "workspace tool is absent before admission"
 assert_contains "$MOCK_STAGED_SECOND_PAYLOAD" '"name":"read_file"' "workspace tool appears after admission"
 assert_contains "$MOCK_STAGED_SECOND_PAYLOAD" '"name":"run_command"' "full execution tools appear only after admission"
-assert_contains "${(j:\n:)AGENT_MESSAGES}" "Tool use was admitted" "routing transition is recorded in model history"
+assert_contains "${(j:\n:)AGENT_MESSAGES}" "Workspace tools were admitted" "routing transition is recorded in model history"
 assert_eq "The current note says staged evidence." "$AGENT_LAST_RESPONSE" "staged execution returns the evidence-based response"
 ZCODER_TOOL_EXPOSURE=full
 

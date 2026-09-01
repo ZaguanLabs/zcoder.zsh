@@ -8,6 +8,10 @@ typeset -gi TOOL_RESULT_OK=0
 typeset -g TOOL_SAFETY_REASON=""
 typeset -gi TOOL_PATCH_RETRY_REQUIRED=0
 
+_tool_schema_is_admitted() {
+  (( ! $+functions[agent_tool_is_admitted] )) || agent_tool_is_admitted "$1"
+}
+
 _tool_patch_contract() {
   REPLY=$'UNIFIED DIFF CONTRACT (the patch argument must follow this literally):\nGOOD (valid focused edit):\n--- a/lib/example.zsh\n+++ b/lib/example.zsh\n@@ -10,3 +10,3 @@\n marker before\n-enabled=false\n+enabled=true\n marker after\nThe old count is 3: two context lines plus one removed line. The new count is 3: two context lines plus one added line.\nBAD (invalid in this harness):\n*** Begin Patch\n*** Update File: lib/example.zsh\n@@\n-enabled=false\n+enabled=true\n*** End Patch\nThe bad form uses an unsupported wrapper and a bare @@ without numeric ranges.\nRules:\n1. Begin each file section with literal --- a/relative/path and +++ b/relative/path lines.\n2. Every hunk needs numeric old and new ranges: @@ -OLD_START,OLD_COUNT +NEW_START,NEW_COUNT @@. Counts describe hunk body lines, not total file length: context counts on both sides, - only on the old side, and + only on the new side.\n3. Every hunk body line starts with exactly one prefix character: space for unchanged context, - for removal, or + for addition. The prefix is the single first character; do not add words such as old or new after it unless those words occur in the file. Copy context and removed text exactly from the latest read; never use ellipses or placeholders.\n4. Supply only unified diff text. Do not add Markdown fences, prose, JSON text inside the patch value, *** Begin Patch, *** Update File, or *** End Patch markers.'
 }
@@ -56,16 +60,16 @@ tools_schema_json() {
   output+="${comma}"'
 {"type":"function","function":{"name":"run_command","description":"Run a shell command in the workspace after explicit user approval. Use for tests, builds, formatting, git status, and diagnostics.","parameters":{"type":"object","required":["command"],"properties":{"command":{"type":"string"},"cwd":{"type":"string","description":"Workspace-relative working directory; defaults to ."},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600}}}}}'
   comma=,
-  if (( $+functions[relay_tool_list_agents] && ${RELAY_AVAILABLE:-0} )); then
+  if _tool_schema_is_admitted list_agents && (( $+functions[relay_tool_list_agents] && ${RELAY_AVAILABLE:-0} )); then
     output+="${comma}"'
 {"type":"function","function":{"name":"list_agents","description":"List other live zcoder instances owned by this user on this machine. Returns exact instance IDs, projects, workspaces, models, profiles, and states. Use before send_agent_message when the user explicitly asks to contact another agent.","parameters":{"type":"object","properties":{}}}}'
     comma=,
     if [[ "${AGENT_TURN_ORIGIN:-user}" == user ]]; then
       output+=',
-{"type":"function","function":{"name":"send_agent_message","description":"Hand a concise task to one exact local zcoder instance. Call only when the current user explicitly asked to contact another zcoder agent. An accepted delivery does not mean the task completed. Never send secrets or unrelated transcript history.","parameters":{"type":"object","required":["target_instance_id","message"],"properties":{"target_instance_id":{"type":"string","description":"Exact live ID returned by list_agents"},"message":{"type":"string","description":"Small self-contained task and relevant facts for the receiving agent"}}}}}'
+{"type":"function","function":{"name":"send_agent_message","description":"Hand a concise task to one exact local zcoder instance. Call only when the current user explicitly asked to contact another zcoder agent; dispatch asks the user to confirm the exact delivery. An accepted delivery does not mean the task completed. Never send secrets or unrelated transcript history.","parameters":{"type":"object","required":["target_instance_id","message"],"properties":{"target_instance_id":{"type":"string","description":"Exact live ID returned by list_agents"},"message":{"type":"string","description":"Small self-contained task and relevant facts for the receiving agent"}}}}}'
     elif [[ "${AGENT_TURN_ORIGIN:-user}" == relay && -n "${AGENT_RELAY_REPLY_TARGET:-}" ]]; then
       output+=',
-{"type":"function","function":{"name":"send_agent_message","description":"Reply to the exact agent that sent the current relayed turn. The target must be that sender; forwarding to any other agent is blocked. Send only information or a question needed to continue the current exchange, never an acknowledgement, secrets, or unrelated transcript history.","parameters":{"type":"object","required":["target_instance_id","message"],"properties":{"target_instance_id":{"type":"string","description":"Exact sender instance ID shown in the current agent_relay context"},"message":{"type":"string","description":"Concise reply needed to continue the current exchange"}}}}}'
+{"type":"function","function":{"name":"send_agent_message","description":"Reply to the exact agent that sent the current relayed turn. The target must be that sender; forwarding to any other agent is blocked, and dispatch asks the user to confirm the exact delivery. Send only information or a question needed to continue the current exchange, never an acknowledgement, secrets, or unrelated transcript history.","parameters":{"type":"object","required":["target_instance_id","message"],"properties":{"target_instance_id":{"type":"string","description":"Exact sender instance ID shown in the current agent_relay context"},"message":{"type":"string","description":"Concise reply needed to continue the current exchange"}}}}}'
     fi
   fi
   if (( $+functions[skills_tools_schema_json] && ${#SKILL_CATALOG_NAMES} > 0 )); then
@@ -595,6 +599,46 @@ tool_approve_command() {
   esac
 }
 
+tool_external_action_summary() {
+  local name="$1" args_json="$2" server="" original="" bounded_args="" target="" message=""
+  if [[ "$name" == mcp__* ]]; then
+    server="${MCP_TOOL_SERVER[$name]:-unknown}"
+    original="${MCP_TOOL_ORIGINAL[$name]:-$name}"
+    zcoder_truncate_head_tail "$args_json" 2048
+    bounded_args="$REPLY"
+    REPLY="MCP ${server}/${original}"$'\n'"Arguments: ${bounded_args}"
+    return 0
+  fi
+  if [[ "$name" == send_agent_message ]] && json_parse_flat_object "$args_json"; then
+    target="${JSON_OBJECT[target_instance_id]:-unknown}"
+    zcoder_truncate_head_tail "${JSON_OBJECT[message]:-}" 2048
+    message="$REPLY"
+    REPLY="Send a message to local zcoder agent ${target}"$'\n'"Message: ${message}"
+    return 0
+  fi
+  REPLY="$name"
+}
+
+# External writes are always confirmed once, independently of the shell-command
+# policy. A model selecting a tool is not authority to publish or message.
+tool_approve_external_action() {
+  local action_text="$1" answer="n" display_action=""
+  if (( ${REMOTE_SERVER_WORKER:-0} && $+functions[remote_server_request_approval] )); then
+    remote_server_request_approval "$action_text" external
+    answer="$REPLY"
+  elif (( $+functions[ui_confirm_external_action] )); then
+    ui_confirm_external_action "$action_text"
+    answer="$REPLY"
+  elif [[ -r /dev/tty && -w /dev/tty ]]; then
+    zcoder_terminal_safe "$action_text"; display_action="$REPLY"
+    print -r -- $'\n'"External action confirmation required:" > /dev/tty
+    print -r -- "  $display_action" > /dev/tty
+    print -rn -- "Allow this exact external action once? [y/N]: " > /dev/tty
+    read -r answer < /dev/tty
+  fi
+  [[ "${(L)answer}" == y || "${(L)answer}" == yes || "${(L)answer}" == once ]]
+}
+
 tool_run_command() {
   local command_text="$1" requested="${2:-.}" timeout_seconds="${3:-120}" cwd=""
   local out_file="" output="" exit_code=""
@@ -634,12 +678,20 @@ tool_run_command() {
 }
 
 tool_dispatch() {
-  local name="$1" args_json="$2"
+  local name="$1" args_json="$2" effect="" action_summary=""
   if (( $+functions[agent_tool_is_admitted] )) && ! agent_tool_is_admitted "$name"; then
     _tool_fail "tool $name is not enabled in the current tool-exposure phase"
     return 1
   fi
   if [[ "$name" == mcp__* ]] && (( $+functions[mcp_call_tool] )); then
+    (( $+functions[mcp_tool_effect] )) && { mcp_tool_effect "$name"; effect="$REPLY"; }
+    if [[ "${effect:-external_write}" == external_write ]]; then
+      tool_external_action_summary "$name" "$args_json"; action_summary="$REPLY"
+      if ! tool_approve_external_action "$action_summary"; then
+        _tool_fail "user denied external action: ${MCP_TOOL_SERVER[$name]:-unknown}/${MCP_TOOL_ORIGINAL[$name]:-$name}"
+        return 1
+      fi
+    fi
     mcp_call_tool "$name" "$args_json"
     return $?
   fi
@@ -663,12 +715,22 @@ tool_dispatch() {
       if (( ! $+functions[relay_tool_send_agent_message] || ! ${RELAY_AVAILABLE:-0} )); then
         _tool_fail "inter-agent delivery is unavailable for this turn"
       elif [[ "${AGENT_TURN_ORIGIN:-user}" == user ]]; then
-        relay_tool_send_agent_message "${JSON_OBJECT[target_instance_id]:-}" "${JSON_OBJECT[message]:-}"
+        tool_external_action_summary "$name" "$args_json"; action_summary="$REPLY"
+        if ! tool_approve_external_action "$action_summary"; then
+          _tool_fail "user denied external action: send_agent_message"
+        else
+          relay_tool_send_agent_message "${JSON_OBJECT[target_instance_id]:-}" "${JSON_OBJECT[message]:-}"
+        fi
       elif [[ "${AGENT_TURN_ORIGIN:-user}" == relay && -n "${AGENT_RELAY_REPLY_TARGET:-}" ]]; then
         if [[ "${JSON_OBJECT[target_instance_id]:-}" != "$AGENT_RELAY_REPLY_TARGET" ]]; then
           _tool_fail "a relayed turn may reply only to its sender (${AGENT_RELAY_REPLY_TARGET})"
         else
-          relay_tool_send_agent_message "${JSON_OBJECT[target_instance_id]:-}" "${JSON_OBJECT[message]:-}"
+          tool_external_action_summary "$name" "$args_json"; action_summary="$REPLY"
+          if ! tool_approve_external_action "$action_summary"; then
+            _tool_fail "user denied external action: send_agent_message"
+          else
+            relay_tool_send_agent_message "${JSON_OBJECT[target_instance_id]:-}" "${JSON_OBJECT[message]:-}"
+          fi
         fi
       else
         _tool_fail "inter-agent delivery is unavailable for this turn"

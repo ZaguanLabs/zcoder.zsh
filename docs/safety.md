@@ -49,6 +49,18 @@ from changing the apparent approval or transcript display. Redirected output
 remains exact for scripting, and persisted transcripts keep their original
 content.
 
+## External MCP action confirmation
+
+MCP tools that declare or conservatively appear to perform an externally
+visible write require approval for each exact call. This includes actions such
+as creating a pull request, posting a message, publishing, or deploying. There
+is no session-wide allowance for these actions: `--yes` and
+`ZCODER_COMMAND_POLICY=allow` affect shell commands only.
+
+When staged tool exposure is active, external-write MCP tools are also withheld
+from the workspace phase. They become visible only after an `external` routing
+decision, and dispatch confirmation remains mandatory after that decision.
+
 ## External coding workers
 
 The plain `/claude`, `/codex`, `/agy`, and `/opencode` commands are read-only
@@ -92,6 +104,8 @@ During a local-user-originated turn, the send tool is available only when that
 user explicitly asked to contact another instance. During a relayed turn, it is
 scoped to the exact sender instance so the agents can continue a direct
 exchange; schema generation and dispatch both block third-agent forwarding.
+Each model-requested delivery also requires confirmation for its exact recipient
+and message; there is no session-wide inter-agent delivery allowance.
 Another process already running as the same user can forge same-user metadata,
 so sender names, PIDs, workspaces, and instance IDs are context rather than
 cryptographic identity.
