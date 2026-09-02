@@ -569,7 +569,10 @@ tool_approve_command() {
     allow) (( per_command )) || return 0 ;;
     deny) return 1 ;;
   esac
-  if (( ${REMOTE_SERVER_WORKER:-0} && $+functions[remote_server_request_approval] )); then
+  if (( ${ACP_WORKER_ACTIVE:-0} && $+functions[acp_worker_request_permission] )); then
+    acp_worker_request_permission "$command_text" command
+    answer="$REPLY"
+  elif (( ${REMOTE_SERVER_WORKER:-0} && $+functions[remote_server_request_approval] )); then
     remote_server_request_approval "$command_text"
     answer="$REPLY"
   elif (( $+functions[ui_confirm_command] )); then
@@ -623,7 +626,10 @@ tool_external_action_summary() {
 # policy. A model selecting a tool is not authority to publish or message.
 tool_approve_external_action() {
   local action_text="$1" answer="n" display_action=""
-  if (( ${REMOTE_SERVER_WORKER:-0} && $+functions[remote_server_request_approval] )); then
+  if (( ${ACP_WORKER_ACTIVE:-0} && $+functions[acp_worker_request_permission] )); then
+    acp_worker_request_permission "$action_text" external
+    answer="$REPLY"
+  elif (( ${REMOTE_SERVER_WORKER:-0} && $+functions[remote_server_request_approval] )); then
     remote_server_request_approval "$action_text" external
     answer="$REPLY"
   elif (( $+functions[ui_confirm_external_action] )); then
@@ -655,6 +661,7 @@ tool_run_command() {
     _tool_fail "user denied command: $command_text"
     return 1
   fi
+  (( $+functions[agent_tool_event] )) && agent_tool_event running run_command
   zcoder_temp_path command .out || { _tool_fail "could not create private temporary storage"; return 1; }
   out_file="$REPLY"
 
@@ -692,12 +699,16 @@ tool_dispatch() {
         return 1
       fi
     fi
+    (( $+functions[agent_tool_event] )) && agent_tool_event running "$name"
     mcp_call_tool "$name" "$args_json"
     return $?
   fi
   if ! json_parse_flat_object "$args_json"; then
     _tool_fail "invalid arguments for $name: ${JSON_ERROR:-parse error}"
     return 1
+  fi
+  if [[ "$name" != run_command && "$name" != send_agent_message ]]; then
+    (( $+functions[agent_tool_event] )) && agent_tool_event running "$name"
   fi
   case "$name" in
     list_files) tool_list_files "${JSON_OBJECT[path]:-.}" "${JSON_OBJECT[max_entries]:-100}" ;;
@@ -719,6 +730,7 @@ tool_dispatch() {
         if ! tool_approve_external_action "$action_summary"; then
           _tool_fail "user denied external action: send_agent_message"
         else
+          (( $+functions[agent_tool_event] )) && agent_tool_event running "$name"
           relay_tool_send_agent_message "${JSON_OBJECT[target_instance_id]:-}" "${JSON_OBJECT[message]:-}"
         fi
       elif [[ "${AGENT_TURN_ORIGIN:-user}" == relay && -n "${AGENT_RELAY_REPLY_TARGET:-}" ]]; then
@@ -729,6 +741,7 @@ tool_dispatch() {
           if ! tool_approve_external_action "$action_summary"; then
             _tool_fail "user denied external action: send_agent_message"
           else
+            (( $+functions[agent_tool_event] )) && agent_tool_event running "$name"
             relay_tool_send_agent_message "${JSON_OBJECT[target_instance_id]:-}" "${JSON_OBJECT[message]:-}"
           fi
         fi

@@ -313,7 +313,9 @@ state_init() {
   umask "$old_umask"
   STATE_ENABLED=1
   state_refresh_sessions_list
-  if [[ "$start_mode" == resume ]] && (( ${#SESSION_IDS} > 0 )); then
+  if [[ "$start_mode" == storage ]]; then
+    return 0
+  elif [[ "$start_mode" == resume ]] && (( ${#SESSION_IDS} > 0 )); then
     state_load_session "${SESSION_IDS[1]}" || state_new_session
   elif (( ${#SESSION_IDS} > 0 )); then
     for session_id in "${SESSION_IDS[@]}"; do

@@ -82,6 +82,11 @@ Remote one-shot prompts work too:
   --prompt "Run the tests and explain any failures"
 ```
 
+The same server can back an ACP External Agent. Launch the client-side adapter
+with `--acp --connect HOST --token-file PATH`; it translates ACP stdio to this
+API while all model and tool work remains on the server. See the
+[ACP guide](acp.md) for setup and capability boundaries.
+
 ## Model readiness
 
 Starting a remote server does not load its model. When a client connects, the

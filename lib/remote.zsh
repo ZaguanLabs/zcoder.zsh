@@ -20,6 +20,9 @@ typeset -gi REMOTE_HARNESS_DISCOVERY_SUPPORTED=0
 typeset -gi REMOTE_GOALS_SUPPORTED=0
 typeset -gi REMOTE_SESSION_EMPTY=0
 typeset -gi REMOTE_SERVER_WORKER=0
+typeset -gi REMOTE_SERVER_TOOL_SEQUENCE=0
+typeset -g REMOTE_SERVER_TOOL_CALL_ID=""
+typeset -gi REMOTE_STRUCTURED_TOOL_EVENTS=0
 typeset -gi REMOTE_MAX_REQUEST_BYTES="${ZCODER_REMOTE_MAX_REQUEST_BYTES:-1048576}"
 typeset -gi REMOTE_APPROVAL_TIMEOUT="${ZCODER_REMOTE_APPROVAL_TIMEOUT:-300}"
 typeset -gF REMOTE_CLIENT_NEXT_MODEL_POLL=0.0
@@ -146,7 +149,11 @@ remote_client_handshake() {
   fi
   if [[ "$sessions" == true ]]; then
     REMOTE_SESSIONS_SUPPORTED=1
-    remote_client_start_session || return 1
+    if (( ${ACP_MODE:-0} )); then
+      remote_client_refresh_sessions || return 1
+    else
+      remote_client_start_session || return 1
+    fi
   else
     REMOTE_SESSIONS_SUPPORTED=0
   fi
@@ -385,8 +392,9 @@ remote_client_cancel_turn() {
 }
 
 remote_client_user_turn() {
-  local user_content="$1" prompt_json="" event="" role="" content="" thinking="" event_status=""
+  local user_content="$1" prompt_json="" turn_payload="" event="" role="" content="" thinking="" event_status=""
   local approval_id="" approval_kind="" command_text="" answer="n" decision="n" approval_json="" exit_code="0"
+  local tool_phase="" tool_name="" tool_args="{}" tool_result="" tool_succeeded="0"
   local -i poll_status=0
   AGENT_LAST_RESPONSE=""
   if (( ${UI_ACTIVE:-0} )); then
@@ -394,6 +402,8 @@ remote_client_user_turn() {
     ui_refresh_all
   fi
   json_quote "$user_content"; prompt_json="$REPLY"
+  turn_payload="{\"prompt\":${prompt_json}}"
+  (( ${ACP_WORKER_ACTIVE:-0} )) && turn_payload="{\"prompt\":${prompt_json},\"structured_events\":true}"
   remote_client_model_ensure
   poll_status=$?
   if (( poll_status != 0 )); then
@@ -402,7 +412,7 @@ remote_client_user_turn() {
     return 1
   fi
   agent_set_status "Connecting"
-  while ! remote_client_request POST /v1/turn "{\"prompt\":${prompt_json}}"; do
+  while ! remote_client_request POST /v1/turn "$turn_payload"; do
     if [[ "$REMOTE_ERROR" == "model is warming" ]]; then
       REMOTE_MODEL_STATUS="warming"
       remote_client_model_ensure || return $?
@@ -437,6 +447,12 @@ remote_client_user_turn() {
     approval_kind="${JSON_OBJECT[kind]:-command}"
     command_text="${JSON_OBJECT[command]:-}"
     exit_code="${JSON_OBJECT[exit_code]:-0}"
+    tool_phase="${JSON_OBJECT[phase]:-}"
+    tool_name="${JSON_OBJECT[name]:-}"
+    tool_args="${JSON_OBJECT[args]:-}"
+    [[ -n "$tool_args" ]] || tool_args="{}"
+    tool_result="${JSON_OBJECT[result]:-}"
+    tool_succeeded="${JSON_OBJECT[succeeded]:-0}"
     case "$event" in
       none)
         if (( ${UI_ACTIVE:-0} && $+functions[ui_poll_remote_turn] )); then
@@ -453,9 +469,17 @@ remote_client_user_turn() {
       message|status)
         _remote_client_emit_event "$event" "$role" "$content" "$thinking" "$event_status"
         ;;
+      tool)
+        if (( ${ACP_WORKER_ACTIVE:-0} && $+functions[acp_worker_tool_event] )); then
+          acp_worker_tool_event "$tool_phase" "$tool_name" "$tool_args" "$tool_result" "$tool_succeeded"
+        fi
+        ;;
       approval_required)
         answer="n"
-        if [[ "$approval_kind" == external ]] && (( $+functions[ui_confirm_external_action] )); then
+        if (( ${ACP_WORKER_ACTIVE:-0} && $+functions[acp_worker_request_permission] )); then
+          acp_worker_request_permission "$command_text" "$approval_kind"
+          answer="$REPLY"
+        elif [[ "$approval_kind" == external ]] && (( $+functions[ui_confirm_external_action] )); then
           ui_confirm_external_action "$command_text"
           answer="$REPLY"
         elif (( $+functions[ui_confirm_command] )); then
@@ -534,6 +558,28 @@ remote_server_worker_emit() {
 
 remote_server_worker_status() {
   remote_server_emit_status "$1"
+}
+
+remote_server_worker_tool_event() {
+  local phase="$1" name="$2" args="{}" result="${4:-}" succeeded="${5:-0}"
+  local id_json="" name_json="" args_json="" result_json=""
+  (( REMOTE_STRUCTURED_TOOL_EVENTS )) || return 0
+  [[ -z "${3:-}" ]] || args="$3"
+  case "$phase" in
+    begin)
+      (( REMOTE_SERVER_TOOL_SEQUENCE++ ))
+      REMOTE_SERVER_TOOL_CALL_ID="tool_${REMOTE_TURN_ID}_${REMOTE_SERVER_TOOL_SEQUENCE}"
+      ;;
+    running|complete) [[ -n "$REMOTE_SERVER_TOOL_CALL_ID" ]] || return 0 ;;
+    *) return 0 ;;
+  esac
+  json_quote "$REMOTE_SERVER_TOOL_CALL_ID"; id_json="$REPLY"
+  json_quote "$name"; name_json="$REPLY"
+  json_quote "$args"; args_json="$REPLY"
+  json_quote "$result"; result_json="$REPLY"
+  _remote_server_publish_json "{\"event\":\"tool\",\"phase\":\"${phase}\",\"tool_call_id\":${id_json},\"name\":${name_json},\"args\":${args_json},\"result\":${result_json},\"succeeded\":${succeeded}}"
+  [[ "$phase" == complete ]] && REMOTE_SERVER_TOOL_CALL_ID=""
+  return 0
 }
 
 _remote_server_model_status_json() {
@@ -649,7 +695,7 @@ remote_server_request_approval() {
 _remote_server_clear_turn_runtime() {
   zf_rm -f "$REMOTE_RUNTIME_DIR"/events/*.json(N) \
     "$REMOTE_RUNTIME_DIR"/approvals/*.response(N) \
-    "$REMOTE_RUNTIME_DIR"/{pending_approval,pending_prompt,worker.done}(N) 2>/dev/null
+    "$REMOTE_RUNTIME_DIR"/{pending_approval,pending_prompt,pending_structured_events,worker.done}(N) 2>/dev/null
 }
 
 _remote_server_next_event() {
@@ -846,12 +892,15 @@ _remote_server_reap_worker() {
 }
 
 _remote_server_turn_worker() {
-  local prompt="$1" session_id="$2" connection_fd="${3:-}" saved_policy="" exit_code=0
+  local prompt="$1" session_id="$2" connection_fd="${3:-}" structured_events="${4:-0}" saved_policy="" exit_code=0
   trap 'mcp_shutdown_all >/dev/null 2>&1 || true' EXIT
   trap 'exit 130' INT TERM HUP
   _http_close_inherited_fds "$REMOTE_LISTEN_FD" "$connection_fd"
   REMOTE_LISTEN_FD=""
   REMOTE_SERVER_WORKER=1
+  REMOTE_SERVER_TOOL_SEQUENCE=0
+  REMOTE_SERVER_TOOL_CALL_ID=""
+  [[ "$structured_events" == 1 ]] && REMOTE_STRUCTURED_TOOL_EVENTS=1 || REMOTE_STRUCTURED_TOOL_EVENTS=0
   UI_ACTIVE=0
   STATE_ENABLED=0
   state_load_session "$session_id" || {
@@ -881,37 +930,39 @@ _remote_server_turn_worker() {
 }
 
 _remote_server_start_turn() {
-  local prompt="$1" connection_fd="${2:-}" pid=""
+  local prompt="$1" connection_fd="${2:-}" structured_events="${3:-0}" pid=""
   REMOTE_TURN_ID="${EPOCHSECONDS}_${RANDOM}"
   _remote_server_clear_turn_runtime
-  (_remote_server_turn_worker "$prompt" "$REMOTE_SESSION_ID" "$connection_fd") &
+  (_remote_server_turn_worker "$prompt" "$REMOTE_SESSION_ID" "$connection_fd" "$structured_events") &
   pid=$!
   mapfile[$REMOTE_RUNTIME_DIR/active.pid]="$pid" || { kill -TERM "$pid" 2>/dev/null; return 1; }
   REPLY="$REMOTE_TURN_ID"
 }
 
 _remote_server_queue_turn() {
-  local prompt="$1"
+  local prompt="$1" structured_events="${2:-0}"
   REMOTE_TURN_ID="${EPOCHSECONDS}_${RANDOM}"
   _remote_server_clear_turn_runtime
   mapfile[$REMOTE_RUNTIME_DIR/pending_prompt]="$prompt" || return 1
+  mapfile[$REMOTE_RUNTIME_DIR/pending_structured_events]="$structured_events" || return 1
   REPLY="$REMOTE_TURN_ID"
 }
 
 _remote_server_progress_pending_turn() {
-  local connection_fd="${1:-}" prompt=""
+  local connection_fd="${1:-}" prompt="" structured_events="0"
   [[ -f "$REMOTE_RUNTIME_DIR/pending_prompt" ]] || return 0
   _remote_server_model_poll || true
   if [[ "$REMOTE_MODEL_STATUS" == ready ]]; then
     prompt="${mapfile[$REMOTE_RUNTIME_DIR/pending_prompt]}"
-    zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" 2>/dev/null
-    _remote_server_start_turn "$prompt" "$connection_fd" || {
+    structured_events="${mapfile[$REMOTE_RUNTIME_DIR/pending_structured_events]:-0}"
+    zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" "$REMOTE_RUNTIME_DIR/pending_structured_events" 2>/dev/null
+    _remote_server_start_turn "$prompt" "$connection_fd" "$structured_events" || {
       remote_server_emit_message error "Could not start the prepared remote turn."
       _remote_server_publish_json '{"event":"complete","exit_code":1}'
       return 1
     }
   elif [[ "$REMOTE_MODEL_STATUS" == error ]]; then
-    zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" 2>/dev/null
+    zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" "$REMOTE_RUNTIME_DIR/pending_structured_events" 2>/dev/null
     remote_server_emit_message error "Remote model preparation failed: ${REMOTE_MODEL_ERROR:-unknown error}"
     _remote_server_publish_json '{"event":"complete","exit_code":1}'
     return 1
@@ -921,7 +972,7 @@ _remote_server_progress_pending_turn() {
 _remote_server_cancel_turn() {
   local pid="${mapfile[$REMOTE_RUNTIME_DIR/active.pid]:-}" session_dir="" goal_status=""
   if [[ -f "$REMOTE_RUNTIME_DIR/pending_prompt" ]]; then
-    zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" 2>/dev/null
+    zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" "$REMOTE_RUNTIME_DIR/pending_structured_events" 2>/dev/null
     remote_server_emit_status "Stopped"
     _remote_server_publish_json '{"event":"complete","exit_code":130}'
     return 0
@@ -972,7 +1023,7 @@ _remote_server_hello_json() {
 }
 
 _remote_server_handle_connection() {
-  local fd="$1" read_status=0 target="" after="0" prompt="" turn_json="" id="" decision="" session_status=0
+  local fd="$1" read_status=0 target="" after="0" prompt="" turn_json="" id="" decision="" session_status=0 structured_events=0
   _remote_http_read_request "$fd"
   read_status=$?
   if (( read_status != 0 )); then
@@ -1015,9 +1066,16 @@ _remote_server_handle_connection() {
         _remote_http_error "$fd" 400 "prompt must be a non-empty string"
         return
       }
+      if (( ${+JSON_OBJECT[structured_events]} )); then
+        [[ "${JSON_OBJECT_TYPES[structured_events]:-}" == true || "${JSON_OBJECT_TYPES[structured_events]:-}" == false ]] || {
+          _remote_http_error "$fd" 400 "structured_events must be a boolean"
+          return
+        }
+        [[ "${JSON_OBJECT_TYPES[structured_events]}" == true ]] && structured_events=1
+      fi
       _remote_server_model_ensure 1 "$fd" || true
       if [[ "$REMOTE_MODEL_STATUS" == warming ]]; then
-        if ! _remote_server_queue_turn "$prompt"; then
+        if ! _remote_server_queue_turn "$prompt" "$structured_events"; then
           _remote_http_error "$fd" 500 "could not queue the remote turn during model warm-up"
           return
         fi
@@ -1028,7 +1086,7 @@ _remote_server_handle_connection() {
         _remote_http_error "$fd" 503 "${REMOTE_MODEL_ERROR:-model preparation failed}"
         return
       fi
-      if ! _remote_server_start_turn "$prompt" "$fd"; then
+      if ! _remote_server_start_turn "$prompt" "$fd" "$structured_events"; then
         _remote_http_error "$fd" 500 "could not start the remote turn"
         return
       fi
@@ -1139,7 +1197,7 @@ remote_server_stop() {
         wait "$pid" 2>/dev/null || true
       fi
       zf_rm -f "$REMOTE_RUNTIME_DIR/active.pid" "$REMOTE_RUNTIME_DIR/pending_prompt" \
-        "$REMOTE_RUNTIME_DIR/server.pid" 2>/dev/null
+        "$REMOTE_RUNTIME_DIR/pending_structured_events" "$REMOTE_RUNTIME_DIR/server.pid" 2>/dev/null
     fi
   fi
   if [[ -n "$REMOTE_LISTEN_FD" ]]; then

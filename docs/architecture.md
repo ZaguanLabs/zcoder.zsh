@@ -9,6 +9,7 @@ application.
 ```text
 zcoder.zsh              CLI and curses event loop
 lib/
+  acp.zsh               ACP v1 stdio broker and protocol translation
   agent.zsh             Ollama messages and iterative tool loop
   compact.zsh           token accounting and conversation checkpoints
   goal.zsh              persistent goals and read-only completion verifier
@@ -31,7 +32,7 @@ tests/run.zsh           shell-level unit and integration tests
 ## Library loading
 
 `zcoder_require` sources each library at most once. The core libraries load at
-startup; `remote.zsh` loads only when a remote mode is selected, and
+startup; `acp.zsh` and `remote.zsh` load only when their modes are selected, and
 `delegate.zsh` loads on the first external consultation or worker command. The
 `mcp` maintenance CLI loads only the configuration and protocol libraries. Every
 cross-library call into an optionally loaded library is guarded with
@@ -66,6 +67,21 @@ When an older saved session contains a mid-conversation system record, the
 transport normalizes that record to a user role while building the request.
 This keeps persisted sessions compatible with strict model templates that
 reject system messages anywhere except the first position.
+
+## ACP transport
+
+`lib/acp.zsh` is a newline-delimited JSON-RPC v1 broker. It translates ACP
+sessions, prompt content, streamed message updates, tool lifecycle events,
+permissions, and cancellation into the same state, agent, and tool functions
+used by the TUI. The broker owns stdio while each active prompt runs in a Zsh
+coprocess, keeping client responses and cancellation observable during a turn.
+
+In direct mode, ACP session setup chooses the confined local workspace and may
+add client-forwarded stdio MCP servers. In remote-client mode, the broker maps
+ACP calls onto `lib/remote.zsh`; the remote server remains authoritative for the
+workspace, model, instructions, Skills, MCP configuration, tools, persistence,
+and command policy. Structured remote tool events are opt-in per turn so older
+protocol-1 clients see an unchanged event stream.
 
 Before the first local interactive turn, zcoder uses the same asynchronous HTTP
 worker for a disposable warm-up request. It includes the resolved system prompt

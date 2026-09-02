@@ -8,14 +8,14 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.10.2"
+typeset -gr ZCODER_VERSION="0.10.3"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
 typeset -gr ZCODER_DIR="${0:A:h}"
 
-# Load each library once, on demand. Mode-gated libraries — the remote
-# transport and the external-delegate harnesses — stay unloaded until their
+# Load each library once, on demand. Mode-gated libraries — ACP, the remote
+# transport, and the external-delegate harnesses — stay unloaded until their
 # feature is actually used, trimming launch time and the resident footprint.
 typeset -gA ZCODER_LOADED_LIBS=()
 zcoder_require() {
@@ -47,6 +47,7 @@ zcoder_require util json mcp http instructions skills input ui tools compact goa
 typeset -g REMOTE_MODE="${REMOTE_MODE:-local}"
 
 typeset -g ONE_SHOT_PROMPT=""
+typeset -gi ACP_MODE=0
 typeset -gi RUNNING=1
 typeset -gi PRINT_INSTRUCTIONS=0
 typeset -gi PRINT_SKILLS=0
@@ -61,6 +62,7 @@ usage() {
   print -r -- "  -h, --host HOST        Ollama host (default: ${OLLAMA_HOST})"
   print -r -- "  -w, --workspace PATH   Directory the agent may access (default: current)"
   print -r -- "      --server NAME      Run a headless remote-agent server"
+  print -r -- "      --acp              Run as an ACP v1 agent over stdio"
   print -r -- "      --port PORT        Remote-agent server port (default: 7337)"
   print -r -- "      --connect HOST     Connect this UI to a remote-agent server"
   print -r -- "      --token-file PATH  Shared remote authentication token file"
@@ -102,6 +104,9 @@ while (( $# > 0 )); do
       require_option_value "$1" "${2:-}"
       [[ "$REMOTE_MODE" == local || "$REMOTE_MODE" == server ]] || { print -u2 -- "Error: --server and --connect cannot be combined"; exit 2; }
       REMOTE_MODE="server"; REMOTE_SERVER_NAME="$2"; shift
+      ;;
+    --acp)
+      ACP_MODE=1
       ;;
     --port) require_option_value "$1" "${2:-}"; REMOTE_SERVER_PORT="$2"; shift ;;
     --connect)
@@ -151,8 +156,13 @@ while (( $# > 0 )); do
 done
 
 [[ "$REMOTE_MODE" == local ]] || zcoder_require remote
+(( ACP_MODE )) && zcoder_require acp
+if (( ACP_MODE )) && [[ "$REMOTE_MODE" == server ]]; then
+  print -u2 -- "Error: --acp cannot be combined with --server"
+  exit 2
+fi
 
-if [[ "$REMOTE_MODE" != server ]]; then
+if [[ "$REMOTE_MODE" != server ]] && (( ! ACP_MODE )); then
   zmodload zsh/curses zsh/terminfo || {
     print -u2 -- "Error: required Zsh curses modules are unavailable."
     exit 1
@@ -228,6 +238,7 @@ cleanup() {
   trap - INT TERM HUP
   zcoder_debug session_end "status=$exit_status running=$RUNNING async_pid=${HTTP_ASYNC_PID:-none} delegate_pid=${DELEGATE_PID:-none}"
   RUNNING=0
+  (( $+functions[acp_shutdown] )) && acp_shutdown
   [[ "$REMOTE_MODE" != server ]] && (( $+functions[state_save_session] )) && state_save_session
   (( $+functions[delegate_async_cancel] )) && delegate_async_cancel
   http_async_cancel
@@ -779,7 +790,10 @@ main_tui() {
   done
 }
 
-if [[ "$REMOTE_MODE" == server ]]; then
+if (( ACP_MODE )); then
+  [[ -z "$ONE_SHOT_PROMPT" ]] || { print -u2 -- "Error: --acp and --prompt cannot be combined"; exit 2; }
+  acp_main
+elif [[ "$REMOTE_MODE" == server ]]; then
   [[ -z "$ONE_SHOT_PROMPT" ]] || { print -u2 -- "Error: --server and --prompt cannot be combined"; exit 2; }
   remote_server_main
 elif [[ -n "$ONE_SHOT_PROMPT" ]]; then

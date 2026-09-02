@@ -1007,6 +1007,10 @@ _agent_lfm_json_is_single_string_object() {
 
 agent_emit() {
   local role="$1" content="$2" thinking="${3:-}"
+  if (( ${ACP_WORKER_ACTIVE:-0} && $+functions[acp_worker_emit] )); then
+    acp_worker_emit "$role" "$content" "$thinking"
+    return $?
+  fi
   if (( ${REMOTE_SERVER_WORKER:-0} && $+functions[remote_server_worker_emit] )); then
     remote_server_worker_emit "$role" "$content" "$thinking"
     return $?
@@ -1029,6 +1033,10 @@ agent_emit() {
 }
 
 agent_set_status() {
+  if (( ${ACP_WORKER_ACTIVE:-0} && $+functions[acp_worker_status] )); then
+    acp_worker_status "$1"
+    return $?
+  fi
   if (( ${REMOTE_SERVER_WORKER:-0} && $+functions[remote_server_worker_status] )); then
     remote_server_worker_status "$1"
     return $?
@@ -1036,6 +1044,16 @@ agent_set_status() {
   if (( $+functions[ui_set_status] && ${UI_ACTIVE:-0} )); then
     ui_set_status "$1"
     ui_draw_header
+  fi
+}
+
+# Protocol transports observe the same tool lifecycle without changing tool
+# dispatch or the local terminal presentation.
+agent_tool_event() {
+  if (( ${ACP_WORKER_ACTIVE:-0} && $+functions[acp_worker_tool_event] )); then
+    acp_worker_tool_event "$@"
+  elif (( ${REMOTE_SERVER_WORKER:-0} && $+functions[remote_server_worker_tool_event] )); then
+    remote_server_worker_tool_event "$@"
   fi
 }
 
@@ -1494,6 +1512,7 @@ _agent_run_turn() {
     for (( i=1; i<=${#call_names}; i++ )); do
       tool_name="${call_names[i]}"
       tool_args="${call_args[i]}"
+      agent_tool_event begin "$tool_name" "$tool_args"
       summary="$tool_name $tool_args"
       (( ${#summary} > 240 )) && summary="${summary[1,237]}..."
       if [[ "$tool_name" == mcp__* ]]; then
@@ -1510,6 +1529,7 @@ _agent_run_turn() {
         tool_dispatch "$tool_name" "$tool_args"
       fi
       result="$TOOL_RESULT"
+      agent_tool_event complete "$tool_name" "$tool_args" "$result" "$TOOL_RESULT_OK"
       zcoder_debug tool_result "step=$step index=$i name=${(qqq)tool_name} ok=$TOOL_RESULT_OK result_chars=${#result} result_head=${(qqq)${result[1,500]}}"
       outcome_signature+="${TOOL_RESULT_OK}:${#result}:$result"
       agent_add_message tool "$result" "$tool_name"

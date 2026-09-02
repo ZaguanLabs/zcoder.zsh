@@ -23,6 +23,7 @@ External tools are used where they are the actual capability: `rg` for search,
 - **Warm on arrival.** The interactive TUI loads the model and stable project context while you type.
 - **Coordinates local work.** Running instances on the same machine can discover each other and hand off tasks through a private Unix socket relay.
 - **Available across your network.** Run the agent beside a remote workspace and control it from your local TUI.
+- **Available to ACP clients.** Run zcoder as an External Agent locally or bridge ACP to a remote zcoder server.
 - **No application framework.** Just Zsh 5.8+, its standard modules, and a handful of purpose-specific tools.
 
 ## Try it
@@ -58,11 +59,21 @@ tool runs remotely, and command approvals return to your local terminal.
 
 See the [remote-agent guide](docs/remote.md) for setup and security guidance.
 
+## ACP clients
+
+Run `./zcoder.zsh --acp` to expose zcoder as an Agent Client Protocol v1
+agent over stdio. It can use the local runtime directly or connect through the
+existing authenticated remote API with `--acp --connect HOST`.
+
+See the [ACP guide](docs/acp.md) for client configuration, supported
+capabilities, and remote deployment.
+
 ## Documentation
 
 - [Getting started](docs/getting-started.md)
 - [Interface and sessions](docs/interface.md)
 - [Remote-agent server](docs/remote.md)
+- [Agent Client Protocol](docs/acp.md)
 - [Safety and permissions](docs/safety.md)
 - [Project guidance and Agent Skills](docs/project-guidance.md)
 - [MCP servers](docs/mcp.md)

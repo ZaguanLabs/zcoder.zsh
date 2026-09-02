@@ -23,6 +23,7 @@ source "${PROJECT_DIR}/lib/agent.zsh"
 source "${PROJECT_DIR}/lib/state.zsh"
 source "${PROJECT_DIR}/lib/delegate.zsh"
 source "${PROJECT_DIR}/lib/remote.zsh"
+source "${PROJECT_DIR}/lib/acp.zsh"
 
 typeset -gi TESTS=0 FAILURES=0
 typeset -g TEST_TMP=""
@@ -78,7 +79,132 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..939"
+print -r -- "1..995"
+
+# ACP uses newline-delimited JSON-RPC while delegating agent work to the same
+# transport-neutral session and tool machinery as the TUI and remote API.
+acp_message='{"jsonrpc":"2.0","id":"request-1","method":"session/prompt","params":{"sessionId":"123_456","prompt":[{"type":"text","text":"hello"}]}}'
+_acp_parse_message "$acp_message"
+assert_success "ACP parses a valid JSON-RPC request envelope" $?
+assert_eq '"request-1"' "$ACP_MESSAGE_ID_RAW" "ACP preserves the raw request ID type for responses"
+assert_eq "session/prompt" "$ACP_MESSAGE_METHOD" "ACP extracts the requested method"
+assert_contains "$ACP_MESSAGE_PARAMS" '"sessionId":"123_456"' "ACP preserves nested method parameters"
+_acp_parse_message '{"jsonrpc":"1.0","id":1,"method":"initialize","params":{}}'
+assert_failure "ACP rejects non-2.0 JSON-RPC envelopes" $?
+
+_acp_prompt_text '{"prompt":[{"type":"text","text":"Review this"},{"type":"resource","resource":{"uri":"file:///workspace/a.zsh","mimeType":"text/x-zsh","text":"print ok"}}]}'
+assert_success "ACP accepts text and embedded text resources" $?
+assert_contains "$REPLY" "Review this" "ACP retains ordinary prompt text"
+assert_contains "$REPLY" "file:///workspace/a.zsh" "ACP labels embedded context with its URI"
+assert_contains "$REPLY" "print ok" "ACP retains embedded resource contents"
+_acp_prompt_text '{"prompt":[{"type":"image","mimeType":"image/png","data":"AA=="}]}'
+assert_failure "ACP rejects prompt capabilities it did not advertise" $?
+assert_contains "$REPLY" "unsupported prompt content type" "unsupported ACP content fails explicitly"
+
+ACP_INITIALIZED=0
+acp_capture="$TEST_TMP/acp-initialize.out"
+_acp_initialize 7 '{"protocolVersion":1,"clientCapabilities":{}}' >| "$acp_capture"
+assert_success "ACP negotiates protocol version 1" $?
+assert_eq "1" "$ACP_INITIALIZED" "successful ACP initialization advances connection state"
+assert_contains "${mapfile[$acp_capture]}" '"protocolVersion":1' "ACP initialization reports the negotiated version"
+assert_contains "${mapfile[$acp_capture]}" '"embeddedContext":true' "ACP advertises only its implemented prompt extension"
+
+saved_remote_mode_for_acp="$REMOTE_MODE"
+REMOTE_MODE=client
+_acp_session_cwd '{"cwd":"/workspace/on/another/system"}'
+assert_success "remote ACP accepts an absolute client cwd that is not local" $?
+assert_eq "/workspace/on/another/system" "$REPLY" "remote ACP leaves cross-system client paths opaque"
+REMOTE_MODE="$saved_remote_mode_for_acp"
+
+ACP_WORKER_RUNNING=1
+acp_busy_capture="$TEST_TMP/acp-busy.out"
+_acp_new_session 8 '{"cwd":"/tmp","mcpServers":[]}' >| "$acp_busy_capture"
+assert_failure "ACP rejects session creation during an active prompt" $?
+assert_contains "${mapfile[$acp_busy_capture]}" "cannot create a session while a prompt is running" "active-prompt session rejection is explicit"
+ACP_WORKER_RUNNING=0
+
+ACP_SESSION_ID="123_456"
+ACP_TOOL_SEQUENCE=0
+ACP_CURRENT_TOOL_CALL_ID=""
+acp_tool_capture="$TEST_TMP/acp-tool.out"
+acp_worker_tool_event begin read_file '{"path":"src/a.zsh"}' >| "$acp_tool_capture"
+assert_contains "${mapfile[$acp_tool_capture]}" '"sessionUpdate":"tool_call"' "ACP publishes tool creation"
+assert_contains "${mapfile[$acp_tool_capture]}" '"rawInput":{"path":"src/a.zsh"}' "ACP preserves structured tool input"
+acp_worker_tool_event running read_file >> "$acp_tool_capture"
+assert_contains "${mapfile[$acp_tool_capture]}" '"status":"in_progress"' "ACP publishes tool execution state"
+acp_worker_tool_event complete read_file '{}' $'line one\nline two' 1 >> "$acp_tool_capture"
+assert_contains "${mapfile[$acp_tool_capture]}" '"status":"completed"' "ACP publishes successful tool completion"
+assert_contains "${mapfile[$acp_tool_capture]}" 'line one\nline two' "ACP JSON-quotes multiline tool results"
+
+saved_remote_runtime_for_acp="$REMOTE_RUNTIME_DIR"
+REMOTE_RUNTIME_DIR="$TEST_TMP/acp-remote-events"
+zf_mkdir -p "$REMOTE_RUNTIME_DIR/events"
+REMOTE_TURN_ID="123_456"
+REMOTE_SERVER_TOOL_SEQUENCE=0
+REMOTE_SERVER_TOOL_CALL_ID=""
+REMOTE_STRUCTURED_TOOL_EVENTS=1
+remote_server_worker_tool_event begin search '{"query":"needle"}'
+assert_success "remote API publishes structured tool lifecycle events" $?
+_remote_server_next_event 0
+assert_success "structured remote tool events are cursor-addressable" $?
+assert_contains "$REPLY" '"event":"tool"' "remote tool events retain a distinct event type"
+json_parse_flat_object "$REPLY"
+assert_eq '{"query":"needle"}' "${JSON_OBJECT[args]}" "remote tool events preserve ACP-ready raw input"
+REMOTE_STRUCTURED_TOOL_EVENTS=0
+REMOTE_RUNTIME_DIR="$saved_remote_runtime_for_acp"
+
+acp_smoke_home="$TEST_TMP/acp-smoke-home"
+acp_smoke_stderr="$TEST_TMP/acp-smoke.stderr"
+acp_smoke_input=$'{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}\n'
+json_quote "$TEST_TMP"; acp_smoke_cwd="$REPLY"
+acp_smoke_input+="{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session/new\",\"params\":{\"cwd\":${acp_smoke_cwd},\"mcpServers\":[]}}"
+acp_smoke_output="$(print -r -- "$acp_smoke_input" | ZCODER_HOME="$acp_smoke_home" "$PROJECT_DIR/zcoder.zsh" --acp --workspace "$TEST_TMP" 2>| "$acp_smoke_stderr")"
+acp_smoke_exit=$?
+acp_smoke_lines=("${(@f)acp_smoke_output}")
+assert_success "standalone ACP stdio mode exits cleanly at client EOF" "$acp_smoke_exit"
+assert_eq "2" "${#acp_smoke_lines}" "standalone ACP emits exactly one response per request"
+assert_contains "${acp_smoke_lines[1]}" '"id":0,"result"' "standalone ACP emits a valid initialize response"
+assert_contains "${acp_smoke_lines[2]}" '"sessionId":' "standalone ACP creates a persistent session"
+assert_eq "" "${mapfile[$acp_smoke_stderr]:-}" "standalone ACP keeps protocol stdout free of diagnostics"
+acp_smoke_sessions=("$acp_smoke_home/sessions"/*.session(N))
+assert_eq "1" "${#acp_smoke_sessions}" "ACP session/new persists exactly one fresh session"
+zf_rm -rf -- "$acp_smoke_home"
+
+acp_worker_probe="$(
+  (
+    ZCODER_WORKSPACE="$TEST_TMP/acp-worker-workspace"
+    ZCODER_SESSIONS_DIR="$TEST_TMP/acp-worker-home/sessions"
+    zf_mkdir -p "$ZCODER_WORKSPACE"
+    STATE_ENABLED=0
+    state_init storage || exit 1
+    STATE_ENABLED=0
+    state_new_session || exit 1
+    STATE_ENABLED=1
+    state_save_session || exit 1
+    STATE_ENABLED=0
+    acp_worker_session="$CURRENT_SESSION_ID"
+    agent_user_turn() {
+      agent_add_message user "$1"
+      agent_add_message assistant "persisted through ACP worker"
+      agent_emit assistant "persisted through ACP worker"
+    }
+    acp_worker_main "$acp_worker_session" "test prompt" "$ZCODER_WORKSPACE" '[]' >| "$TEST_TMP/acp-worker.out"
+    print -r -- "$?"
+    AGENT_MESSAGES=()
+    STATE_ENABLED=0
+    state_load_session "$acp_worker_session" || exit 1
+    print -r -- "${#AGENT_MESSAGES}"
+    print -r -- "${AGENT_MESSAGES[-1]}"
+  )
+)"
+acp_worker_probe_lines=("${(@f)acp_worker_probe}")
+zf_rm -rf -- "$TEST_TMP/acp-worker-home" "$TEST_TMP/acp-worker-workspace"
+zf_rm -f -- "$TEST_TMP/acp-worker.out"
+assert_eq "0" "${acp_worker_probe_lines[1]:-missing}" "ACP prompt worker runs under native Zsh without special-parameter collisions"
+assert_eq "2" "${acp_worker_probe_lines[2]:-missing}" "ACP prompt worker persists the completed turn"
+assert_contains "${acp_worker_probe_lines[3]:-}" "persisted through ACP worker" "ACP session reload observes worker-owned state"
+acp_help="$($PROJECT_DIR/zcoder.zsh --help)"
+assert_contains "$acp_help" "--acp" "command help exposes ACP stdio mode"
 
 input_reset
 input_layout 20 4
