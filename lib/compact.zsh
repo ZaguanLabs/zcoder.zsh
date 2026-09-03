@@ -346,7 +346,7 @@ agent_compaction_replace_history() {
   (( recent_token_budget > ZCODER_COMPACT_KEEP_RECENT_TOKENS )) && recent_token_budget=$ZCODER_COMPACT_KEEP_RECENT_TOKENS
   agent_compaction_recent_start $(( recent_token_budget * 3 ))
   start=$REPLY
-  (( start <= ${#AGENT_MESSAGES} )) && recent_messages=("${AGENT_MESSAGES[start,-1]}")
+  (( start <= ${#AGENT_MESSAGES} )) && recent_messages=("${(@)AGENT_MESSAGES[start,-1]}")
 
   AGENT_COMPACTION_SUMMARY="$summary"
   AGENT_MESSAGES=("${recent_messages[@]}")

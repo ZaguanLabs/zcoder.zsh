@@ -79,7 +79,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..1000"
+print -r -- "1..1001"
 
 # ACP uses newline-delimited JSON-RPC while delegating agent work to the same
 # transport-neutral session and tool machinery as the TUI and remote API.
@@ -1921,6 +1921,7 @@ agent_add_message user "original request"
 agent_add_message assistant "old assistant detail ${(l:20000::a:)}"
 agent_add_message tool "old tool output ${(l:20000::b:)}" read_file
 agent_add_message assistant "superseded reasoning ${(l:20000::c:)}"
+agent_add_message assistant "recent assistant detail"
 agent_add_message user "current request"
 typeset -g MOCK_COMPACT_PAYLOAD=""
 agent_ollama_chat() {
@@ -1940,9 +1941,13 @@ assert_contains "$MOCK_COMPACT_PAYLOAD" '"additionalProperties":false' "compacti
 assert_not_contains "$MOCK_COMPACT_PAYLOAD" '"tools":' "compaction payload does not expose a competing tool-call channel"
 assert_eq "$MOCK_CHECKPOINT" "$AGENT_COMPACTION_SUMMARY" "compaction stores the validated model checkpoint"
 assert_eq "1" "$AGENT_COMPACTION_COUNT" "compaction advances its checkpoint counter"
-assert_eq "1" "${#AGENT_MESSAGES}" "replacement history retains the bounded recent suffix"
+assert_eq "2" "${#AGENT_MESSAGES}" "replacement history preserves every bounded recent record"
 assert_eq "2" "${#AGENT_USER_MESSAGES}" "replacement history preserves recent real user messages"
 agent_build_payload
+post_compaction_payload="$REPLY"
+json_begin "$post_compaction_payload" && json_discard_value && [[ "$JSON_TOKEN_TYPE" == eof ]]
+assert_success "post-compaction payload remains valid JSON with multiple retained records" $?
+REPLY="$post_compaction_payload"
 assert_contains "$REPLY" "complete the requested change" "regular prompts include the validated checkpoint"
 assert_contains "$REPLY" "original request" "regular prompts pin the original user request verbatim"
 assert_contains "$REPLY" "current request" "regular prompts pin the latest user correction verbatim"

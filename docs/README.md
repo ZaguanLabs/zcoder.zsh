@@ -34,6 +34,7 @@ zcoder.zsh. If you are new to the project, begin with
 
 ## Releases
 
+- [v0.11.1 — Post-compaction history fix](releases/v0.11.1.md)
 - [v0.11.0 — ACP integration and model-neutral compaction](releases/v0.11.0.md)
 - [v0.10.0 — Verified goals and skill-aware routing](releases/v0.10.0.md)
 - [v0.9.0 — Local agent handoffs and sharper local models](releases/v0.9.0.md)
