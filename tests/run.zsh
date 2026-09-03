@@ -79,7 +79,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..995"
+print -r -- "1..1000"
 
 # ACP uses newline-delimited JSON-RPC while delegating agent work to the same
 # transport-neutral session and tool machinery as the TUI and remote API.
@@ -1906,6 +1906,9 @@ agent_parse_compaction_summary "$MOCK_CHECKPOINT"
 assert_success "structured compaction checkpoints validate" $?
 agent_parse_compaction_summary '{"schema_version":1,"objective":"missing the required arrays"}'
 assert_failure "incomplete compaction checkpoints fail closed" $?
+agent_parse_compaction_summary '{"schema_version":1,"objective":"wrong next type","constraints":[],"decisions":[],"artifacts":[],"facts":[],"completed":[],"active":[],"blocked":[],"next":"continue"}'
+assert_failure "compaction checkpoints reject scalar array fields" $?
+assert_eq "checkpoint field next must be an array" "$JSON_ERROR" "compaction validation identifies the mistyped field"
 
 ZCODER_CONTEXT_WINDOW=32768
 ZCODER_COMPACT_PERCENT=70
@@ -1932,7 +1935,9 @@ compact_status=$?
 assert_success "manual compaction completes" "$compact_status"
 assert_contains "$MOCK_COMPACT_PAYLOAD" "old tool output" "compaction request includes detailed tool history"
 assert_contains "$MOCK_COMPACT_PAYLOAD" "You are zcoder" "compaction reuses the normal stable system prefix"
-assert_contains "$MOCK_COMPACT_PAYLOAD" '"name":"read_file"' "compaction reuses the normal tool-schema prefix"
+assert_contains "$MOCK_COMPACT_PAYLOAD" '"next":{"type":"array","items":{"type":"string"}}' "compaction payload enforces array fields with a JSON schema"
+assert_contains "$MOCK_COMPACT_PAYLOAD" '"additionalProperties":false' "compaction schema rejects undeclared checkpoint fields"
+assert_not_contains "$MOCK_COMPACT_PAYLOAD" '"tools":' "compaction payload does not expose a competing tool-call channel"
 assert_eq "$MOCK_CHECKPOINT" "$AGENT_COMPACTION_SUMMARY" "compaction stores the validated model checkpoint"
 assert_eq "1" "$AGENT_COMPACTION_COUNT" "compaction advances its checkpoint counter"
 assert_eq "1" "${#AGENT_MESSAGES}" "replacement history retains the bounded recent suffix"
@@ -1955,7 +1960,7 @@ typeset -gi MOCK_COMPACTION_ATTEMPTS=0
 agent_ollama_chat() {
   (( MOCK_COMPACTION_ATTEMPTS++ ))
   if (( MOCK_COMPACTION_ATTEMPTS == 1 )); then
-    json_quote "I will summarize the conversation now."
+    json_quote '{"schema_version":1,"objective":"retry malformed checkpoint","constraints":[],"decisions":[],"artifacts":[],"facts":[],"completed":[],"active":[],"blocked":[],"next":"continue"}'
     HTTP_BODY='{"message":{"content":'"$REPLY"'},"prompt_eval_count":1800,"eval_count":12}'
     HTTP_ERROR=""
     return 0
@@ -1970,14 +1975,16 @@ agent_compact_history manual >/dev/null
 retry_compact_status=$?
 assert_success "compaction recovers from an invalid checkpoint" "$retry_compact_status"
 assert_eq "2" "$MOCK_COMPACTION_ATTEMPTS" "invalid checkpoints receive a fresh Ollama request"
-assert_contains "$MOCK_COMPACT_PAYLOAD" "A previous compaction attempt was rejected" "checkpoint retries explain the validation failure to the model"
+assert_contains "$MOCK_COMPACT_PAYLOAD" "checkpoint field next must be an array" "checkpoint retries identify the validation failure to the model"
 assert_eq "$MOCK_CHECKPOINT" "$AGENT_COMPACTION_SUMMARY" "a valid retry becomes the compaction checkpoint"
 assert_eq "0" "$AGENT_COMPACTION_IN_PROGRESS" "successful retries clear the compaction guard"
 
 ZCODER_COMPACT_RETRY_LIMIT=1
 typeset -gi MOCK_COMPACTION_ATTEMPTS=0
+typeset -ga MOCK_COMPACTION_PAYLOADS=()
 agent_ollama_chat() {
   (( MOCK_COMPACTION_ATTEMPTS++ ))
+  MOCK_COMPACTION_PAYLOADS+=("$1")
   json_quote '```json'
   HTTP_BODY='{"message":{"content":'"$REPLY"'},"prompt_eval_count":1800,"eval_count":4}'
   HTTP_ERROR=""
@@ -1995,6 +2002,7 @@ assert_contains "$HTTP_ERROR" "after 2 attempts" "exhausted compaction reports t
 assert_eq "$rejected_history" "${(j:\n:)AGENT_MESSAGES}" "exhausted retries preserve exact history"
 assert_eq "0" "$AGENT_COMPACTION_COUNT" "exhausted retries do not advance checkpoint state"
 assert_eq "0" "$AGENT_COMPACTION_IN_PROGRESS" "exhausted retries clear the compaction guard"
+assert_contains "${MOCK_COMPACTION_PAYLOADS[2]}" "Correction attempt 1 of 1" "deterministic correction retries carry a distinct attempt marker"
 
 ZCODER_COMPACT_RETRY_LIMIT=2
 typeset -gi MOCK_COMPACTION_ATTEMPTS=0

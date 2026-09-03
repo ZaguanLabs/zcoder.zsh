@@ -5,6 +5,10 @@ JSON-RPC stdio. An ACP client such as Zed owns the conversation interface while
 zcoder keeps its existing Ollama, session, tool, workspace, Skills, MCP, and
 approval machinery.
 
+For exact JSON-RPC flows, supported message shapes, permission handling, and
+the contract for a custom harness, read the [ACP protocol integration
+reference](acp-integration.md).
+
 This is a protocol adapter, not a second agent implementation. Local ACP turns
 enter the same agent loop as the terminal interface. Remote ACP turns cross the
 existing authenticated zcoder HTTP API and run in the server's agent loop.

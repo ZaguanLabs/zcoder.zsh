@@ -27,10 +27,14 @@ zcoder.zsh. If you are new to the project, begin with
 | --- | --- |
 | [Architecture](architecture.md) | Source layout, agent loop, HTTP behavior, batching, completion, and remote transport |
 | [Inter-agent communication](inter-agent-communication.md) | Same-host Unix-socket discovery, task delivery, queuing, safety, and implementation details |
+| [Remote access system API specification](remote-access-system-specification.md) | Protocol-1 wire API, state machines, reimplementation requirements, security, and conformance tests |
+| [HTTPS and WSS libcurl bridge](libcurl-transport-bridge.md) | Proposed hosted-model transport boundary, helper process, loadable module, security, and test plan |
+| [External agent runtimes](external-agent-runtimes.md) | Codex, Claude, and Antigravity protocols, authentication, Zsh boundaries, and implementation direction |
 | [Development](development.md) | Test suite, model evaluation, compatibility expectations, and contribution checks |
 
 ## Releases
 
+- [v0.11.0 — ACP integration and model-neutral compaction](releases/v0.11.0.md)
 - [v0.10.0 — Verified goals and skill-aware routing](releases/v0.10.0.md)
 - [v0.9.0 — Local agent handoffs and sharper local models](releases/v0.9.0.md)
 - [v0.8.0 — External workers and runtime hardening](releases/v0.8.0.md)
