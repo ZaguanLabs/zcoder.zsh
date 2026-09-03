@@ -79,7 +79,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..1001"
+print -r -- "1..1002"
 
 # ACP uses newline-delimited JSON-RPC while delegating agent work to the same
 # transport-neutral session and tool machinery as the TUI and remote API.
@@ -2927,6 +2927,7 @@ assert_success "Antigravity consultation command builds" $?
 delegate_command_text="${(j: :)DELEGATE_COMMAND}"
 assert_contains "$delegate_command_text" "--mode plan" "Antigravity runs in plan mode"
 assert_contains "$delegate_command_text" "--sandbox" "Antigravity enables its sandbox"
+assert_contains "$delegate_command_text" "--model gemini-3.8-flash-high" "Antigravity uses the configured default model"
 
 delegate_build_command agy "implement this" execute
 assert_success "Antigravity worker command builds" $?

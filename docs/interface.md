@@ -180,7 +180,7 @@ Default models and limits:
 | --- | --- |
 | `ZCODER_CLAUDE_MODEL` | `claude-opus-5` |
 | `ZCODER_CODEX_MODEL` | `gpt-5.6-sol` |
-| `ZCODER_AGY_MODEL` | `gemini-3.7-flash-medium` |
+| `ZCODER_AGY_MODEL` | `gemini-3.8-flash-high` |
 | `ZCODER_OPENCODE_MODEL` | unset; choose in the picker |
 | `ZCODER_DELEGATE_TIMEOUT_SECONDS` | 1800 |
 | `ZCODER_DELEGATE_MAX_OUTPUT` | 32768 characters |
