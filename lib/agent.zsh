@@ -569,13 +569,26 @@ agent_resolve_system_prompt() {
   REPLY="$prompt"
 }
 
+# Preserve connection cancellation through payload preparation. Serializers
+# must not turn a cancelled catalog into a model request with missing tools.
+agent_tools_schema_json() {
+  tools_schema_json
+  local -i schema_status=$?
+  if (( schema_status != 0 )); then
+    (( schema_status == 130 )) && AGENT_CANCELLED=1
+    HTTP_ERROR="${MCP_ERROR:-Tool catalog preparation stopped}"
+    REPLY=''
+  fi
+  return "$schema_status"
+}
+
 agent_build_payload() {
   local model_json="" system_json="" messages="[" history="" think="true" tools="" options="" prompt="" format=""
   local stream=false
   [[ "${1:-false}" == true ]] && stream=true
   # MCP discovery must precede prompt assembly. Besides producing Ollama's
   # schemas, it gives small models an exact short-name -> function-name map.
-  tools_schema_json
+  agent_tools_schema_json || return $?
   tools="$REPLY"
   agent_resolve_system_prompt
   prompt="$REPLY"
@@ -651,7 +664,8 @@ agent_context_bill() {
   if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
     agent_route_schema_json; tools="$REPLY"
   else
-    tools_schema_json; tools="$REPLY"
+    agent_tools_schema_json || return $?
+    tools="$REPLY"
   fi
 
   agent_context_component_tokens "$base"; base_tokens=$REPLY
@@ -682,7 +696,7 @@ agent_build_warmup_payload() {
   local AGENT_TOOL_PHASE="full"
   [[ "$ZCODER_TOOL_EXPOSURE" == staged ]] && AGENT_TOOL_PHASE="routing"
   agent_context_configure
-  tools_schema_json
+  agent_tools_schema_json || return $?
   tools="$REPLY"
   agent_resolve_system_prompt
   prompt="$REPLY"
@@ -724,7 +738,11 @@ agent_warmup_start() {
   agent_warmup_enabled || return 0
   (( AGENT_WARMUP_ACTIVE )) && agent_warmup_cancel "warm-up restarted"
   agent_set_status "Warming Up"
-  agent_build_warmup_payload
+  agent_build_warmup_payload || {
+    local -i preparation_status=$?
+    agent_set_status "Warm-up stopped"
+    return "$preparation_status"
+  }
   payload="$REPLY"
   if ! http_async_start POST /api/chat "$payload" "$OLLAMA_HOST"; then
     zcoder_debug warmup_start_error "model=${(qqq)ZCODER_MODEL} host=${(qqq)OLLAMA_HOST} error=${(qqq)HTTP_ERROR}"
@@ -1163,6 +1181,7 @@ _agent_run_turn() {
   agent_patch_failure_limit
   patch_failure_limit=$REPLY
   AGENT_LAST_RESPONSE=""
+  AGENT_CANCELLED=0
   TOOL_PATCH_RETRY_REQUIRED=0
   agent_loop_reset
   [[ "$turn_origin" == user ]] && agent_lfm_user_requests_plan_only "$user_content" && lfm_plan_only=1

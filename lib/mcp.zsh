@@ -9,6 +9,7 @@ typeset -gi MCP_RUNTIME_OWNED=0
 typeset -gi MCP_REQUEST_TIMEOUT="${MCP_REQUEST_TIMEOUT:-120}"
 typeset -gi MCP_STARTUP_TIMEOUT="${MCP_STARTUP_TIMEOUT:-20}"
 typeset -gi MCP_NEXT_ID=0
+typeset -gi MCP_CONNECT_CANCELLED=0
 typeset -g MCP_ERROR=""
 typeset -g MCP_RESPONSE=""
 typeset -g MCP_RESPONSE_ID=""
@@ -508,11 +509,28 @@ mcp_broker_start() {
   MCP_BROKER_SEQ[$name]=0
   umask "$old_umask"
   local -F deadline=$(( EPOCHREALTIME + MCP_STARTUP_TIMEOUT ))
-  while [[ ! -e "$runtime/ready" && ! -e "$runtime/start.error" && ! -e "$runtime/exited" ]] && (( EPOCHREALTIME < deadline )); do zselect -t 5; done
+  if (( ${MCP_INTERACTIVE_CONNECT:-0} )); then
+    ui_wait_for_mcp_start
+    local -i start_status=$?
+    if (( start_status != 0 )); then
+      (( start_status == 130 )) && MCP_CONNECT_CANCELLED=1
+      _mcp_disconnect_request "$name" 'MCP connection setup stopped or timed out'
+      return "$start_status"
+    fi
+  else
+    while ! _mcp_start_ready && (( EPOCHREALTIME < deadline )); do zselect -t 5; done
+  fi
   if [[ -e "$runtime/ready" ]]; then return 0; fi
   MCP_ERROR="${mapfile[$runtime/start.error]:-${mapfile[$runtime/exited]:-MCP server did not start within ${MCP_STARTUP_TIMEOUT}s}}"
   mcp_broker_stop "$name"
   return 1
+}
+
+# Startup and request callbacks use their caller's dynamically scoped runtime,
+# server name, and deadline. No registry state is copied into a UI worker.
+_mcp_start_ready() {
+  [[ -e "$runtime/ready" || -e "$runtime/start.error" || -e "$runtime/exited" ]] && return 0
+  ! kill -0 "${MCP_BROKER_PID[$name]:-}" 2>/dev/null
 }
 
 # These callbacks read the request-local variables in mcp_broker_request. The
@@ -529,6 +547,9 @@ _mcp_disconnect_request() {
   MCP_STATUS[$name]=configured
   MCP_DETAIL[$name]="$reason; reconnect on next use"
   MCP_ERROR="$reason"
+  _mcp_rebuild_tool_catalog
+  (( ${MCP_INTERACTIVE_CONNECT:-0} )) && MCP_CONNECT_ABORTED=1
+  return 0
 }
 
 mcp_broker_request() {
@@ -543,12 +564,17 @@ mcp_broker_request() {
   zcoder_write_text_file "$request_file.tmp" "$envelope" || { MCP_ERROR="Could not queue MCP request"; return 1; }
   zf_mv -f "$request_file.tmp" "$request_file" 2>/dev/null || { MCP_ERROR="Could not publish MCP request"; return 1; }
   local -F deadline=$(( EPOCHREALTIME + timeout_seconds + 1 ))
-  if (( ${MCP_INTERACTIVE_TOOL:-0} )); then
+  if (( ${MCP_INTERACTIVE_TOOL:-0} || ${MCP_INTERACTIVE_CONNECT:-0} )); then
     ui_wait_for_mcp_request
     wait_status=$?
     if (( wait_status == 130 )); then
-      TOOL_CANCELLED=1
-      _mcp_disconnect_request "$name" 'request cancelled by user; server disconnected; external side effects may have completed or may still be running'
+      if (( ${MCP_INTERACTIVE_CONNECT:-0} )); then
+        MCP_CONNECT_CANCELLED=1
+        _mcp_disconnect_request "$name" 'MCP connection setup cancelled by user'
+      else
+        TOOL_CANCELLED=1
+        _mcp_disconnect_request "$name" 'request cancelled by user; server disconnected; external side effects may have completed or may still be running'
+      fi
       return 130
     elif (( wait_status != 0 )); then
       _mcp_disconnect_request "$name" 'MCP request wait stopped or timed out; outcome unknown'
@@ -562,14 +588,14 @@ mcp_broker_request() {
   fi
   if [[ ! -e "$response_file" ]]; then
     MCP_ERROR="MCP broker stopped or timed out"
-    (( ${MCP_INTERACTIVE_TOOL:-0} )) && _mcp_disconnect_request "$name" "$MCP_ERROR; outcome unknown"
+    (( ${MCP_INTERACTIVE_TOOL:-0} || ${MCP_INTERACTIVE_CONNECT:-0} )) && _mcp_disconnect_request "$name" "$MCP_ERROR; outcome unknown"
     return 1
   fi
   envelope="${mapfile[$response_file]}"; zf_rm -f "$response_file" 2>/dev/null
   reply_status="${envelope%%$'\t'*}"; MCP_RESPONSE="${envelope#*$'\t'}"
   if [[ "$reply_status" != OK ]]; then
     MCP_ERROR="$MCP_RESPONSE"
-    (( ${MCP_INTERACTIVE_TOOL:-0} )) && _mcp_disconnect_request "$name" "$MCP_ERROR; outcome unknown"
+    (( ${MCP_INTERACTIVE_TOOL:-0} || ${MCP_INTERACTIVE_CONNECT:-0} )) && _mcp_disconnect_request "$name" "$MCP_ERROR; outcome unknown"
     return 1
   fi
   return 0
@@ -584,7 +610,7 @@ mcp_broker_stop() {
   if [[ "$pid" == <1-> ]]; then
     local -F deadline=$(( EPOCHREALTIME + 1.0 ))
     while [[ ! -e "$runtime/stopped" ]] && kill -0 "$pid" 2>/dev/null && (( EPOCHREALTIME < deadline )); do
-      if (( ${MCP_INTERACTIVE_TOOL:-0} && ${UI_ACTIVE:-0} && ${RUNNING:-1} )); then ui_poll_activity 20 || true
+      if (( (${MCP_INTERACTIVE_TOOL:-0} || ${MCP_INTERACTIVE_CONNECT:-0}) && ${UI_ACTIVE:-0} && ${RUNNING:-1} )); then ui_poll_activity 20 || true
       else zselect -t 2
       fi
     done
@@ -770,18 +796,32 @@ mcp_fetch_tools() {
 
 mcp_connect() {
   local name="$1"
+  local -i MCP_INTERACTIVE_CONNECT=0 MCP_CONNECT_ABORTED=0
+  MCP_CONNECT_CANCELLED=0
+  (( ${UI_ACTIVE:-0} && $+functions[ui_wait_for_mcp_start] )) && MCP_INTERACTIVE_CONNECT=1
   [[ -n "${MCP_RAW[$name]:-}" ]] || { MCP_ERROR="unknown MCP server: $name"; return 1; }
   (( ${MCP_ENABLED[$name]:-0} )) || { MCP_STATUS[$name]=disabled; MCP_ERROR="MCP server is disabled: $name"; return 1; }
   [[ "${MCP_TYPE[$name]}" == stdio ]] || { MCP_STATUS[$name]=unsupported; MCP_ERROR="HTTP MCP is not available yet: $name"; return 1; }
   [[ "${MCP_STATUS[$name]}" == connected ]] && return 0
   MCP_STATUS[$name]="starting"; MCP_DETAIL[$name]=""
-  if ! mcp_broker_start "$name"; then MCP_STATUS[$name]="failed"; MCP_DETAIL[$name]="$MCP_ERROR"; return 1; fi
+  if ! mcp_broker_start "$name"; then
+    (( MCP_CONNECT_CANCELLED )) && return 130
+    MCP_STATUS[$name]="failed"; MCP_DETAIL[$name]="$MCP_ERROR"; return 1
+  fi
   if ! _mcp_discover_modern "$name"; then
+    # A cancelled or broken transport cannot negotiate a fallback protocol.
+    (( MCP_CONNECT_CANCELLED )) && return 130
+    (( MCP_CONNECT_ABORTED )) && return 1
     if ! _mcp_initialize_legacy "$name"; then
+      (( MCP_CONNECT_CANCELLED )) && return 130
+      (( MCP_CONNECT_ABORTED )) && return 1
       MCP_STATUS[$name]="protocol mismatch"; MCP_DETAIL[$name]="$MCP_ERROR"; mcp_broker_stop "$name"; return 1
     fi
   fi
-  if ! mcp_fetch_tools "$name"; then MCP_STATUS[$name]="failed"; MCP_DETAIL[$name]="$MCP_ERROR"; mcp_broker_stop "$name"; return 1; fi
+  if ! mcp_fetch_tools "$name"; then
+    (( MCP_CONNECT_CANCELLED )) && return 130
+    MCP_STATUS[$name]="failed"; MCP_DETAIL[$name]="$MCP_ERROR"; mcp_broker_stop "$name"; return 1
+  fi
   MCP_STATUS[$name]="connected"
   MCP_DETAIL[$name]="tools loaded"
   _mcp_rebuild_tool_catalog
@@ -790,10 +830,12 @@ mcp_connect() {
 
 mcp_connect_all() {
   local name="" failures=""
+  MCP_CONNECT_CANCELLED=0
   for name in "${MCP_NAMES[@]}"; do
     (( ${MCP_ENABLED[$name]:-0} )) || continue
     [[ "${MCP_TYPE[$name]}" == stdio ]] || continue
     mcp_connect "$name" || failures+="${failures:+; }${name}: ${MCP_ERROR}"
+    (( MCP_CONNECT_CANCELLED )) && return 130
   done
   [[ -z "$failures" ]] || { MCP_ERROR="$failures"; return 1; }
 }
@@ -801,7 +843,9 @@ mcp_connect_all() {
 mcp_tools_schema_json() {
   local name="" output="" comma=""
   mcp_connect_all >/dev/null 2>&1 || true
+  (( MCP_CONNECT_CANCELLED )) && { REPLY=''; return 130; }
   for name in "${MCP_TOOL_NAMES[@]}"; do
+    [[ "${MCP_STATUS[${MCP_TOOL_SERVER[$name]}]:-}" == connected ]] || continue
     (( $+functions[agent_tool_is_admitted] )) && ! agent_tool_is_admitted "$name" && continue
     output+="${comma}${MCP_TOOL_SCHEMA[$name]}"; comma=,
   done

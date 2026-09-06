@@ -366,7 +366,7 @@ agent_compact_history() {
   AGENT_COMPACTION_IN_PROGRESS=1
   {
     agent_context_configure
-    agent_build_payload
+    agent_build_payload || return $?
     agent_estimate_payload_tokens "$REPLY"
     before=$REPLY
     agent_compaction_limit
@@ -462,7 +462,12 @@ agent_compact_history() {
     done
 
     agent_compaction_replace_history "$summary"
-    agent_build_payload
+    agent_build_payload || {
+      local -i payload_status=$?
+      AGENT_MESSAGES=("${original_messages[@]}")
+      AGENT_COMPACTION_SUMMARY="$original_summary"
+      return "$payload_status"
+    }
     agent_estimate_payload_tokens "$REPLY"
     after=$REPLY
     yield=$(( before - after ))
@@ -492,7 +497,7 @@ agent_prepare_payload() {
   local payload="" stream="${1:-false}"
   local -i estimate limit compact_status
   agent_context_configure
-  agent_build_payload "$stream"
+  agent_build_payload "$stream" || return $?
   payload="$REPLY"
   agent_estimate_payload_tokens "$payload"
   estimate=$REPLY
@@ -502,7 +507,7 @@ agent_prepare_payload() {
     agent_compact_history auto
     compact_status=$?
     (( compact_status == 0 )) || return "$compact_status"
-    agent_build_payload "$stream"
+    agent_build_payload "$stream" || return $?
     payload="$REPLY"
     agent_estimate_payload_tokens "$payload"
   fi
@@ -513,7 +518,7 @@ agent_context_summary() {
   local last_prompt="unknown"
   local -i estimate limit
   agent_context_configure
-  agent_build_payload
+  agent_build_payload || return $?
   agent_estimate_payload_tokens "$REPLY"
   estimate=$REPLY
   agent_compaction_limit
@@ -521,7 +526,7 @@ agent_context_summary() {
   (( AGENT_LAST_PROMPT_TOKENS > 0 )) && last_prompt="$AGENT_LAST_PROMPT_TOKENS"
   local summary="Context: ${AGENT_CONTEXT_WINDOW} tokens (${ZCODER_CONTEXT_WINDOW} setting); estimated next prompt: ${estimate} tokens; automatic compaction near ${limit} tokens; output ceiling: ${ZCODER_MAX_OUTPUT_TOKENS:-8192}; checkpoints: ${AGENT_COMPACTION_COUNT}; last Ollama prompt: ${last_prompt}."
   if (( $+functions[agent_context_bill] )); then
-    agent_context_bill
+    agent_context_bill || return $?
     summary+=$'\n'"$REPLY"
   fi
   REPLY="$summary"

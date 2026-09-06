@@ -10,7 +10,11 @@ disconnects that server and cancels the tool round; timed-out calls also disconn
 External side effects may have completed or may continue after disconnection.
 The next turn or an explicit reconnect establishes a fresh connection without
 replaying the cancelled request. External-write approvals still precede dispatch.
-Startup, negotiation, and tool discovery remain synchronous.
+Local interactive startup, negotiation, and paginated tool discovery also keep
+input responsive. Escape closes the affected connection, skips remaining servers
+in that pass, and cancels any model request being prepared. It never publishes
+partial tool pages or triggers legacy negotiation after cancellation. A later
+request can retry connection setup. Headless setup retains synchronous waits.
 
 ## Protocol support
 

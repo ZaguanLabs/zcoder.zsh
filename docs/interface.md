@@ -164,7 +164,7 @@ compaction, persistent goals and their verifier, LFM models, remote-server turns
 ACP, and one-shot prompts retain buffered Ollama requests in this stage. LFM's
 normalization and goal verification must finish before their answers are shown.
 
-While waiting for Ollama, a local shell command, search, patch, MCP tool call,
+While waiting for Ollama, a local shell command, search, patch, MCP connection or tool call,
 external delegate, or remote events, you can edit
 and paste into the prompt. It is labelled **Draft** during activity. Enter leaves
 it unsent; send it after the current activity finishes. Escape stops the active
@@ -173,7 +173,7 @@ response or local tool process while preserving your draft.
 Tab switches between the draft and transcript during activity. Transcript
 selection, folding, reasoning inspection, and scrolling work with their usual
 keys. Session switching, model selection, and the command palette remain idle
-controls. MCP startup/discovery, native file operations, and remote HTTP requests
+controls. Native file operations and remote HTTP requests
 can still delay input handling until their next polling point.
 
 Local interactive shell commands run only after the existing approval checks.
@@ -205,7 +205,15 @@ uncertain outcome. An external action may already have completed or may continue
 after disconnection. Calls that time out also disconnect. The next turn or an
 explicit MCP reconnect starts a fresh connection; cancelled requests are not
 replayed. External-write approval still happens before the request is sent.
-Server startup, protocol negotiation, and tool discovery remain synchronous.
+MCP broker startup, protocol negotiation, and paginated tool discovery also
+allow draft editing, folding, and resizing. Escape stops connection preparation,
+closes the affected broker, and skips remaining servers in that connection pass.
+If this happens while preparing a prompt or warm-up, no model request is sent.
+Tool pages are published only after discovery completes. Cancellation or a
+broken transport never triggers legacy protocol fallback. Restarting a server
+from `/mcp` temporarily closes the inspector while the draft accepts input, then
+reopens it with the connection result. Headless connection setup keeps its
+existing synchronous behavior.
 
 Status changes repaint the header, and typing normally repaints only the prompt.
 Window resizing and changing the prompt's height rebuild the layout as needed.

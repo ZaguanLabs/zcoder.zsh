@@ -212,26 +212,33 @@ _ui_mcp_draw() {
 
 _ui_mcp_input() {
   if [[ "$modal_ch" == r && ${#MCP_NAMES} -gt 0 ]]; then
-    local name="${MCP_NAMES[modal_selected]}"
-    mcp_broker_stop "$name"; MCP_PROTOCOL[$name]=""; MCP_SERVER_TOOLS[$name]=""
-    if (( ${MCP_ENABLED[$name]:-0} )); then
-      MCP_STATUS[$name]=configured
-      mcp_connect "$name" || MCP_DETAIL[$name]="$MCP_ERROR"
-    else MCP_STATUS[$name]=disabled; MCP_DETAIL[$name]=""
-    fi
-    _ui_mcp_items; modal_dirty=1
+    # Release the overlay before the activity loop owns draft input.
+    modal_result="restart:$modal_selected"; modal_accepted=1; modal_done=1
   else _ui_modal_list_input
   fi
   return 0
 }
 
 ui_mcp_servers() {
-  local previous_status="$UI_STATUS"
+  local previous_status="$UI_STATUS" name=''
+  local -i modal_initial=1 MCP_INTERACTIVE_CONNECT=1
   local -a modal_items=() modal_item_attrs=()
   ui_set_status "Connecting MCP"; ui_draw_header
   mcp_connect_all >/dev/null 2>&1 || true
-  _ui_mcp_items
-  ui_modal_run "MCP Servers" _ui_mcp_draw _ui_mcp_input 20 88
+  while true; do
+    _ui_mcp_items
+    ui_modal_run "MCP Servers" _ui_mcp_draw _ui_mcp_input 20 88 || break
+    [[ "$REPLY" == restart:* ]] || break
+    modal_initial=${REPLY#restart:}
+    name="${MCP_NAMES[modal_initial]}"
+    mcp_broker_stop "$name"; MCP_PROTOCOL[$name]=''; MCP_SERVER_TOOLS[$name]=''
+    if (( ${MCP_ENABLED[$name]:-0} )); then
+      MCP_STATUS[$name]=configured
+      mcp_connect "$name" || MCP_DETAIL[$name]="$MCP_ERROR"
+    else MCP_STATUS[$name]=disabled; MCP_DETAIL[$name]=''
+    fi
+    _mcp_rebuild_tool_catalog
+  done
   ui_set_status "$previous_status"; ui_draw_header
 }
 

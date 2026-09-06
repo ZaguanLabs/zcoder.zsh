@@ -3155,6 +3155,7 @@ source "${TEST_DIR}/terminal.zsh"
 source "${TEST_DIR}/status.zsh"
 source "${TEST_DIR}/process.zsh"
 source "${TEST_DIR}/tool_wait.zsh"
+source "${TEST_DIR}/mcp_connect_wait.zsh"
 
 if (( FAILURES > 0 )); then
   print -u2 -r -- "${FAILURES} test(s) failed"

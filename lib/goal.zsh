@@ -224,7 +224,7 @@ goal_verify_candidate() {
     fi
     (( step++ ))
     agent_set_status "Goal verifying ${step}"
-    agent_build_payload
+    agent_build_payload || return $?
     payload="$REPLY"
     agent_ollama_chat "$payload" "$OLLAMA_HOST"
     request_status=$?

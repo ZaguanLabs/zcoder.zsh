@@ -96,7 +96,7 @@ deadline distinguishes cancellation from terminal protocol sequences.
 
 Remote turns poll input without blocking between nonempty events as well as
 during idle responses. This prevents continuous event traffic from starving
-input. MCP startup/discovery, native file operations, and in-flight remote HTTP
+input. Native file operations and in-flight remote HTTP
 requests still bound how often the UI can poll.
 
 ### Interactive external processes
@@ -135,8 +135,8 @@ implicitly. Function-local `always` cleanup removes patch scratch files.
 
 `mcp_call_tool` opts its broker request into the shared activity wait. The broker
 continues to own server stdio and JSON-RPC correlation; the parent retains the
-connection registry, approvals, and result parsing. Startup/discovery and
-headless transport waits keep their existing behavior. Cancellation and transport
+connection registry, approvals, and result parsing. Headless transport waits
+keep their existing behavior. Cancellation and transport
 failure disconnect the affected broker, clear its ownership entries, and mark
 the server for reconnection. The tool round stops on cancellation without replay.
 Outcomes of external mutations remain explicitly uncertain after disconnection.
@@ -145,6 +145,15 @@ Broker children clear inherited UI/session traps. Parent-side shutdown is
 bounded even if the broker is stuck reading a partial line, and the interactive
 shutdown grace period continues polling input. A subsequent connection starts
 with a fresh broker and clears old spool responses.
+
+Interactive connection setup uses the same wait callbacks for broker readiness,
+modern/legacy negotiation, and each tools/list page. Dynamically scoped connection
+state distinguishes a cancelled or broken transport from a valid protocol
+rejection, so only the latter can attempt legacy negotiation. Cancellation stops
+the remaining connection pass and propagates through schema and payload builders
+before a prompt, warm-up, or compaction can issue a model request. Partial tool
+pages remain local until the complete catalog is ready. The MCP inspector releases
+its overlay before restarting a server, then recreates it after connection setup.
 
 ### Optional terminal protocol ownership
 

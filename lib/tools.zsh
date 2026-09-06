@@ -37,7 +37,7 @@ tools_schema_json() {
   # tool order, and project-designated navigation must not be shadowed by the
   # generic built-ins that follow it.
   if (( $+functions[mcp_tools_schema_json] && ${#MCP_NAMES} > 0 )); then
-    mcp_tools_schema_json
+    mcp_tools_schema_json || return $?
     mcp_schemas="$REPLY"
     if [[ -n "$mcp_schemas" ]]; then
       output+="$mcp_schemas"

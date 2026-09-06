@@ -197,7 +197,7 @@ _ui_context_draw() {
 
 ui_show_context() {
   local -a modal_lines=()
-  if [[ "${REMOTE_MODE:-local}" != client ]]; then agent_context_summary; fi
+  if [[ "${REMOTE_MODE:-local}" != client ]]; then agent_context_summary || return $?; fi
   ui_context_lines
   modal_lines=("${UI_CONTEXT_LINES[@]}")
   ui_modal_run "Context usage" _ui_context_draw _ui_modal_view_input 24 92 || true
