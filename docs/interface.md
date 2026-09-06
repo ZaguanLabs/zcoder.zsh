@@ -52,7 +52,7 @@ server. See [Remote-agent server](remote.md).
 
 ## Copy the transcript
 
-Continuous curses redraws can make mouse selection unreliable. Ctrl+Y or
+Transcript updates can make mouse selection unreliable. Ctrl+Y or
 `/copy` temporarily leaves the TUI and prints the visible transcript as stable
 plain text. Copy it with the terminal's normal controls, then press Enter to
 return.
@@ -105,6 +105,22 @@ share a modal lifecycle and adapt when the terminal resizes. Up/Down and
 Page Up/Page Down scroll long context or approval details. Escape closes a view
 or denies an approval. Shell-command and external-action approval policies
 continue to apply.
+
+## Drafting while the agent works
+
+While waiting for Ollama, an external delegate, or remote events, you can edit
+and paste into the prompt. It is labelled **Draft** during activity. Enter leaves
+it unsent; send it after the current activity finishes. Escape stops the active
+response while preserving your draft.
+
+Tab switches between the draft and transcript during activity. Transcript
+selection, folding, reasoning inspection, and scrolling work with their usual
+keys. Session switching, model selection, and the command palette remain idle
+controls. Synchronous tools and remote HTTP requests can still delay input
+handling until their next polling point.
+
+Status changes repaint the header, and typing normally repaints only the prompt.
+Window resizing and changing the prompt's height rebuild the layout as needed.
 
 ## Keyboard shortcuts
 

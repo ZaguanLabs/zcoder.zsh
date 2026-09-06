@@ -29,6 +29,11 @@ ui_modal_run() {
   {
     while (( ! modal_done )); do
       ui_poll_resize
+      # Collect an already-running local warm-up without admitting new work or
+      # dispatching commands while this modal owns input and the screen.
+      if (( ${AGENT_WARMUP_ACTIVE:-0} && $+functions[agent_warmup_poll] )); then
+        agent_warmup_poll
+      fi
       if (( SCREEN_H != previous_h || SCREEN_W != previous_w )); then
         zcurses delwin overlay_win 2>/dev/null || true
         modal_h=$(( SCREEN_H - 2 )); modal_w=$(( SCREEN_W - 2 ))
@@ -61,6 +66,7 @@ ui_modal_run() {
   } always {
     zcurses delwin overlay_win 2>/dev/null || true
     UI_MODAL_ACTIVE=0
+    ui_invalidate
     zcurses touch top_win chat_win input_win foot_win 2>/dev/null || true
     (( SIDE_W > 0 )) && zcurses touch side_win 2>/dev/null
     ui_refresh_all

@@ -11,6 +11,13 @@ typeset -g ZCODER_WORKSPACE="$fixture_root" OLLAMA_HOST=fixture ZCODER_PROFILE=c
 typeset -gi fixture_context_reads=0
 typeset -ga OLLAMA_MODELS=() AGENT_CONTEXT_COMPONENT_LABELS=(Guidance Tools) AGENT_CONTEXT_COMPONENT_VALUES=(100 400)
 typeset -g fixture_dispatched=""
+typeset -gi AGENT_WARMUP_ACTIVE=1
+agent_warmup_poll() {
+  AGENT_WARMUP_ACTIVE=0
+  ui_set_status Ready
+  ui_draw_header
+  mapfile[${fixture_base}.warmup_done]="$UI_MODAL_ACTIVE"
+}
 ollama_get_models() { OLLAMA_MODELS=(alpha beta); }
 agent_context_summary() {
   (( fixture_context_reads++ ))

@@ -3147,17 +3147,7 @@ ui_destroy_windows
 assert_eq "5" "${#MOCK_ZCURSES_CALLS}" "UI destroys each curses window separately"
 assert_eq "delwin top_win" "${MOCK_ZCURSES_CALLS[1]}" "UI passes one name to each delwin call"
 
-ui_draw_header() { return 0; }
-ui_draw_sidebar() { return 0; }
-ui_draw_chat() { return 0; }
-ui_draw_input() { return 0; }
-ui_draw_footer() { return 0; }
-MOCK_ZCURSES_CALLS=()
-UI_ACTIVE=1
-SIDE_W=25
-ui_refresh_all
-assert_eq "1" "${#MOCK_ZCURSES_CALLS}" "full UI redraw performs one curses refresh"
-assert_eq "refresh top_win side_win chat_win input_win foot_win" "${MOCK_ZCURSES_CALLS[1]}" "full UI redraw batches every visible window"
+source "${TEST_DIR}/activity.zsh"
 
 if (( FAILURES > 0 )); then
   print -u2 -r -- "${FAILURES} test(s) failed"

@@ -187,6 +187,7 @@ TERM=xterm-256color zpty -b overlays-ui overlay_pty_run
 assert_success "real curses modal fixture starts in a PTY" $?
 overlay_pty_wait "$overlay_pty_base.palette_draw" ':80'
 assert_success "real curses palette renders its initial frame" $?
+assert_eq "1" "${mapfile[$overlay_pty_base.warmup_done]:-}" "local warm-up completes while the palette retains modal ownership"
 zpty -w -n overlays-ui host
 overlay_pty_wait "$overlay_pty_base.palette_draw" 'host:80'
 assert_success "real palette filters typed input" $?

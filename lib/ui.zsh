@@ -1,6 +1,7 @@
 # Adaptive curses interface for chat, tools, and prompt editing.
 
-typeset -gi UI_ACTIVE=0
+typeset -gi UI_ACTIVE=0 UI_ACTIVITY_DEPTH=0
+typeset -gF UI_ACTIVITY_ESCAPE_AT=0.0
 typeset -gi SCREEN_H=24 SCREEN_W=80 TOP_H=3 SIDE_W=24 INPUT_H=3 FOOT_H=1
 typeset -gr INPUT_MAX_ROWS=4
 typeset -gi UI_RESIZE_PENDING=0
@@ -20,6 +21,70 @@ typeset -ga UI_MESSAGE_STARTS=() UI_MESSAGE_SEGMENT_STARTS=()
 typeset -ga UI_LINES=() UI_ATTRS=()
 typeset -ga UI_LINE_SEGMENT_STARTS=() UI_LINE_SEGMENT_COUNTS=()
 typeset -ga UI_SEGMENT_TEXTS=() UI_SEGMENT_ATTRS=()
+typeset -gA UI_WINDOW_KEYS=() UI_DIRTY_WINDOWS=() UI_PENDING_WINDOWS=()
+
+# Cache each window's small input state, never a second terminal cell buffer.
+# Transcript content is tracked by its existing generation/count/dirty cursor.
+ui_invalidate() {
+  local name=""
+  local -a names=("$@")
+  (( ${#names} )) || names=(header sidebar chat input footer)
+  for name in "${names[@]}"; do UI_DIRTY_WINDOWS[$name]=1; done
+}
+
+_ui_window_key() {
+  local -a fields=("$SCREEN_H" "$SCREEN_W" "$SIDE_W" "$INPUT_H" "$TOP_H" "$FOOT_H")
+  case "$1" in
+    header) fields+=("$UI_STATUS" "$ZCODER_NAME" "$ZCODER_VERSION" "$ZCODER_MODEL" "$OLLAMA_HOST" "$ZCODER_WORKSPACE" "${REMOTE_MODE:-local}" "$REMOTE_SERVER_NAME" "$REMOTE_ENDPOINT") ;;
+    sidebar) fields+=("$UI_FOCUS" "$ZCODER_WORKSPACE" "$ZCODER_PROFILE" "$ZCODER_COMMAND_POLICY" "${TOOL_PATCH_RETRY_REQUIRED:-0}" "${#INSTRUCTION_SOURCES}" "$CURRENT_SESSION_ID"
+      "${(j: :)${(@q)SESSION_IDS}}" "${(j: :)${(@q)SESSION_TITLES}}" "${(j: :)${(@q)SKILL_DISCOVERABLE_NAMES}}" "${(j: :)${(@q)SKILL_ACTIVE_NAMES}}") ;;
+    chat) fields+=("$UI_FOCUS" "$UI_TRANSCRIPT_GENERATION" "${#UI_ROLES}" "$UI_RENDER_CACHE_KEY" "$ZCODER_MODEL" "$UI_SELECTED_EVENT" "$UI_SCROLL" "$UI_AUTO_SCROLL") ;;
+    input) fields+=("$UI_FOCUS" "$INPUT_BUF" "$INPUT_POS" "$INPUT_VIEW_TOP" "$(( UI_ACTIVITY_DEPTH > 0 ))") ;;
+    footer) fields+=("$UI_FOCUS" "$(( UI_ACTIVITY_DEPTH > 0 ))") ;;
+  esac
+  # Quoting each field preserves boundaries even in multiline drafts/titles.
+  REPLY="${(j: :)${(@q)fields}}"
+}
+
+_ui_draw_window() {
+  local name="$1"
+  local -i defer_refresh=${2:-0} dirty=${UI_DIRTY_WINDOWS[$1]:-0}
+  (( UI_ACTIVE )) || return 0
+  [[ "$name" == sidebar ]] && (( SIDE_W == 0 )) && return 0
+  # Background status changes must not paint over the active modal.
+  (( ${UI_MODAL_ACTIVE:-0} )) && { UI_DIRTY_WINDOWS[$name]=1; return 0; }
+  [[ "$name" == chat ]] && (( UI_RENDER_DIRTY_FROM > 0 || UI_REVEAL_SELECTED )) && dirty=1
+  _ui_window_key "$name"
+  if (( dirty )) || [[ "${UI_WINDOW_KEYS[$name]:-}" != "$REPLY" ]]; then
+    "_ui_paint_${name}" 1
+    _ui_window_key "$name"
+    UI_WINDOW_KEYS[$name]="$REPLY"
+    UI_DIRTY_WINDOWS[$name]=0
+    UI_PENDING_WINDOWS[$name]=1
+  fi
+  (( defer_refresh )) || ui_flush
+  return 0
+}
+
+ui_flush() {
+  (( UI_ACTIVE && ! ${UI_MODAL_ACTIVE:-0} && ${#UI_PENDING_WINDOWS} )) || return 0
+  local -a windows=()
+  (( ${UI_PENDING_WINDOWS[header]:-0} )) && windows+=(top_win)
+  (( ${UI_PENDING_WINDOWS[sidebar]:-0} && SIDE_W > 0 )) && windows+=(side_win)
+  (( ${UI_PENDING_WINDOWS[chat]:-0} )) && windows+=(chat_win)
+  (( ${UI_PENDING_WINDOWS[footer]:-0} )) && windows+=(foot_win)
+  # Refreshing an unchanged input window restores its cursor without repainting
+  # its contents. Keep it last in the one physical update.
+  windows+=(input_win)
+  zcurses refresh "${windows[@]}"
+  UI_PENDING_WINDOWS=()
+}
+
+ui_draw_header() { _ui_draw_window header "${1:-0}"; }
+ui_draw_sidebar() { _ui_draw_window sidebar "${1:-0}"; }
+ui_draw_chat() { _ui_draw_window chat "${1:-0}"; }
+ui_draw_input() { _ui_draw_window input "${1:-0}"; }
+ui_draw_footer() { _ui_draw_window footer "${1:-0}"; }
 
 # Keep the signal handler minimal. Geometry is queried and curses is rebuilt
 # from the normal event loop, never asynchronously in the middle of a redraw.
@@ -54,6 +119,8 @@ ui_calculate_input_height() {
 
 ui_setup_windows() {
   ui_destroy_windows
+  UI_PENDING_WINDOWS=()
+  ui_invalidate
   [[ "$UI_FOCUS" == chat ]] && UI_REVEAL_SELECTED=1
   local -a pos=()
   zcurses position stdscr pos 2>/dev/null
@@ -116,7 +183,7 @@ ui_poll_resize() {
   ui_refresh_all
 }
 
-ui_draw_header() {
+_ui_paint_header() {
   (( UI_ACTIVE )) || return 0
   local -i defer_refresh="${1:-0}"
   local badge="[ ${UI_STATUS} ]" workspace="${ZCODER_WORKSPACE:t}" host="$OLLAMA_HOST"
@@ -143,7 +210,7 @@ ui_draw_header() {
   (( defer_refresh )) || zcurses refresh top_win
 }
 
-ui_draw_sidebar() {
+_ui_paint_sidebar() {
   (( UI_ACTIVE && SIDE_W > 0 )) || return 0
   local -i defer_refresh="${1:-0}"
   local root="${ZCODER_WORKSPACE:t}" policy="$ZCODER_COMMAND_POLICY" divider="" display=""
@@ -674,7 +741,7 @@ ui_render_messages() {
   UI_RENDER_COUNT=$count
 }
 
-ui_draw_chat() {
+_ui_paint_chat() {
   (( UI_ACTIVE )) || return 0
   local -i defer_refresh="${1:-0}"
   local -i inner_w=$(( SCREEN_W - SIDE_W - 2 )) inner_h=$(( SCREEN_H - TOP_H - INPUT_H - FOOT_H - 2 ))
@@ -701,6 +768,7 @@ ui_draw_chat() {
     UI_RENDER_COUNT=$message_count
     UI_RENDER_DIRTY_FROM=0
   fi
+  UI_RENDER_DIRTY_FROM=0
   total=${#UI_LINES}; max_scroll=$(( total - inner_h )); (( max_scroll < 0 )) && max_scroll=0
   (( UI_AUTO_SCROLL )) && UI_SCROLL=$max_scroll
   if [[ "$UI_FOCUS" == chat ]] && (( message_count > 0 )); then
@@ -757,18 +825,19 @@ ui_draw_chat() {
   (( defer_refresh )) || zcurses refresh chat_win
 }
 
-ui_draw_input() {
+_ui_paint_input() {
   (( UI_ACTIVE )) || return 0
   local -i defer_refresh="${1:-0}"
   local -i max_rows=$(( INPUT_H - 2 )) row visual_row cursor_y cursor_x total
   local visible="" marker="" title=" Prompt (Enter sends · Shift-Enter newline) "
   ui_input_width
   input_layout "$REPLY" "$max_rows"
+  (( UI_ACTIVITY_DEPTH > 0 )) && title=" Draft (send after activity completes) "
   total=${#INPUT_VISUAL_LINES}
   zcurses clear input_win
   [[ "$UI_FOCUS" == input ]] && zcurses attr input_win bold green/black || zcurses attr input_win dim white/black
   zcurses border input_win
-  if (( total > INPUT_VISIBLE_ROWS )); then
+  if (( total > INPUT_VISIBLE_ROWS && UI_ACTIVITY_DEPTH == 0 )); then
     title=" Prompt (Enter sends · Shift-Enter newline · ${INPUT_VIEW_TOP}-$(( INPUT_VIEW_TOP + INPUT_VISIBLE_ROWS - 1 ))/${total}) "
   fi
   zcurses move input_win 0 2
@@ -811,11 +880,12 @@ ui_input_changed() {
   fi
 }
 
-ui_draw_footer() {
+_ui_paint_footer() {
   (( UI_ACTIVE )) || return 0
   local -i defer_refresh="${1:-0}"
   local text=" ^P Commands  Enter Send  S/M-Enter Newline  ^Q Quit  Tab Focus  ^Y Copy  Esc Stop  ^O Model  ^R Reason  PgUp/Dn Scroll"
   [[ "$UI_FOCUS" == chat ]] && text=" ^P Commands  ↑/↓ Select  Enter/Space Fold  ^R Reasoning  Home/End First/Last  PgUp/Dn Scroll  Tab Prompt  ^Y Copy"
+  (( UI_ACTIVITY_DEPTH > 0 )) && text=" Esc Stop  Tab Prompt/Transcript  ↑/↓ Navigate  Enter Fold in Transcript  ^R Reasoning  PgUp/Dn Scroll"
   text="${text[1,$SCREEN_W]}"
   zcurses clear foot_win; zcurses attr foot_win reverse dim white/black
   zcoder_pad "$text" "$SCREEN_W"; zcurses move foot_win 0 0; zcurses string foot_win "$REPLY"
@@ -824,95 +894,112 @@ ui_draw_footer() {
 
 ui_refresh_all() {
   (( UI_ACTIVE )) || return 0
-  local -a windows=(top_win)
   ui_draw_header 1
-  if (( SIDE_W > 0 )); then
-    ui_draw_sidebar 1
-    windows+=(side_win)
-  fi
+  (( SIDE_W > 0 )) && ui_draw_sidebar 1
   ui_draw_chat 1
   ui_draw_input 1
   ui_draw_footer 1
-  windows+=(chat_win input_win foot_win)
-  # zcurses batches multiple windows into one physical terminal update. This
-  # prevents users from seeing half-painted frames between tool events.
-  zcurses refresh "${windows[@]}"
+  ui_flush
 }
 
-# Keep the terminal responsive while the Ollama request runs in its worker.
-# Other editing keys are intentionally left alone; Escape is the generation
-# cancellation key and scrolling remains available for the transcript.
-ui_wait_for_generation() {
-  local ch="" key="" mouse=""
-  while ! http_async_ready; do
-    ui_poll_resize
-    ch=""; key=""; mouse=""
-    zcurses timeout input_win 50
-    zcurses input input_win ch key mouse
-    if [[ "$key" == RESIZE ]]; then
-      UI_RESIZE_PENDING=1
-      ui_poll_resize
-    elif [[ "$ch" == $'\x1b' ]]; then
-      return 130
-    elif [[ "$key" == PPAGE ]]; then
-      UI_AUTO_SCROLL=0
-      (( UI_SCROLL -= 6 )); (( UI_SCROLL < 0 )) && UI_SCROLL=0
-      ui_draw_chat
-    elif [[ "$key" == NPAGE ]]; then
-      (( UI_SCROLL += 6 ))
-      ui_draw_chat
-    fi
-  done
+# Editing is shared by the idle loop and activity polling. Sending a prompt,
+# changing sessions/models, and running slash commands stay with the idle loop.
+ui_editor_input() {
+  local ch="$1" key="$2"
+  if [[ "$key" == BACKSPACE || "$ch" == $'\x7f' || "$ch" == $'\b' ]]; then input_backspace
+  elif [[ "$key" == DC || "$key" == DELETE ]]; then input_delete
+  elif [[ "$key" == LEFT ]]; then input_left
+  elif [[ "$key" == RIGHT ]]; then input_right
+  elif [[ "$key" == HOME || "$ch" == $'\x01' ]]; then input_home
+  elif [[ "$key" == END || "$ch" == $'\x05' ]]; then input_end
+  elif [[ "$ch" == $'\x15' || "$ch" == $'\x03' ]]; then input_clear
+  elif [[ "$ch" == $'\x17' ]]; then input_kill_word
+  elif [[ "$key" == UP ]]; then
+    ui_input_width
+    input_move_vertical -1 "$REPLY" $(( INPUT_H - 2 )) || input_history_previous
+  elif [[ "$key" == DOWN ]]; then
+    ui_input_width
+    input_move_vertical 1 "$REPLY" $(( INPUT_H - 2 )) || input_history_next
+  elif [[ -n "$ch" && "$ch" == [[:print:]] ]]; then input_insert "$ch"
+  else return 1
+  fi
+  ui_input_changed
   return 0
 }
 
-# Poll one input event between short remote-event HTTP requests. Keeping this
-# in the UI module preserves the remote transport's independence from curses.
-ui_poll_remote_turn() {
-  local ch="" key="" mouse=""
-  ui_poll_resize
-  zcurses timeout input_win 50
-  zcurses input input_win ch key mouse
+ui_activity_begin() {
+  (( UI_ACTIVITY_DEPTH++ ))
+  [[ "$UI_FOCUS" == sidebar ]] && UI_FOCUS=input
+  ui_refresh_all
+}
+
+ui_activity_end() {
+  (( UI_ACTIVITY_DEPTH > 0 )) && (( UI_ACTIVITY_DEPTH-- ))
+  ui_refresh_all
+}
+
+ui_activity_input() {
+  local ch="$1" key="$2"
   if [[ "$key" == RESIZE ]]; then
-    UI_RESIZE_PENDING=1
-    ui_poll_resize
-  elif [[ "$ch" == $'\x1b' ]]; then
-    return 130
+    UI_RESIZE_PENDING=1; ui_poll_resize; return 0
+  fi
+  # Distinguish a bare Escape from bracketed paste and enhanced newline keys.
+  if [[ -z "$ch" && -z "$key" ]]; then
+    if [[ "$INPUT_TERM_STATE" == escape && "$INPUT_ESCAPE_BUF" == $'\e' ]] && (( EPOCHREALTIME - UI_ACTIVITY_ESCAPE_AT >= 0.05 )); then
+      INPUT_TERM_STATE=normal; INPUT_ESCAPE_BUF=""
+      return 130
+    fi
+    return 0
+  fi
+  if [[ "$INPUT_TERM_STATE" == normal && "$ch" == $'\e' ]]; then UI_ACTIVITY_ESCAPE_AT=$EPOCHREALTIME; fi
+  if input_decode_terminal_event "$ch" "$key"; then
+    if [[ "$INPUT_EVENT_ACTION" == newline ]]; then input_insert $'\n'; ui_input_changed
+    elif [[ "$INPUT_EVENT_ACTION" == paste && -n "$INPUT_EVENT_TEXT" ]]; then input_insert "$INPUT_EVENT_TEXT"; ui_input_changed
+    fi
+  elif [[ "$ch" == $'\t' || "$key" == TAB ]]; then
+    [[ "$UI_FOCUS" == input ]] && UI_FOCUS=chat || UI_FOCUS=input
+    [[ "$UI_FOCUS" == chat ]] && { UI_AUTO_SCROLL=0; UI_REVEAL_SELECTED=1; }
+    ui_refresh_all
+  elif [[ "$ch" == $'\x12' ]]; then ui_toggle_reasoning
   elif [[ "$key" == PPAGE ]]; then
-    UI_AUTO_SCROLL=0
-    (( UI_SCROLL -= 6 )); (( UI_SCROLL < 0 )) && UI_SCROLL=0
+    UI_AUTO_SCROLL=0; (( UI_SCROLL-=6 )); (( UI_SCROLL < 0 )) && UI_SCROLL=0
     ui_draw_chat
   elif [[ "$key" == NPAGE ]]; then
-    (( UI_SCROLL += 6 ))
-    ui_draw_chat
+    (( UI_SCROLL+=6 )); ui_draw_chat
+  elif [[ "$UI_FOCUS" == chat ]]; then ui_chat_input "$ch" "$key" || true
+  else ui_editor_input "$ch" "$key" || true
   fi
   return 0
 }
 
-ui_wait_for_delegate() {
+ui_poll_activity() {
   local ch="" key="" mouse=""
-  while ! delegate_async_ready; do
-    delegate_async_timed_out && return 124
-    ui_poll_resize
-    ch=""; key=""; mouse=""
-    zcurses timeout input_win 50
-    zcurses input input_win ch key mouse
-    if [[ "$key" == RESIZE ]]; then
-      UI_RESIZE_PENDING=1
-      ui_poll_resize
-    elif [[ "$ch" == $'\x1b' ]]; then
-      return 130
-    elif [[ "$key" == PPAGE ]]; then
-      UI_AUTO_SCROLL=0
-      (( UI_SCROLL -= 6 )); (( UI_SCROLL < 0 )) && UI_SCROLL=0
-      ui_draw_chat
-    elif [[ "$key" == NPAGE ]]; then
-      (( UI_SCROLL += 6 ))
-      ui_draw_chat
-    fi
-  done
+  ui_poll_resize
+  zcurses timeout input_win "${1:-50}"
+  zcurses input input_win ch key mouse
+  ui_activity_input "$ch" "$key"
+}
+
+_ui_wait_for_activity() {
+  local ready="$1" expired="${2:-}"
+  local -i poll_status=0
+  ui_activity_begin
+  {
+    while ! "$ready"; do
+      if [[ -n "$expired" ]] && "$expired"; then return 124; fi
+      ui_poll_activity
+      poll_status=$?
+      (( poll_status == 0 )) || return "$poll_status"
+    done
+  } always {
+    ui_activity_end
+  }
   return 0
 }
+
+ui_wait_for_generation() { _ui_wait_for_activity http_async_ready; }
+ui_wait_for_delegate() { _ui_wait_for_activity delegate_async_ready delegate_async_timed_out; }
+ui_poll_remote_turn() { ui_poll_activity "${1:-50}"; }
 
 ui_chat_select() {
   emulate -L zsh

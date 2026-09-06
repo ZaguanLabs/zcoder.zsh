@@ -790,25 +790,8 @@ main_tui() {
           zcoder_refresh_sessions
         fi
       fi
-    elif [[ "$key" == BACKSPACE || "$ch" == $'\x7f' || "$ch" == $'\b' ]]; then
-      input_backspace; ui_input_changed
-    elif [[ "$key" == DC || "$key" == DELETE ]]; then
-      input_delete; ui_input_changed
-    elif [[ "$key" == LEFT ]]; then input_left; ui_input_changed
-    elif [[ "$key" == RIGHT ]]; then input_right; ui_input_changed
-    elif [[ "$key" == HOME || "$ch" == $'\x01' ]]; then input_home; ui_input_changed
-    elif [[ "$key" == END || "$ch" == $'\x05' ]]; then input_end; ui_input_changed
-    elif [[ "$ch" == $'\x15' ]]; then input_clear; ui_input_changed
-    elif [[ "$ch" == $'\x17' ]]; then input_kill_word; ui_input_changed
-    elif [[ "$key" == UP ]]; then
-      ui_input_width
-      input_move_vertical -1 "$REPLY" $(( INPUT_H - 2 )) || input_history_previous
-      ui_input_changed
-    elif [[ "$key" == DOWN ]]; then
-      ui_input_width
-      input_move_vertical 1 "$REPLY" $(( INPUT_H - 2 )) || input_history_next
-      ui_input_changed
-    elif [[ -n "$ch" && "$ch" != $'\x1b' ]]; then input_insert "$ch"; ui_input_changed
+    else
+      ui_editor_input "$ch" "$key" || true
     fi
   done
 }

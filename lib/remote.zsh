@@ -391,6 +391,17 @@ remote_client_cancel_turn() {
 }
 
 remote_client_user_turn() {
+  local -i interactive=0
+  (( ${UI_ACTIVE:-0} && $+functions[ui_activity_begin] )) && interactive=1
+  (( interactive )) && ui_activity_begin
+  {
+    _remote_client_user_turn "$@"
+  } always {
+    (( interactive )) && ui_activity_end
+  }
+}
+
+_remote_client_user_turn() {
   local user_content="$1" prompt_json="" turn_payload="" event="" role="" content="" thinking="" event_status=""
   local approval_id="" approval_kind="" command_text="" answer="n" decision="n" approval_json="" exit_code="0"
   local tool_phase="" tool_name="" tool_args="{}" tool_result="" tool_succeeded="0" tool_id=""
@@ -424,6 +435,16 @@ remote_client_user_turn() {
   done
   REMOTE_CLIENT_EVENT_CURSOR=0
   while true; do
+    # Drain input even when events arrive continuously. The idle/none branch
+    # retains its short blocking poll; active traffic adds no input delay.
+    if (( ${UI_ACTIVE:-0} && $+functions[ui_poll_remote_turn] )); then
+      ui_poll_remote_turn 0
+      poll_status=$?
+      if (( poll_status == 130 )); then
+        remote_client_cancel_turn
+        return 130
+      fi
+    fi
     if ! remote_client_request GET "/v1/events?after=${REMOTE_CLIENT_EVENT_CURSOR}"; then
       transcript_interrupt_tool || true
       agent_emit error "Remote event request failed: $REMOTE_ERROR"

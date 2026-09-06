@@ -63,8 +63,31 @@ Search text is never evaluated. The context inspector snapshots the existing
 accounting once when opened; its draw callback only wraps that snapshot. The
 component estimates and textual context bill share the same accounting values.
 
-These modal loops do not yet unify background-activity polling. Model discovery
+Modals collect an already-running local warm-up while retaining input ownership.
+Underlying status updates are deferred until the overlay closes. Model discovery
 and MCP connection/restart retain their existing synchronous behavior.
+
+## Rendering and activity input
+
+Each curses window retains a key describing its display state. Transcript keys
+use the existing generation, event count, and mutation cursor rather than copying
+message bodies. Refresh calls repaint changed windows and batch them into one
+physical update; an unchanged frame issues no curses calls. The input window is
+refreshed last to restore its cursor without repainting unchanged text. Resize,
+terminal re-entry, and modal dismissal explicitly invalidate the windows.
+Ncurses continues to own terminal cell comparison and output optimization.
+
+Generation and delegate waits share one input poller with remote turns. It
+supports draft editing, bracketed paste, transcript navigation/folding, and
+Escape cancellation. Enter in the editor leaves the draft unsent during activity;
+session changes and command dispatch remain in the idle loop. A short Escape
+deadline distinguishes cancellation from terminal protocol sequences.
+
+Remote turns poll input without blocking between nonempty events as well as
+during idle responses. This prevents continuous event traffic from starving
+input. Synchronous tool execution and in-flight remote HTTP requests still bound
+how often the UI can poll; this stage does not introduce streaming or a general
+asynchronous tool scheduler.
 
 ## Agent cycle
 
@@ -79,7 +102,8 @@ and verifies changes in proportion to their risk. The agent has no fixed model
 turn ceiling; it continues while progress is being made.
 
 Agent turns currently send `stream: false` to Ollama. In the TUI, the HTTP
-request runs in a background Zsh worker so the interface can accept Escape.
+request runs in a background Zsh worker so the interface can accept draft edits,
+transcript navigation, and Escape.
 Stopping the worker closes the TCP connection and cancels Ollama's request.
 
 Non-streaming does not flatten the reasoning lifecycle. zcoder stores each
