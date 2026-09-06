@@ -21,6 +21,7 @@ source "${PROJECT_DIR}/lib/compact.zsh"
 source "${PROJECT_DIR}/lib/goal.zsh"
 source "${PROJECT_DIR}/lib/agent.zsh"
 source "${PROJECT_DIR}/lib/state.zsh"
+source "${PROJECT_DIR}/lib/harnesses.zsh"
 source "${PROJECT_DIR}/lib/delegate.zsh"
 source "${PROJECT_DIR}/lib/remote.zsh"
 source "${PROJECT_DIR}/lib/acp.zsh"
@@ -79,7 +80,22 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..1002"
+print -r -- "1..1006"
+
+# Headless startup must retain transcripts and remote approvals without loading
+# terminal libraries, handlers, or the delegate execution runtime.
+for headless_mode in server acp; do
+  headless_args=(--acp)
+  [[ "$headless_mode" == server ]] && headless_args=(--server startup-probe)
+  headless_stderr="$TEST_TMP/${headless_mode}-startup.stderr"
+  ZCODER_HOME="$TEST_TMP/${headless_mode}-startup-home" REMOTE_MODE=local \
+    zsh -f "$TEST_DIR/fixtures/headless_startup.zsh" "$PROJECT_DIR/zcoder.zsh" \
+    "${headless_args[@]}" --profile coding --workspace "$TEST_TMP" 2>| "$headless_stderr"
+  assert_success "$headless_mode starts without terminal code and preserves required runtime behavior" $?
+  assert_eq "" "${mapfile[$headless_stderr]:-}" "$headless_mode startup, worker, and cleanup produce no errors"
+  zf_rm -rf -- "$TEST_TMP/${headless_mode}-startup-home"
+  zf_rm -f -- "$headless_stderr"
+done
 
 # ACP uses newline-delimited JSON-RPC while delegating agent work to the same
 # transport-neutral session and tool machinery as the TUI and remote API.
@@ -1514,6 +1530,7 @@ assert_failure "goal verifier dispatch rejects invented write calls" $?
 GOAL_VERIFIER_ACTIVE=0
 
 # The transcript exporter is UI code but does not require curses to be active.
+source "${PROJECT_DIR}/lib/transcript.zsh"
 source "${PROJECT_DIR}/lib/ui.zsh"
 
 ZCODER_SESSIONS_DIR="$TEST_TMP/zcoder-sessions"

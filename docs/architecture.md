@@ -13,6 +13,7 @@ lib/
   agent.zsh             Ollama messages and iterative tool loop
   compact.zsh           token accounting and conversation checkpoints
   goal.zsh              persistent goals and read-only completion verifier
+  harnesses.zsh         external harness catalog and availability
   delegate.zsh          external harness consultations and editing workers
   http.zsh              native TCP/HTTP client
   input.zsh             multiline editor, viewport, and history
@@ -24,6 +25,7 @@ lib/
   skills.zsh            Agent Skill discovery and progressive loading
   state.zsh             workspace/profile-scoped persistent sessions
   tools.zsh             schemas, confinement, dispatch, and execution
+  transcript.zsh        shared session transcript recording
   ui.zsh                adaptive curses layout and approval modal
   util.zsh              wrapping, truncation, and display helpers
 tests/run.zsh           shell-level unit and integration tests
@@ -32,7 +34,10 @@ tests/run.zsh           shell-level unit and integration tests
 ## Library loading
 
 `zcoder_require` sources each library at most once. The core libraries load at
-startup; `acp.zsh` and `remote.zsh` load only when their modes are selected, and
+startup; `acp.zsh` and `remote.zsh` load only when their modes are selected.
+Server and ACP modes skip `input.zsh`, `ui.zsh`, the terminal event handlers,
+and the curses/terminfo modules. They retain `transcript.zsh` for session
+history. Remote handshakes load only `harnesses.zsh` for availability discovery;
 `delegate.zsh` loads on the first external consultation or worker command. The
 `mcp` maintenance CLI loads only the configuration and protocol libraries. Every
 cross-library call into an optionally loaded library is guarded with

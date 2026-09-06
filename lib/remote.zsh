@@ -140,7 +140,7 @@ remote_client_handshake() {
     REMOTE_HARNESSES="$harnesses"
     REMOTE_HARNESS_DISCOVERY_SUPPORTED=1
     if (( ! $+functions[delegate_set_available_csv] && $+functions[zcoder_require] )); then
-      zcoder_require delegate
+      zcoder_require harnesses
     fi
     (( $+functions[delegate_set_available_csv] )) && delegate_set_available_csv "$harnesses"
   else
@@ -1004,7 +1004,7 @@ _remote_server_hello_json() {
   local model_status_json="" model_error_json="" harnesses_json="" harnesses=""
   local effective_policy="${mapfile[$REMOTE_RUNTIME_DIR/command_policy]:-$ZCODER_COMMAND_POLICY}"
   if (( ! $+functions[delegate_available_csv] && $+functions[zcoder_require] )); then
-    zcoder_require delegate
+    zcoder_require harnesses
   fi
   if (( $+functions[delegate_refresh_availability] )); then
     delegate_refresh_availability

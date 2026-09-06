@@ -8,7 +8,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.11.2"
+typeset -gr ZCODER_VERSION="0.11.3"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -40,7 +40,7 @@ if [[ "${1:-}" == mcp ]]; then
   exit "$mcp_status"
 fi
 
-zcoder_require util json mcp http instructions skills input ui tools compact goal agent state
+zcoder_require util json mcp http instructions skills transcript tools compact goal agent state
 
 # The remote-mode default participates in option parsing before lib/remote.zsh
 # loads; that library preserves any value already set here.
@@ -163,6 +163,7 @@ if (( ACP_MODE )) && [[ "$REMOTE_MODE" == server ]]; then
 fi
 
 if [[ "$REMOTE_MODE" != server ]] && (( ! ACP_MODE )); then
+  zcoder_require input ui
   zmodload zsh/curses zsh/terminfo || {
     print -u2 -- "Error: required Zsh curses modules are unavailable."
     exit 1
@@ -245,7 +246,7 @@ cleanup() {
   (( $+functions[relay_stop] )) && relay_stop
   (( $+functions[remote_server_stop] )) && remote_server_stop
   mcp_shutdown_all
-  ui_end
+  (( $+functions[ui_end] )) && ui_end
   zcoder_debug_close
   zcoder_runtime_cleanup
 }
@@ -253,6 +254,17 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
+
+# Headless modes do not need the terminal command handlers or event loop.
+if (( ACP_MODE )); then
+  [[ -z "$ONE_SHOT_PROMPT" ]] || { print -u2 -- "Error: --acp and --prompt cannot be combined"; exit 2; }
+  acp_main
+  exit $?
+elif [[ "$REMOTE_MODE" == server ]]; then
+  [[ -z "$ONE_SHOT_PROMPT" ]] || { print -u2 -- "Error: --server and --prompt cannot be combined"; exit 2; }
+  remote_server_main
+  exit $?
+fi
 
 zcoder_refresh_sessions() {
   if [[ "$REMOTE_MODE" == client && ${REMOTE_SESSIONS_SUPPORTED:-0} -eq 1 ]]; then
@@ -298,7 +310,7 @@ handle_slash_command() {
   local -i delegate_status=0
   case "$text" in
     /claude|/claude\ *|/claude!|/claude!\ *|/codex|/codex\ *|/codex!|/codex!\ *|/agy|/agy\ *|/agy!|/agy!\ *|/opencode*|/help|/\?)
-      zcoder_require delegate
+      zcoder_require harnesses delegate
       ;;
   esac
   provider=""
@@ -790,13 +802,7 @@ main_tui() {
   done
 }
 
-if (( ACP_MODE )); then
-  [[ -z "$ONE_SHOT_PROMPT" ]] || { print -u2 -- "Error: --acp and --prompt cannot be combined"; exit 2; }
-  acp_main
-elif [[ "$REMOTE_MODE" == server ]]; then
-  [[ -z "$ONE_SHOT_PROMPT" ]] || { print -u2 -- "Error: --server and --prompt cannot be combined"; exit 2; }
-  remote_server_main
-elif [[ -n "$ONE_SHOT_PROMPT" ]]; then
+if [[ -n "$ONE_SHOT_PROMPT" ]]; then
   if [[ "$ONE_SHOT_PROMPT" == /goal || "$ONE_SHOT_PROMPT" == /goal\ * ]]; then
     goal_handle_command "$ONE_SHOT_PROMPT"
   else

@@ -9,7 +9,6 @@ typeset -grF UI_RESIZE_CHECK_INTERVAL=0.25
 typeset -g UI_STATUS="Ready"
 typeset -gi UI_SCROLL=0 UI_AUTO_SCROLL=1
 typeset -g UI_FOCUS="input"
-typeset -ga UI_ROLES=() UI_CONTENTS=() UI_THINKINGS=() UI_TIMES=() UI_REASONING_OPEN=()
 # Rendering the whole transcript is linear in its size, so scrolling and tool
 # events must not re-render unchanged content. Non-append mutations of the
 # transcript arrays (toggles, session switches) bump the generation and force
@@ -25,15 +24,6 @@ typeset -ga UI_SEGMENT_TEXTS=() UI_SEGMENT_ATTRS=()
 # Keep the signal handler minimal. Geometry is queried and curses is rebuilt
 # from the normal event loop, never asynchronously in the middle of a redraw.
 TRAPWINCH() { UI_RESIZE_PENDING=1; }
-
-ui_append_message() {
-  UI_ROLES+=("$1")
-  UI_CONTENTS+=("$2")
-  UI_THINKINGS+=("${3:-}")
-  zcoder_time; UI_TIMES+=("$REPLY")
-  UI_REASONING_OPEN+=(0)
-  UI_AUTO_SCROLL=1
-}
 
 ui_set_status() { UI_STATUS="$1"; }
 
