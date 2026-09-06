@@ -1,7 +1,7 @@
 .PHONY: check test model-eval compile clean
 
 check:
-	zsh -n zcoder.zsh chat.sh lib/*.zsh tests/*.zsh
+	zsh -fc 'for f in zcoder.zsh chat.sh lib/*.zsh tests/*.zsh tests/fixtures/*.zsh; do zsh -n "$$f" || exit $$?; done'
 
 test: check
 	zsh tests/run.zsh

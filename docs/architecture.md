@@ -279,8 +279,9 @@ Before the first local interactive turn, zcoder uses the same asynchronous HTTP
 worker for a disposable warm-up request. It includes the resolved system prompt
 and tool schema but excludes saved conversation history. The TUI polls that
 request from its normal input loop, so editing remains responsive. A real user
-turn supersedes an unfinished warm-up because the HTTP worker deliberately owns
-only one Ollama request at a time. Warm-up output is validated and discarded;
+turn supersedes an unfinished warm-up because generation and warm-up share one
+worker slot. Model and context discovery own separate workers. Warm-up output
+is validated and discarded;
 it never enters agent or session state.
 
 ## Same-host agent relay

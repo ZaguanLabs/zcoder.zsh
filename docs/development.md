@@ -12,7 +12,7 @@ Run the complete required suite before handing off changes:
 make test
 ```
 
-`make test` first parses the entry points, libraries, and tests with `zsh -n`,
+`make test` first parses the entry points, libraries, tests, and fixtures with `zsh -n`,
 then runs the shell-level suite. The suite covers:
 
 - native JSON parsing and encoding
@@ -36,6 +36,20 @@ Run syntax checks alone with:
 ```sh
 make check
 ```
+
+Run `make compile` after changes and after a Git push. It also runs the syntax
+checks, then compiles the libraries with the installed Zsh. These commands do
+not substitute for executing the suite on Zsh 5.8 when checking that minimum
+version specifically.
+
+The TUI integration checks run real local and remote entrypoints in PTYs against
+native TCP fixtures. They cover startup cancellation, draft recovery, streaming,
+inspectors, terminal re-entry, persistence, and shutdown cleanup alongside the
+individual process, MCP, discovery, and approval tests. A thousand-entry
+transcript check counts layout and curses operations: idle refreshes and draft
+editing must not re-render history, while stream updates lay out only the
+changed entry. These are deterministic regression checks, not terminal-emulator
+latency benchmarks or measurements of live Ollama inference.
 
 ## Real-model evaluation
 

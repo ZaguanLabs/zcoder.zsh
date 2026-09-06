@@ -120,7 +120,7 @@ the private output descriptor are released on exit and when entering the plain
 text copy view. Headless modes do not load this layer. This follows the
 [mode 2026 protocol](https://contour-terminal.org/vt-extensions/synchronized-output/).
 OSC hyperlinks, clipboard writes, truecolor, and enhanced keyboard negotiation
-are not enabled by this stage.
+are not enabled.
 
 ## Command palette and context inspector
 
@@ -172,7 +172,7 @@ in-flight preview restores as interrupted if the session ends unexpectedly.
 
 Set `ZCODER_STREAM=false` to use buffered responses. Structured routing,
 compaction, persistent goals and their verifier, LFM models, remote-server turns,
-ACP, and one-shot prompts retain buffered Ollama requests in this stage. LFM's
+ACP, and one-shot prompts retain buffered Ollama requests. LFM's
 normalization and goal verification must finish before their answers are shown.
 
 While waiting for Ollama, a local shell command, search, patch, MCP connection or tool call,
