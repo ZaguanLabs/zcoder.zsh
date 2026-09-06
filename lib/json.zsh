@@ -15,6 +15,7 @@ typeset -g JSON_RESPONSE_ERROR=""
 typeset -g JSON_RESPONSE_TOOL_CALLS="[]"
 typeset -gi JSON_RESPONSE_PROMPT_TOKENS=0
 typeset -gi JSON_RESPONSE_OUTPUT_TOKENS=0
+typeset -gi JSON_RESPONSE_DONE=-1
 typeset -ga JSON_TOOL_NAMES=()
 typeset -ga JSON_TOOL_ARGS=()
 typeset -ga JSON_MODEL_NAMES=()
@@ -395,6 +396,7 @@ json_skip_value() {
 
 _json_parse_tool_function() {
   local key="" name="" args="{}"
+  local -i has_args=0
   [[ "$JSON_TOKEN_TYPE" == '{' ]] || return 1
   json_next || return 1
   while [[ "$JSON_TOKEN_TYPE" != '}' ]]; do
@@ -405,7 +407,7 @@ _json_parse_tool_function() {
     json_next || return 1
     case "$key:$JSON_TOKEN_TYPE" in
       name:string) name="$JSON_TOKEN_VALUE"; json_next || return 1 ;;
-      arguments:'{') json_capture_value || return 1; args="$REPLY" ;;
+      arguments:'{') json_capture_value || return 1; args="$REPLY"; has_args=1 ;;
       *) json_skip_value || return 1 ;;
     esac
     if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
@@ -415,6 +417,10 @@ _json_parse_tool_function() {
     fi
   done
   json_next || return 1
+  if (( ${JSON_REQUIRE_COMPLETE_TOOLS:-0} && ! has_args )); then
+    JSON_ERROR="streamed tool arguments must be a complete object"
+    return 1
+  fi
   JSON_TOOL_NAMES+=("$name")
   JSON_TOOL_ARGS+=("$args")
 }
@@ -502,6 +508,7 @@ json_parse_ollama_response() {
   JSON_RESPONSE_TOOL_CALLS="[]"
   JSON_RESPONSE_PROMPT_TOKENS=0
   JSON_RESPONSE_OUTPUT_TOKENS=0
+  JSON_RESPONSE_DONE=-1
   JSON_TOOL_NAMES=()
   JSON_TOOL_ARGS=()
 
@@ -517,6 +524,8 @@ json_parse_ollama_response() {
     case "$key:$JSON_TOKEN_TYPE" in
       message:'{') _json_parse_response_message || return 1 ;;
       error:string) JSON_RESPONSE_ERROR="$JSON_TOKEN_VALUE"; json_next || return 1 ;;
+      done:true) JSON_RESPONSE_DONE=1; json_next || return 1 ;;
+      done:false) JSON_RESPONSE_DONE=0; json_next || return 1 ;;
       prompt_eval_count:number)
         [[ "$JSON_TOKEN_VALUE" == <0-> ]] && JSON_RESPONSE_PROMPT_TOKENS="$JSON_TOKEN_VALUE"
         json_next || return 1
@@ -533,6 +542,8 @@ json_parse_ollama_response() {
       return 1
     fi
   done
+  json_next || return 1
+  [[ "$JSON_TOKEN_TYPE" == eof ]]
 }
 
 _json_parse_model_object() {

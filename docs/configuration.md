@@ -15,6 +15,7 @@ Run `./zcoder.zsh --help` for the complete CLI reference.
 | `ZCODER_PROFILE` | `coding` | `coding` or `sysadmin` prompt |
 | `ZCODER_COMMAND_POLICY` | `ask` | `ask`, `allow`, or `deny` |
 | `ZCODER_THINK` | `true` | Request model reasoning |
+| `ZCODER_STREAM` | `true` | Stream eligible local interactive responses; `false` retains buffered responses |
 | `ZCODER_WARMUP` | `true` | Warm the selected model and stable prompt context before interactive work |
 | `ZCODER_TOOL_EXPOSURE` | `full` | `full` exposes all tools immediately; experimental `staged` routes before exposing tools |
 | `ZCODER_HTTP_READ_TIMEOUT` | 900 | Idle seconds allowed while waiting for Ollama response data |

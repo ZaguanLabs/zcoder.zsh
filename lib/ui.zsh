@@ -670,6 +670,7 @@ _ui_render_one_message() {
     error) title="⚠ Error  ${time}"; attr="red/black" ;;
     *) title="ℹ ${role}  ${time}"; attr="magenta/black" ;;
   esac
+  (( i == UI_STREAM_INDEX )) && title+=" · receiving"
   if [[ "$role" == tool && -n "${UI_TOOL_NAMES[i]:-}" ]]; then
     title="${UI_TOOL_SUMMARIES[i]:-${UI_TOOL_NAMES[i]}} · ${UI_TOOL_STATES[i]}  ${time}"
     zcoder_terminal_safe "$title"; title="$REPLY"
@@ -997,7 +998,12 @@ _ui_wait_for_activity() {
   return 0
 }
 
-ui_wait_for_generation() { _ui_wait_for_activity http_async_ready; }
+ui_wait_for_generation() {
+  if [[ -n "${HTTP_ASYNC_STREAM_FD:-}" ]] && (( $+functions[agent_stream_ready] )); then
+    _ui_wait_for_activity agent_stream_ready
+  else _ui_wait_for_activity http_async_ready
+  fi
+}
 ui_wait_for_delegate() { _ui_wait_for_activity delegate_async_ready delegate_async_timed_out; }
 ui_poll_remote_turn() { ui_poll_activity "${1:-50}"; }
 

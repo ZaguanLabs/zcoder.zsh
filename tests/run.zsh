@@ -3148,6 +3148,8 @@ assert_eq "5" "${#MOCK_ZCURSES_CALLS}" "UI destroys each curses window separatel
 assert_eq "delwin top_win" "${MOCK_ZCURSES_CALLS[1]}" "UI passes one name to each delwin call"
 
 source "${TEST_DIR}/activity.zsh"
+source "${PROJECT_DIR}/lib/stream.zsh"
+source "${TEST_DIR}/stream.zsh"
 
 if (( FAILURES > 0 )); then
   print -u2 -r -- "${FAILURES} test(s) failed"

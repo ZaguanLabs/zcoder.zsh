@@ -489,10 +489,10 @@ agent_compact_history() {
 }
 
 agent_prepare_payload() {
-  local payload=""
+  local payload="" stream="${1:-false}"
   local -i estimate limit compact_status
   agent_context_configure
-  agent_build_payload
+  agent_build_payload "$stream"
   payload="$REPLY"
   agent_estimate_payload_tokens "$payload"
   estimate=$REPLY
@@ -502,7 +502,7 @@ agent_prepare_payload() {
     agent_compact_history auto
     compact_status=$?
     (( compact_status == 0 )) || return "$compact_status"
-    agent_build_payload
+    agent_build_payload "$stream"
     payload="$REPLY"
     agent_estimate_payload_tokens "$payload"
   fi

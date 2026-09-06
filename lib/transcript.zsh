@@ -5,12 +5,14 @@ typeset -ga UI_ROLES=() UI_CONTENTS=() UI_THINKINGS=() UI_TIMES=() UI_REASONING_
 typeset -ga UI_IDS=() UI_BLOCK_OPEN=() UI_TOOL_NAMES=() UI_TOOL_SUMMARIES=() UI_TOOL_ARGS=() UI_TOOL_RESULTS=() UI_TOOL_STATES=()
 typeset -gi UI_SELECTED_EVENT=0 UI_CURRENT_TOOL=0 UI_TRANSCRIPT_GENERATION=0
 typeset -gi UI_RENDER_DIRTY_FROM=0 UI_PERSIST_DIRTY_FROM=0
+typeset -gi UI_STREAM_INDEX=0
 
 transcript_reset() {
   emulate -L zsh
   UI_ROLES=(); UI_CONTENTS=(); UI_THINKINGS=(); UI_TIMES=(); UI_REASONING_OPEN=()
   UI_IDS=(); UI_BLOCK_OPEN=(); UI_TOOL_NAMES=(); UI_TOOL_SUMMARIES=(); UI_TOOL_ARGS=(); UI_TOOL_RESULTS=(); UI_TOOL_STATES=()
   UI_SELECTED_EVENT=0; UI_CURRENT_TOOL=0
+  UI_STREAM_INDEX=0
   UI_RENDER_DIRTY_FROM=0; UI_PERSIST_DIRTY_FROM=0
   (( UI_TRANSCRIPT_GENERATION++ ))
   UI_SCROLL=0; UI_AUTO_SCROLL=1
@@ -108,6 +110,7 @@ transcript_metadata_json() {
     json_quote "$value"
     output+="${output:+,}\"${key}\":${REPLY}"
   done
+  output+=",\"streaming\":$(( index == UI_STREAM_INDEX ? 1 : 0 ))"
   REPLY="{${output}}"
 }
 
@@ -136,6 +139,10 @@ transcript_restore_metadata() {
     UI_IDS[index]="$id"
   fi
   [[ "${JSON_OBJECT[open]:-1}" == 0 ]] && UI_BLOCK_OPEN[index]=0
+  if [[ "${UI_ROLES[index]}" == assistant && "${JSON_OBJECT[streaming]:-0}" == 1 ]]; then
+    UI_CONTENTS[index]+=$'\n\n[Interrupted response restored from disk; partial text only.]'
+    transcript_changed "$index"
+  fi
   [[ "${UI_ROLES[index]}" == tool && -n "${JSON_OBJECT[name]:-}" ]] || return 0
   case "${JSON_OBJECT[state]:-}" in
     pending|running|completed|failed|interrupted) ;;

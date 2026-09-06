@@ -26,6 +26,7 @@ lib/
   remote.zsh            authenticated remote server and client protocol
   skills.zsh            Agent Skill discovery and progressive loading
   state.zsh             workspace/profile-scoped persistent sessions
+  stream.zsh            incremental HTTP/NDJSON and local assistant previews
   tools.zsh             schemas, confinement, dispatch, and execution
   transcript.zsh        shared session transcript recording
   ui.zsh                adaptive curses layout and transcript rendering
@@ -37,7 +38,7 @@ tests/run.zsh           shell-level unit and integration tests
 
 `zcoder_require` sources each library at most once. The core libraries load at
 startup; `acp.zsh` and `remote.zsh` load only when their modes are selected.
-Server and ACP modes skip `input.zsh`, `ui.zsh`, `overlays.zsh`, `commands.zsh`,
+Server and ACP modes skip `input.zsh`, `ui.zsh`, `overlays.zsh`, `commands.zsh`, `stream.zsh`,
 the terminal event handlers, and the curses/terminfo modules. They retain `transcript.zsh` for session
 history. Remote handshakes load only `harnesses.zsh` for availability discovery;
 `delegate.zsh` loads on the first external consultation or worker command. The
@@ -86,8 +87,7 @@ deadline distinguishes cancellation from terminal protocol sequences.
 Remote turns poll input without blocking between nonempty events as well as
 during idle responses. This prevents continuous event traffic from starving
 input. Synchronous tool execution and in-flight remote HTTP requests still bound
-how often the UI can poll; this stage does not introduce streaming or a general
-asynchronous tool scheduler.
+how often the UI can poll; there is no general asynchronous tool scheduler.
 
 ## Agent cycle
 
@@ -101,14 +101,32 @@ The model inspects until it has enough evidence, chooses one useful next action,
 and verifies changes in proportion to their risk. The agent has no fixed model
 turn ceiling; it continues while progress is being made.
 
-Agent turns currently send `stream: false` to Ollama. In the TUI, the HTTP
-request runs in a background Zsh worker so the interface can accept draft edits,
-transcript navigation, and Escape.
-Stopping the worker closes the TCP connection and cancels Ollama's request.
+Ordinary local TUI turns request streaming unless `ZCODER_STREAM=false`.
+Structured routing, compaction, goals/verifiers, LFM normalization, and headless
+transports retain buffered requests. The HTTP request still runs in a background
+Zsh worker; stopping it closes the TCP connection and cancels Ollama's request.
 
-Non-streaming does not flatten the reasoning lifecycle. zcoder stores each
-assistant's reasoning, content, and structured tool calls together, appends tool
-results, and returns that complete history on the next model step.
+`stream.zsh` incrementally decodes chunked, Content-Length, or connection-close
+HTTP bodies. The worker writes decoded bytes to a private append-only spool;
+the parent owns a reader descriptor marked close-on-exec. It reads at most
+32 KiB and processes at most 64 NDJSON records per activity poll. Partial records
+and UTF-8 byte sequences survive read boundaries. Framing has explicit size
+bounds, and completion metadata is published only after checked writes.
+
+The accumulator follows Ollama's native [streaming format](https://docs.ollama.com/capabilities/streaming):
+content, thinking, and complete tool-call objects accumulate in order; the final
+`done:true` record supplies usage. Missing completion, malformed records, and
+incomplete HTTP framing fail the request. No tool is dispatched from a partial
+stream. The assembled response passes through the existing agent validation,
+history, and approval paths.
+
+Live text updates one transcript preview. Accepted assistant output adopts it;
+interrupted previews are explicitly marked as partial and do not enter model
+history. Completed responses retain the existing recovery rules when the agent
+rejects their proposed action or answer. Saved in-flight previews restore as interrupted. Every
+terminal result releases the request worker, reader descriptor, and spool.
+Reasoning, content, tool calls, and tool results remain together in subsequent
+model requests.
 
 Every Ollama chat payload has exactly one `system` record, at the beginning.
 Runtime recovery instructions and external-harness results are added as clearly

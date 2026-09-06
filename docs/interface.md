@@ -108,6 +108,20 @@ continue to apply.
 
 ## Drafting while the agent works
 
+Ordinary local interactive responses arrive incrementally in one assistant
+entry labelled `receiving`. Reasoning remains separately foldable. The completed,
+validated answer replaces the preview in that same entry. Tool calls wait for
+the final stream record before entering the usual validation and approval path.
+
+Escape or a failed connection leaves any displayed fragment labelled as partial
+text. Partial text is not added to the model's conversation history. A saved
+in-flight preview restores as interrupted if the session ends unexpectedly.
+
+Set `ZCODER_STREAM=false` to use buffered responses. Structured routing,
+compaction, persistent goals and their verifier, LFM models, remote-server turns,
+ACP, and one-shot prompts retain buffered Ollama requests in this stage. LFM's
+normalization and goal verification must finish before their answers are shown.
+
 While waiting for Ollama, an external delegate, or remote events, you can edit
 and paste into the prompt. It is labelled **Draft** during activity. Enter leaves
 it unsent; send it after the current activity finishes. Escape stops the active

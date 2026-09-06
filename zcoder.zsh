@@ -163,7 +163,7 @@ if (( ACP_MODE )) && [[ "$REMOTE_MODE" == server ]]; then
 fi
 
 if [[ "$REMOTE_MODE" != server ]] && (( ! ACP_MODE )); then
-  zcoder_require input ui overlays commands
+  zcoder_require input ui overlays commands stream
   zmodload zsh/curses zsh/terminfo || {
     print -u2 -- "Error: required Zsh curses modules are unavailable."
     exit 1

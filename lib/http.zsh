@@ -8,6 +8,7 @@ typeset -g HTTP_NET_PORT="11434"
 typeset -g HTTP_ACTIVE_FD=""
 typeset -g HTTP_ASYNC_PID=""
 typeset -g HTTP_ASYNC_BASE=""
+typeset -g HTTP_ASYNC_STREAM_FD=""
 typeset -gi HTTP_READ_TIMEOUT="${ZCODER_HTTP_READ_TIMEOUT:-900}"
 typeset -gi OLLAMA_RUNNING_CONTEXT=0
 typeset -ga OLLAMA_MODELS=()
@@ -183,8 +184,12 @@ http_request() {
 http_async_cleanup() {
   local base="${1:-$HTTP_ASYNC_BASE}"
   [[ -n "$base" ]] && zf_rm -f -- "${base}.body" "${base}.error" \
-    "${base}.status" "${base}.done" 2>/dev/null
+    "${base}.status" "${base}.done" "${base}.stream" 2>/dev/null
   if [[ -z "$1" || "$base" == "$HTTP_ASYNC_BASE" ]]; then
+    if [[ -n "$HTTP_ASYNC_STREAM_FD" ]]; then
+      exec {HTTP_ASYNC_STREAM_FD}<&-
+      HTTP_ASYNC_STREAM_FD=""
+    fi
     HTTP_ASYNC_PID=""
     HTTP_ASYNC_BASE=""
   fi
@@ -216,6 +221,13 @@ http_async_start() {
   zcoder_temp_path http || { HTTP_ERROR="could not create private temporary storage"; return 1; }
   base="$REPLY"
   HTTP_ASYNC_BASE="$base"
+  if (( ${HTTP_STREAM_REQUEST:-0} )); then
+    if ! { : > "${base}.stream" && sysopen -r -o cloexec -u HTTP_ASYNC_STREAM_FD "${base}.stream"; }; then
+      http_async_cleanup
+      HTTP_ERROR="could not open private Ollama stream storage"
+      return 1
+    fi
+  fi
   zcoder_debug http_async_start "method=$method path=${(qqq)endpoint_path} endpoint=${(qqq)endpoint}"
 
   (
@@ -225,11 +237,24 @@ http_async_start() {
     _http_close_inherited_fds "${inherited_fds[@]}"
     HTTP_BODY=""
     HTTP_ERROR=""
-    http_request "$method" "$endpoint_path" "$payload" "$endpoint" || request_status=$?
-    mapfile[${base}.body]="$HTTP_BODY"
-    mapfile[${base}.error]="$HTTP_ERROR"
-    mapfile[${base}.status]="$request_status"
-    mapfile[${base}.done]="done"
+    if (( ${HTTP_STREAM_REQUEST:-0} )); then
+      local stream_output_fd=""
+      exec {HTTP_ASYNC_STREAM_FD}<&-
+      HTTP_ASYNC_STREAM_FD=""
+      if exec {stream_output_fd}> "${base}.stream"; then
+        http_stream_request "$method" "$endpoint_path" "$payload" "$endpoint" "$stream_output_fd" || request_status=$?
+        exec {stream_output_fd}>&-
+      else HTTP_ERROR="could not write private Ollama stream storage"; request_status=1
+      fi
+    else
+      http_request "$method" "$endpoint_path" "$payload" "$endpoint" || request_status=$?
+    fi
+    # Publish completion only after checked writes. mapfile assignment does
+    # not reliably report write failures (for example a full temporary disk).
+    print -rn -- "$HTTP_BODY" > "${base}.body" &&
+      print -rn -- "$HTTP_ERROR" > "${base}.error" &&
+      print -rn -- "$request_status" > "${base}.status" &&
+      print -rn -- done > "${base}.done" || exit 1
     exit "$request_status"
   ) </dev/null >/dev/null 2>&1 &
   HTTP_ASYNC_PID=$!

@@ -1,6 +1,7 @@
 # Ollama conversation state and iterative tool-call loop.
 
 typeset -ga AGENT_MESSAGES=()
+typeset -g ZCODER_STREAM="${ZCODER_STREAM:-true}"
 typeset -ga AGENT_CONTEXT_COMPONENT_LABELS=() AGENT_CONTEXT_COMPONENT_VALUES=()
 typeset -g AGENT_LAST_RESPONSE=""
 typeset -gi AGENT_CANCELLED=0
@@ -570,6 +571,8 @@ agent_resolve_system_prompt() {
 
 agent_build_payload() {
   local model_json="" system_json="" messages="[" history="" think="true" tools="" options="" prompt="" format=""
+  local stream=false
+  [[ "${1:-false}" == true ]] && stream=true
   # MCP discovery must precede prompt assembly. Besides producing Ollama's
   # schemas, it gives small models an exact short-name -> function-name map.
   tools_schema_json
@@ -597,7 +600,7 @@ agent_build_payload() {
   fi
   [[ "$ZCODER_THINK" == true || "$ZCODER_THINK" == false ]] || think="false"
   [[ "$ZCODER_THINK" == false ]] && think="false"
-  REPLY="{\"model\":${model_json},\"messages\":${messages},\"tools\":${tools},\"stream\":false,\"think\":${think},\"options\":{${options}\"num_predict\":${ZCODER_MAX_OUTPUT_TOKENS}}}"
+  REPLY="{\"model\":${model_json},\"messages\":${messages},\"tools\":${tools},\"stream\":${stream},\"think\":${think},\"options\":{${options}\"num_predict\":${ZCODER_MAX_OUTPUT_TOKENS}}}"
 }
 
 agent_context_component_tokens() {
@@ -1019,6 +1022,13 @@ agent_emit() {
     return $?
   fi
   if (( $+functions[ui_append_message] && ${UI_ACTIVE:-0} )); then
+    if (( $+functions[agent_stream_commit] )); then
+      if [[ "$role" == assistant ]] && agent_stream_commit "$content" "$thinking"; then
+        ui_refresh_all
+        return 0
+      fi
+      agent_stream_interrupt "Response was not accepted; partial text only."
+    fi
     ui_append_message "$role" "$content" "$thinking"
     ui_refresh_all
   else
@@ -1070,6 +1080,11 @@ agent_ollama_chat() {
   local payload="$1" host="${2:-$OLLAMA_HOST}"
   local -i wait_status=0 request_status=0
   AGENT_CANCELLED=0
+
+  if [[ "${3:-false}" == true ]] && (( ${UI_ACTIVE:-0} && $+functions[agent_stream_chat] )); then
+    agent_stream_chat "$payload" "$host"
+    return $?
+  fi
 
   if (( ${UI_ACTIVE:-0} && $+functions[ui_wait_for_generation] && $+functions[http_async_start] )); then
     http_async_start POST /api/chat "$payload" "$host" || return 1
@@ -1132,6 +1147,7 @@ _agent_run_turn() {
   local user_content="$1" payload="" response="" content="" thinking="" calls_json="[]"
   local turn_origin="${2:-user}" display_content="${3:-$1}"
   local display_role="$turn_origin"
+  local stream=false
   local tool_name="" tool_args="" result="" summary="" display_result=""
   local request_signature="" outcome_signature="" loop_notice="" continuation_notice=""
   local AGENT_TOOL_PHASE="full"
@@ -1172,7 +1188,14 @@ _agent_run_turn() {
     (( step++ ))
     zcoder_debug model_turn_start "step=$step retries=$incomplete_retries messages=${#AGENT_MESSAGES} estimated_tokens=${AGENT_ESTIMATED_TOKENS:-0}"
     agent_set_status "Thinking ${step}"
-    agent_prepare_payload
+    stream=false
+    # Structured routing, verified goals, and LFM normalization retain their
+    # buffered presentation; intermediate text is not a validated answer.
+    if (( ${UI_ACTIVE:-0} && $+functions[agent_stream_chat] && ! goal_turn )) &&
+       [[ "$ZCODER_STREAM" == true && "$AGENT_TOOL_PHASE" != routing && "${(L)ZCODER_MODEL:t}" != *lfm* ]]; then
+      stream=true
+    fi
+    agent_prepare_payload "$stream"
     prepare_status=$?
     if (( prepare_status != 0 )); then
       zcoder_debug payload_error "step=$step cancelled=$AGENT_CANCELLED error=${(qqq)HTTP_ERROR}"
@@ -1192,7 +1215,7 @@ _agent_run_turn() {
     transport_retries=0
     while true; do
       agent_set_status "Thinking ${step}"
-      agent_ollama_chat "$payload" "$OLLAMA_HOST"
+      agent_ollama_chat "$payload" "$OLLAMA_HOST" "$stream"
       request_status=$?
       zcoder_debug ollama_result "step=$step attempt=$(( transport_retries + 1 )) status=$request_status body_chars=${#HTTP_BODY} error=${(qqq)HTTP_ERROR}"
       (( request_status == 0 || AGENT_CANCELLED )) && break
