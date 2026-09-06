@@ -57,6 +57,11 @@ zcoder can also run headlessly on the machine that owns the model and workspace.
 The local instance becomes a thin client: prompts travel to the server, every
 tool runs remotely, and command approvals return to your local terminal.
 
+For browser access, [zcoder-web](https://github.com/ZaguanLabs/zcoder-web) is a
+lightweight web interface that connects to one or more zcoder.zsh servers.
+Manage remote sessions, send prompts, and approve commands from your desktop
+or phone.
+
 See the [remote-agent guide](docs/remote.md) for setup and security guidance.
 
 ## ACP clients
