@@ -191,13 +191,16 @@ if [[ -n "$ZCODER_DEBUG_LOG" ]]; then
     zcoder_debug session "version=$ZCODER_VERSION profile=$ZCODER_PROFILE tool_exposure=$ZCODER_TOOL_EXPOSURE model=${(qqq)ZCODER_MODEL} host=${(qqq)OLLAMA_HOST} workspace=${(qqq)ZCODER_WORKSPACE}"
   fi
 fi
+typeset -gi REMOTE_HANDSHAKE_PENDING=0
 if [[ "$REMOTE_MODE" == client ]]; then
   if ! remote_normalize_endpoint "$REMOTE_ENDPOINT"; then
     print -u2 -- "Error: $REMOTE_ERROR"
     exit 2
   fi
   REMOTE_ENDPOINT="$REPLY"
-  if ! remote_client_handshake; then
+  if [[ -z "$ONE_SHOT_PROMPT" ]] && (( ! ACP_MODE && ! PRINT_INSTRUCTIONS && ! PRINT_SKILLS )); then
+    REMOTE_HANDSHAKE_PENDING=1
+  elif ! remote_client_handshake; then
     print -u2 -- "Error: $REMOTE_ERROR"
     exit 1
   fi
@@ -243,6 +246,7 @@ cleanup() {
   (( $+functions[acp_shutdown] )) && acp_shutdown
   [[ "$REMOTE_MODE" != server ]] && (( $+functions[state_save_session] )) && state_save_session
   (( $+functions[delegate_async_cancel] )) && delegate_async_cancel
+  (( $+functions[remote_client_idle_cancel] )) && remote_client_idle_cancel
   http_async_cancel
   (( $+functions[relay_stop] )) && relay_stop
   (( $+functions[remote_server_stop] )) && remote_server_stop
@@ -676,6 +680,23 @@ main_tui() {
     esac
   fi
   ui_init || { print -u2 -- "Error: could not initialize curses UI"; return 1; }
+  if (( REMOTE_HANDSHAKE_PENDING )); then
+    ui_set_status Connecting
+    remote_client_handshake
+    local -i handshake_status=$?
+    if (( handshake_status != 0 )); then
+      ui_end
+      print -u2 -r -- "Remote connection stopped: $REMOTE_ERROR"
+      return "$handshake_status"
+    fi
+    REMOTE_HANDSHAKE_PENDING=0
+    case "$REMOTE_MODEL_STATUS" in
+      warming) ui_set_status 'Warming Up' ;;
+      error) ui_set_status 'Warm-up Failed' ;;
+      *) ui_set_status Ready ;;
+    esac
+    ui_invalidate; ui_refresh_all
+  fi
   agent_warmup_start || true
   while (( RUNNING )); do
     ui_poll_resize

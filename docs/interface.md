@@ -173,9 +173,8 @@ response or local tool process while preserving your draft.
 Tab switches between the draft and transcript during activity. Transcript
 selection, folding, reasoning inspection, and scrolling work with their usual
 keys. Session switching, model selection, and the command palette remain idle
-controls. Native file operations and remote HTTP outside a turn (startup, idle
-model polling, and session browsing) can still delay input handling until their
-next polling point.
+controls. Native file operations and local processing can still delay input
+handling until their next polling point.
 
 Local interactive shell commands run only after the existing approval checks.
 Their output is collected when they finish; typing, paste, transcript folding,
@@ -224,10 +223,22 @@ acknowledged stop from an unconfirmed one; remote work may continue when the
 server does not answer. Completed side effects are not rolled back. Interrupted
 prompt and approval requests are never replayed.
 
-Remote turn requests have a 30-second deadline, configurable from 1–3600 seconds
+Interactive remote requests have a 30-second deadline, configurable from 1–3600 seconds
 with `ZCODER_REMOTE_REQUEST_TIMEOUT`. The stop acknowledgement waits at most two
 seconds. These limits cover each exchange, not the total duration of an agent
 turn. Headless clients retain their existing synchronous HTTP behavior.
+
+The remote connection screen accepts a draft while startup runs; Escape closes
+the connection attempt and exits. Session browsing also preserves draft input
+and keeps the current conversation visible until every replacement page loads.
+If a switch or new-session request is interrupted, the server may already have
+changed jobs. The next prompt first reloads the server's selected conversation;
+cancelling that reload leaves the prompt unsent. Session creation and selection
+are never automatically replayed after an uncertain result.
+
+Idle remote model polling runs in the background. Enter can submit a prompt
+while a poll is pending; foreground work supersedes the old poll so its eventual
+response cannot overwrite newer model state.
 
 Status changes repaint the header, and typing normally repaints only the prompt.
 Window resizing and changing the prompt's height rebuild the layout as needed.

@@ -96,11 +96,10 @@ deadline distinguishes cancellation from terminal protocol sequences.
 
 Remote turns poll input without blocking between nonempty events as well as
 during idle responses. This prevents continuous event traffic from starving
-input. Native file operations and remote HTTP outside an interactive turn
-(startup, idle model polling, and session browsing) still bound how often the UI
+input. Native file operations and local processing still bound how often the UI
 can poll.
 
-During interactive remote turns, each HTTP exchange uses a request-local instance
+Interactive remote HTTP exchanges use a request-local instance
 of the native HTTP worker, with its bearer header scoped to that launch. TCP and
 response spooling belong to the child; approval dialogs, event cursors, and
 transcript updates remain in the parent. Remote requests cannot replace an
@@ -114,6 +113,19 @@ the existing cancel endpoint with a two-second acknowledgement deadline. The UI
 reports server acknowledgement separately from an unconfirmed stop. Neither
 case claims rollback, and interrupted submissions and approvals are never
 replayed. Headless clients retain synchronous HTTP.
+
+Interactive startup initializes curses before the handshake. Session lists and
+transcripts stage complete pages before publication, so a failed or cancelled
+load leaves the prior view usable. Session mutation attempts set an uncertainty
+guard until the selected ID and transcript have both loaded. Before the next
+prompt, a guarded client reads the server's current session and reconciles the
+view; it never retries an uncertain create/select mutation automatically.
+
+Idle model polling uses separate persistent PID/base ownership. Each idle tick
+starts or collects at most one worker without entering an input wait. Foreground
+model checks, prompts, and session mutations cancel that worker before proceeding;
+endpoint changes also discard it. The parent commits model state only after a
+complete response and cleans up the worker on completion, deadline, or exit.
 
 ### Interactive external processes
 

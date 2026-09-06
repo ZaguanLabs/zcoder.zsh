@@ -14,6 +14,10 @@ typeset -g REMOTE_CLIENT_EVENT_CURSOR="0"
 typeset -g REMOTE_ERROR=""
 typeset -gi REMOTE_REQUEST_CANCELLED=0
 typeset -gi REMOTE_REQUEST_TIMEOUT="${ZCODER_REMOTE_REQUEST_TIMEOUT:-30}"
+typeset -gi REMOTE_SESSION_SYNC_REQUIRED=0 REMOTE_LIST_CURRENT_EMPTY=0
+typeset -g REMOTE_LIST_CURRENT_ID=''
+typeset -g REMOTE_IDLE_PID='' REMOTE_IDLE_BASE='' REMOTE_IDLE_ENDPOINT=''
+typeset -gF REMOTE_IDLE_DEADLINE=0.0
 typeset -g REMOTE_MODEL_STATUS="unknown"
 typeset -g REMOTE_MODEL_ERROR=""
 typeset -g REMOTE_HARNESSES=""
@@ -106,7 +110,7 @@ remote_client_request() {
   REMOTE_ERROR=''
   HTTP_BODY=''
   remote_client_auth_header
-  if (( ${REMOTE_INTERACTIVE_TURN:-0} && ${UI_ACTIVE:-0} && $+functions[ui_wait_for_remote_request] )); then
+  if (( ${UI_ACTIVE:-0} && $+functions[ui_wait_for_remote_request] )); then
     _remote_client_request_interactive "$method" "$request_target" "$payload" "$REPLY"
     request_status=$?
   else
@@ -160,7 +164,7 @@ remote_client_request_expired() { (( EPOCHREALTIME >= remote_request_deadline ))
 remote_client_handshake() {
   local protocol="" server_name="" workspace="" model="" profile="" command_policy="" sessions="" harnesses="" goals=""
   remote_load_token "$REMOTE_TOKEN_FILE" || return 1
-  remote_client_request GET /v1/hello || return 1
+  remote_client_request GET /v1/hello || return $?
   json_parse_flat_object "$HTTP_BODY" || { REMOTE_ERROR="invalid server handshake: ${JSON_ERROR:-parse error}"; return 1; }
   protocol="${JSON_OBJECT[protocol]:-}"
   server_name="${JSON_OBJECT[server_name]:-Remote zcoder}"
@@ -195,9 +199,9 @@ remote_client_handshake() {
   if [[ "$sessions" == true ]]; then
     REMOTE_SESSIONS_SUPPORTED=1
     if (( ${ACP_MODE:-0} )); then
-      remote_client_refresh_sessions || return 1
+      remote_client_refresh_sessions || return $?
     else
-      remote_client_start_session || return 1
+      remote_client_start_session || return $?
     fi
   else
     REMOTE_SESSIONS_SUPPORTED=0
@@ -206,7 +210,7 @@ remote_client_handshake() {
 }
 
 remote_client_start_session() {
-  remote_client_refresh_sessions || return 1
+  remote_client_refresh_sessions || return $?
   if [[ -n "$CURRENT_SESSION_ID" && $REMOTE_SESSION_EMPTY -eq 1 ]]; then
     remote_client_load_session "$CURRENT_SESSION_ID"
   else
@@ -216,12 +220,13 @@ remote_client_start_session() {
 
 remote_client_refresh_sessions() {
   local event="" id="" title="" model="" current="0" empty="0"
-  local -i cursor=0 next_cursor=0
+  local -i cursor=0 next_cursor=0 adopt_current=${1:-$(( ! REMOTE_SESSION_SYNC_REQUIRED ))}
   local current_id="$CURRENT_SESSION_ID"
+  local listed_current=''
   local -i current_empty=0
   local -a ids=() titles=() models=()
   while true; do
-    remote_client_request GET "/v1/sessions?after=${cursor}" || return 1
+    remote_client_request GET "/v1/sessions?after=${cursor}" || return $?
     json_parse_flat_object "$HTTP_BODY" || {
       REMOTE_ERROR="invalid remote session list: ${JSON_ERROR:-parse error}"
       return 1
@@ -245,6 +250,7 @@ remote_client_refresh_sessions() {
     titles+=("$title")
     models+=("$model")
     if [[ "$current" == 1 ]]; then
+      listed_current="$id"
       current_id="$id"
       [[ "$empty" == 1 ]] && current_empty=1 || current_empty=0
     fi
@@ -252,6 +258,13 @@ remote_client_refresh_sessions() {
   SESSION_IDS=("${ids[@]}")
   SESSION_TITLES=("${titles[@]}")
   SESSION_MODELS=("${models[@]}")
+  REMOTE_LIST_CURRENT_ID="$listed_current"
+  REMOTE_LIST_CURRENT_EMPTY=$current_empty
+  if (( ${UI_ACTIVE:-0} )) && [[ -n "$CURRENT_SESSION_ID" && "$listed_current" != "$CURRENT_SESSION_ID" ]]; then
+    REMOTE_SESSION_SYNC_REQUIRED=1
+    adopt_current=0
+  fi
+  (( adopt_current )) || return 0
   if (( ${#SESSION_IDS} == 0 )); then
     CURRENT_SESSION_ID=""
     SESSION_TITLE="New Job"
@@ -271,10 +284,12 @@ remote_client_refresh_sessions() {
 remote_client_load_session() {
   local id="$1" event="" role="" content="" thinking="" time="" reasoning_open="0" metadata=""
   local -i cursor=0 next_cursor=0 index=${SESSION_IDS[(Ie)$id]}
+  local -a roles=() contents=() thinkings=() times=() reasoning=() records=()
   _state_valid_id "$id" || { REMOTE_ERROR="invalid remote session identifier"; return 1; }
-  transcript_reset
+  # Stage pages separately: activity callbacks continue rendering and folding
+  # the current transcript until every page of the replacement has arrived.
   while true; do
-    remote_client_request GET "/v1/session?id=${id}&after=${cursor}" || return 1
+    remote_client_request GET "/v1/session?id=${id}&after=${cursor}" || return $?
     json_parse_flat_object "$HTTP_BODY" || {
       REMOTE_ERROR="invalid remote session transcript: ${JSON_ERROR:-parse error}"
       return 1
@@ -294,13 +309,14 @@ remote_client_load_session() {
     time="${JSON_OBJECT[time]:-}"
     reasoning_open="${JSON_OBJECT[reasoning_open]:-0}"
     metadata="${JSON_OBJECT[metadata]:-}"
-    UI_ROLES+=("$role")
-    UI_CONTENTS+=("$content")
-    UI_THINKINGS+=("$thinking")
-    UI_TIMES+=("$time")
-    [[ "$reasoning_open" == 1 ]] && UI_REASONING_OPEN+=(1) || UI_REASONING_OPEN+=(0)
-    transcript_restore_metadata ${#UI_ROLES} "$metadata"
+    roles+=("$role"); contents+=("$content"); thinkings+=("$thinking"); times+=("$time")
+    [[ "$reasoning_open" == 1 ]] && reasoning+=(1) || reasoning+=(0)
+    records+=("$metadata")
   done
+  transcript_reset
+  UI_ROLES=("${roles[@]}"); UI_CONTENTS=("${contents[@]}"); UI_THINKINGS=("${thinkings[@]}")
+  UI_TIMES=("${times[@]}"); UI_REASONING_OPEN=("${reasoning[@]}")
+  for (( cursor=1; cursor<=${#records}; cursor++ )); do transcript_restore_metadata "$cursor" "${records[cursor]}"; done
   CURRENT_SESSION_ID="$id"
   (( index > 0 )) && SESSION_TITLE="${SESSION_TITLES[index]}"
   (( UI_TRANSCRIPT_GENERATION++ ))
@@ -311,21 +327,40 @@ remote_client_load_session() {
 remote_client_select_session() {
   local id="$1" id_json=""
   (( REMOTE_SESSIONS_SUPPORTED )) || { REMOTE_ERROR="remote session browsing is not supported by this server"; return 1; }
+  remote_client_idle_cancel
+  REMOTE_SESSION_SYNC_REQUIRED=1
   json_quote "$id"; id_json="$REPLY"
-  remote_client_request POST /v1/session/select "{\"id\":${id_json}}" || return 1
-  remote_client_refresh_sessions || return 1
-  remote_client_load_session "$id"
+  remote_client_request POST /v1/session/select "{\"id\":${id_json}}" || return $?
+  remote_client_refresh_sessions 0 || return $?
+  [[ "$REMOTE_LIST_CURRENT_ID" == "$id" ]] || { REMOTE_ERROR='server selected a different session; refresh before sending a prompt'; return 1; }
+  remote_client_load_session "$id" || return $?
+  REMOTE_SESSION_EMPTY=$REMOTE_LIST_CURRENT_EMPTY
+  REMOTE_SESSION_SYNC_REQUIRED=0
 }
 
 remote_client_new_session() {
   local id=""
   (( REMOTE_SESSIONS_SUPPORTED )) || { REMOTE_ERROR="remote session creation is not supported by this server"; return 1; }
-  remote_client_request POST /v1/session/new '{}' || return 1
+  remote_client_idle_cancel
+  REMOTE_SESSION_SYNC_REQUIRED=1
+  remote_client_request POST /v1/session/new '{}' || return $?
   json_parse_flat_object "$HTTP_BODY" || { REMOTE_ERROR="invalid remote new-session response"; return 1; }
   id="${JSON_OBJECT[id]:-}"
   _state_valid_id "$id" || { REMOTE_ERROR="invalid remote new-session identifier"; return 1; }
-  remote_client_refresh_sessions || return 1
-  remote_client_load_session "$id"
+  remote_client_refresh_sessions 0 || return $?
+  [[ "$REMOTE_LIST_CURRENT_ID" == "$id" ]] || { REMOTE_ERROR='server selected a different session; refresh before sending a prompt'; return 1; }
+  remote_client_load_session "$id" || return $?
+  REMOTE_SESSION_EMPTY=$REMOTE_LIST_CURRENT_EMPTY
+  REMOTE_SESSION_SYNC_REQUIRED=0
+}
+
+remote_client_reconcile_session() {
+  (( REMOTE_SESSION_SYNC_REQUIRED )) || return 0
+  remote_client_refresh_sessions 0 || return $?
+  _state_valid_id "$REMOTE_LIST_CURRENT_ID" || { REMOTE_ERROR='server did not identify its current session'; return 1; }
+  remote_client_load_session "$REMOTE_LIST_CURRENT_ID" || return $?
+  REMOTE_SESSION_EMPTY=$REMOTE_LIST_CURRENT_EMPTY
+  REMOTE_SESSION_SYNC_REQUIRED=0
 }
 
 _remote_client_parse_model_status() {
@@ -341,8 +376,61 @@ _remote_client_parse_model_status() {
   }
 }
 
+# The idle loop owns a separate HTTP job and checks it without entering an
+# activity wait. A foreground operation cancels it before changing context.
+remote_client_idle_cancel() {
+  local HTTP_ASYNC_PID="$REMOTE_IDLE_PID" HTTP_ASYNC_BASE="$REMOTE_IDLE_BASE" HTTP_ASYNC_STREAM_FD=''
+  local HTTP_BODY='' HTTP_ERROR=''
+  [[ -n "$HTTP_ASYNC_PID" || -n "$HTTP_ASYNC_BASE" ]] && http_async_cancel 'remote model poll superseded'
+  REMOTE_IDLE_PID=''; REMOTE_IDLE_BASE=''; REMOTE_IDLE_ENDPOINT=''
+  return 0
+}
+
+remote_client_idle_poll() {
+  if [[ "$REMOTE_MODEL_STATUS" != warming || ( -n "$REMOTE_IDLE_PID" && "$REMOTE_IDLE_ENDPOINT" != "$REMOTE_ENDPOINT" ) ]]; then
+    remote_client_idle_cancel
+    return 0
+  fi
+  local HTTP_ASYNC_PID="$REMOTE_IDLE_PID" HTTP_ASYNC_BASE="$REMOTE_IDLE_BASE" HTTP_ASYNC_STREAM_FD='' HTTP_ACTIVE_FD=''
+  local HTTP_BODY='' HTTP_ERROR='' HTTP_ASYNC_EXTRA_HEADERS=''
+  local -i HTTP_STREAM_REQUEST=0 HTTP_READ_TIMEOUT=$REMOTE_REQUEST_TIMEOUT request_status=0
+  [[ "$HTTP_READ_TIMEOUT" == <1-3600> ]] || HTTP_READ_TIMEOUT=30
+  {
+    if [[ -z "$HTTP_ASYNC_PID" ]]; then
+      (( EPOCHREALTIME >= REMOTE_CLIENT_NEXT_MODEL_POLL )) || return 0
+      remote_client_auth_header; HTTP_ASYNC_EXTRA_HEADERS="$REPLY"
+      REMOTE_IDLE_ENDPOINT="$REMOTE_ENDPOINT"
+      REMOTE_IDLE_DEADLINE=$(( EPOCHREALTIME + HTTP_READ_TIMEOUT ))
+      if http_async_start GET /v1/model '' "$REMOTE_ENDPOINT"; then return 0; fi
+      REMOTE_MODEL_ERROR="${HTTP_ERROR//Ollama/remote server}"
+    elif ! http_async_ready; then
+      (( EPOCHREALTIME >= REMOTE_IDLE_DEADLINE )) || return 0
+      http_async_cancel 'remote model poll timed out'
+      REMOTE_MODEL_ERROR='Remote model status request timed out'
+    else
+      http_async_collect
+      request_status=$?
+      REMOTE_CLIENT_NEXT_MODEL_POLL=$(( EPOCHREALTIME + REMOTE_CLIENT_MODEL_POLL_INTERVAL ))
+      if (( request_status == 0 )) && _remote_client_parse_model_status; then
+        case "$REMOTE_MODEL_STATUS" in
+          ready) agent_set_status Ready; return 0 ;;
+          warming) agent_set_status 'Warming Up'; return 0 ;;
+          error) agent_set_status 'Warm-up Failed'; return 1 ;;
+        esac
+      fi
+      REMOTE_MODEL_ERROR="${HTTP_ERROR:-$REMOTE_ERROR}"
+    fi
+    REMOTE_MODEL_STATUS=error
+    agent_set_status 'Warm-up Failed'
+    return 1
+  } always {
+    REMOTE_IDLE_PID="$HTTP_ASYNC_PID"; REMOTE_IDLE_BASE="$HTTP_ASYNC_BASE"
+  }
+}
+
 remote_client_model_poll() {
   local -i force="${1:-0}"
+  if (( ! force && ${UI_ACTIVE:-0} )); then remote_client_idle_poll; return $?; fi
   local -F now=$EPOCHREALTIME
   [[ "$REMOTE_MODEL_STATUS" == warming ]] || return 0
   if (( ! force && now < REMOTE_CLIENT_NEXT_MODEL_POLL )); then
@@ -371,6 +459,7 @@ remote_client_model_poll() {
 
 remote_client_model_ensure() {
   local -i poll_status=0 announced=0
+  remote_client_idle_cancel
   if [[ "$REMOTE_MODEL_STATUS" == unmanaged ]]; then
     agent_set_status "Ready"
     return 0
@@ -456,8 +545,9 @@ remote_client_cancel_turn() {
 }
 
 remote_client_user_turn() {
-  local -i interactive=0 REMOTE_INTERACTIVE_TURN=1
+  local -i interactive=0
   REMOTE_REQUEST_CANCELLED=0
+  remote_client_idle_cancel
   (( ${UI_ACTIVE:-0} && $+functions[ui_activity_begin] )) && interactive=1
   (( interactive )) && ui_activity_begin
   {
@@ -472,6 +562,11 @@ _remote_client_user_turn() {
   local approval_id="" approval_kind="" command_text="" answer="n" decision="n" approval_json="" exit_code="0"
   local tool_phase="" tool_name="" tool_args="{}" tool_result="" tool_succeeded="0" tool_id=""
   local -i poll_status=0 structured_tool_seen=0
+  if ! remote_client_reconcile_session; then
+    (( REMOTE_REQUEST_CANCELLED )) && return 130
+    agent_emit error "Could not reconcile the remote session: $REMOTE_ERROR"
+    return 1
+  fi
   AGENT_LAST_RESPONSE=""
   if (( ${UI_ACTIVE:-0} )); then
     ui_append_message user "$user_content"

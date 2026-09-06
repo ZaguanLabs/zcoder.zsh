@@ -138,11 +138,15 @@ The client reports whether the server acknowledged the stop. It waits at most tw
 seconds for that acknowledgement; otherwise it reports an unconfirmed stop and
 remote work may continue. Completed side effects are not rolled back.
 
-`ZCODER_REMOTE_REQUEST_TIMEOUT` sets the deadline for each interactive turn HTTP
+`ZCODER_REMOTE_REQUEST_TIMEOUT` sets the deadline for each interactive HTTP
 exchange, including connection and response waits. It defaults to 30 seconds and
 accepts 1–3600 seconds. It does not limit the duration of the whole remote turn.
-Startup, idle model polling, session browsing, and headless clients still use
-their existing synchronous HTTP path.
+Startup and session browsing use the same responsive waits. The terminal opens
+before the handshake, preserves draft input, and exits cleanly if startup is
+cancelled. Idle model polling runs as a background job; it never holds up Enter
+or other idle controls. Foreground work supersedes pending polls, and their old
+responses cannot replace newer model state. Headless clients retain synchronous
+HTTP.
 
 ## Sessions and current limitations
 
@@ -152,6 +156,13 @@ job is already empty. Use Ctrl+N or `/new` to create another remote job, and
 focus the Sessions sidebar with Tab or `/sessions` to resume an older one.
 Selecting a job changes the server-side conversation; no duplicate session
 state is stored on the workstation.
+
+Session lists and transcripts become visible only after all their pages have
+loaded. A failed or cancelled transcript load preserves the previous view. If a
+create or select request has an uncertain outcome, the next prompt first reads
+the server's selected session and reloads its transcript. It does not resend
+the mutation. Cancelling this reconciliation keeps the prompt unsent, preventing
+work from silently continuing in a different job.
 
 The server accepts one active turn at a time. A concurrent turn receives a busy
 response instead of running alongside it. Session creation and switching are
