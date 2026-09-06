@@ -127,6 +127,23 @@ minutes, the command is denied.
 Press Escape to ask the server to cancel the active turn. The server terminates
 and reaps its worker before accepting another turn.
 
+During interactive turns, HTTP waits keep draft editing, paste, transcript
+folding, and resize handling available. This includes model readiness checks,
+prompt submission, event fetching, and approval replies. Escape during model
+preparation leaves the prompt unsent. If a prompt or approval may already have
+reached the server, the client closes the pending connection and attempts the
+cancel endpoint. A sent request is never replayed because of cancellation.
+
+The client reports whether the server acknowledged the stop. It waits at most two
+seconds for that acknowledgement; otherwise it reports an unconfirmed stop and
+remote work may continue. Completed side effects are not rolled back.
+
+`ZCODER_REMOTE_REQUEST_TIMEOUT` sets the deadline for each interactive turn HTTP
+exchange, including connection and response waits. It defaults to 30 seconds and
+accepts 1–3600 seconds. It does not limit the duration of the whole remote turn.
+Startup, idle model polling, session browsing, and headless clients still use
+their existing synchronous HTTP path.
+
 ## Sessions and current limitations
 
 Sessions belong to the named server and survive server and client restarts. The

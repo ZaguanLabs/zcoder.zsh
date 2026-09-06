@@ -96,8 +96,24 @@ deadline distinguishes cancellation from terminal protocol sequences.
 
 Remote turns poll input without blocking between nonempty events as well as
 during idle responses. This prevents continuous event traffic from starving
-input. Native file operations and in-flight remote HTTP
-requests still bound how often the UI can poll.
+input. Native file operations and remote HTTP outside an interactive turn
+(startup, idle model polling, and session browsing) still bound how often the UI
+can poll.
+
+During interactive remote turns, each HTTP exchange uses a request-local instance
+of the native HTTP worker, with its bearer header scoped to that launch. TCP and
+response spooling belong to the child; approval dialogs, event cursors, and
+transcript updates remain in the parent. Remote requests cannot replace an
+unrelated local warm-up's worker ownership. A parent deadline covers connection,
+write, and read waits, including peers that stop midway through an HTTP response.
+Cleanup releases the child and spool before any subsequent request starts.
+
+Escape during model preparation stops before prompt submission. Once a prompt
+or approval may have reached the server, Escape closes that request and attempts
+the existing cancel endpoint with a two-second acknowledgement deadline. The UI
+reports server acknowledgement separately from an unconfirmed stop. Neither
+case claims rollback, and interrupted submissions and approvals are never
+replayed. Headless clients retain synchronous HTTP.
 
 ### Interactive external processes
 

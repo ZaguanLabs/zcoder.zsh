@@ -173,8 +173,9 @@ response or local tool process while preserving your draft.
 Tab switches between the draft and transcript during activity. Transcript
 selection, folding, reasoning inspection, and scrolling work with their usual
 keys. Session switching, model selection, and the command palette remain idle
-controls. Native file operations and remote HTTP requests
-can still delay input handling until their next polling point.
+controls. Native file operations and remote HTTP outside a turn (startup, idle
+model polling, and session browsing) can still delay input handling until their
+next polling point.
 
 Local interactive shell commands run only after the existing approval checks.
 Their output is collected when they finish; typing, paste, transcript folding,
@@ -214,6 +215,19 @@ broken transport never triggers legacy protocol fallback. Restarting a server
 from `/mcp` temporarily closes the inspector while the draft accepts input, then
 reopens it with the connection result. Headless connection setup keeps its
 existing synchronous behavior.
+
+During remote turns, model preparation, prompt submission, event fetching, and
+approval replies keep input responsive even if an HTTP response stalls. Escape
+before prompt submission leaves that prompt unsent. Afterwards, it closes the
+pending HTTP request and asks the server to stop. The UI distinguishes an
+acknowledged stop from an unconfirmed one; remote work may continue when the
+server does not answer. Completed side effects are not rolled back. Interrupted
+prompt and approval requests are never replayed.
+
+Remote turn requests have a 30-second deadline, configurable from 1–3600 seconds
+with `ZCODER_REMOTE_REQUEST_TIMEOUT`. The stop acknowledgement waits at most two
+seconds. These limits cover each exchange, not the total duration of an agent
+turn. Headless clients retain their existing synchronous HTTP behavior.
 
 Status changes repaint the header, and typing normally repaints only the prompt.
 Window resizing and changing the prompt's height rebuild the layout as needed.

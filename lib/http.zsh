@@ -208,7 +208,9 @@ _http_close_inherited_fds() {
 # propagates cancellation through Ollama's HTTP request context.
 http_async_start() {
   local method="$1" endpoint_path="$2" payload="${3:-}" endpoint="${4:-$OLLAMA_HOST}"
-  local base=""
+  # Authenticated callers scope headers to this launch; descriptor arguments
+  # keep their existing positions and ordinary Ollama calls send no headers.
+  local base="" extra_headers="${HTTP_ASYNC_EXTRA_HEADERS:-}"
   shift 4
   local -a inherited_fds=("$@")
 
@@ -231,8 +233,9 @@ http_async_start() {
   zcoder_debug http_async_start "method=$method path=${(qqq)endpoint_path} endpoint=${(qqq)endpoint}"
 
   (
-    trap - EXIT
+    trap - EXIT WINCH
     trap '_http_close_active; exit 130' INT TERM HUP
+    UI_ACTIVE=0
     local -i request_status=0
     _http_close_inherited_fds "${inherited_fds[@]}"
     HTTP_BODY=""
@@ -247,7 +250,7 @@ http_async_start() {
       else HTTP_ERROR="could not write private Ollama stream storage"; request_status=1
       fi
     else
-      http_request "$method" "$endpoint_path" "$payload" "$endpoint" || request_status=$?
+      http_request "$method" "$endpoint_path" "$payload" "$endpoint" "$extra_headers" || request_status=$?
     fi
     # Publish completion only after checked writes. mapfile assignment does
     # not reliably report write failures (for example a full temporary disk).

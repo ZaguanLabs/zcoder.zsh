@@ -12,6 +12,8 @@ typeset -g REMOTE_TURN_ID=""
 typeset -g REMOTE_LISTEN_FD=""
 typeset -g REMOTE_CLIENT_EVENT_CURSOR="0"
 typeset -g REMOTE_ERROR=""
+typeset -gi REMOTE_REQUEST_CANCELLED=0
+typeset -gi REMOTE_REQUEST_TIMEOUT="${ZCODER_REMOTE_REQUEST_TIMEOUT:-30}"
 typeset -g REMOTE_MODEL_STATUS="unknown"
 typeset -g REMOTE_MODEL_ERROR=""
 typeset -g REMOTE_HARNESSES=""
@@ -98,19 +100,62 @@ remote_client_auth_header() {
 }
 
 remote_client_request() {
-  local method="$1" path="$2" payload="${3:-}" error_body=""
+  local method="$1" request_target="$2" payload="${3:-}" error_body=""
+  local -i request_status=0
+  REMOTE_REQUEST_CANCELLED=0
+  REMOTE_ERROR=''
+  HTTP_BODY=''
   remote_client_auth_header
-  if ! http_request "$method" "$path" "$payload" "$REMOTE_ENDPOINT" "$REPLY"; then
+  if (( ${REMOTE_INTERACTIVE_TURN:-0} && ${UI_ACTIVE:-0} && $+functions[ui_wait_for_remote_request] )); then
+    _remote_client_request_interactive "$method" "$request_target" "$payload" "$REPLY"
+    request_status=$?
+  else
+    http_request "$method" "$request_target" "$payload" "$REMOTE_ENDPOINT" "$REPLY"
+    request_status=$?
+  fi
+  if (( request_status != 0 )); then
     error_body="$HTTP_BODY"
     if [[ -n "$error_body" ]] && json_parse_flat_object "$error_body" && [[ -n "${JSON_OBJECT[error]:-}" ]]; then
       REMOTE_ERROR="${JSON_OBJECT[error]}"
     else
       REMOTE_ERROR="${HTTP_ERROR//Ollama/remote server}"
+      [[ "$method" == POST ]] && REMOTE_ERROR+='; the server may already have acted on this request'
     fi
-    return 1
+    return "$request_status"
   fi
   return 0
 }
+
+# Request-local worker ownership keeps remote traffic separate from any local
+# warm-up state. Only the child owns TCP; the parent owns UI and dispatch.
+_remote_client_request_interactive() {
+  local method="$1" target="$2" payload="$3" HTTP_ASYNC_EXTRA_HEADERS="$4"
+  local HTTP_ASYNC_PID='' HTTP_ASYNC_BASE='' HTTP_ASYNC_STREAM_FD='' HTTP_ACTIVE_FD=''
+  local -i HTTP_STREAM_REQUEST=0 HTTP_READ_TIMEOUT=$REMOTE_REQUEST_TIMEOUT wait_status=0
+  [[ "$HTTP_READ_TIMEOUT" == <1-3600> ]] || HTTP_READ_TIMEOUT=30
+  local -F remote_request_deadline=$(( EPOCHREALTIME + HTTP_READ_TIMEOUT ))
+  {
+    http_async_start "$method" "$target" "$payload" "$REMOTE_ENDPOINT" || return 1
+    ui_wait_for_remote_request
+    wait_status=$?
+    if (( wait_status != 0 )); then
+      http_async_cancel 'remote request wait stopped'
+      if (( wait_status == 130 )); then
+        REMOTE_REQUEST_CANCELLED=1
+        HTTP_ERROR='Remote request cancelled by user'
+      elif (( wait_status == 124 )); then
+        HTTP_ERROR="Remote request timed out after ${HTTP_READ_TIMEOUT}s"
+      else HTTP_ERROR="Remote request input wait failed with status ${wait_status}"
+      fi
+      return "$wait_status"
+    fi
+    http_async_collect
+  } always {
+    [[ -n "$HTTP_ASYNC_PID" || -n "$HTTP_ASYNC_BASE" ]] && http_async_cancel 'remote request cleanup'
+  }
+}
+
+remote_client_request_expired() { (( EPOCHREALTIME >= remote_request_deadline )); }
 
 remote_client_handshake() {
   local protocol="" server_name="" workspace="" model="" profile="" command_policy="" sessions="" harnesses="" goals=""
@@ -305,6 +350,7 @@ remote_client_model_poll() {
   fi
   REMOTE_CLIENT_NEXT_MODEL_POLL=$(( now + REMOTE_CLIENT_MODEL_POLL_INTERVAL ))
   if ! remote_client_request GET /v1/model; then
+    (( REMOTE_REQUEST_CANCELLED )) && return 130
     REMOTE_MODEL_STATUS="error"
     REMOTE_MODEL_ERROR="$REMOTE_ERROR"
     agent_set_status "Warm-up Failed"
@@ -331,6 +377,7 @@ remote_client_model_ensure() {
   fi
   agent_set_status "Checking Model"
   if ! remote_client_request POST /v1/model/ensure '{}'; then
+    (( REMOTE_REQUEST_CANCELLED )) && { remote_client_cancel_preparation; return 130; }
     REMOTE_MODEL_STATUS="error"
     REMOTE_MODEL_ERROR="$REMOTE_ERROR"
     agent_set_status "Warm-up Failed"
@@ -352,14 +399,18 @@ remote_client_model_ensure() {
       ui_poll_remote_turn
       poll_status=$?
       if (( poll_status == 130 )); then
-        agent_emit system "⏹ Prompt cancelled before it was sent; remote model warm-up continues."
-        agent_set_status "Warming Up"
+        remote_client_cancel_preparation
         return 130
       fi
     else
       zselect -t 1 2>/dev/null
     fi
-    remote_client_model_poll 1 || return 1
+    remote_client_model_poll 1
+    poll_status=$?
+    if (( poll_status != 0 )); then
+      (( poll_status == 130 )) && { remote_client_cancel_preparation; return 130; }
+      return 1
+    fi
   done
   if [[ "$REMOTE_MODEL_STATUS" == ready ]]; then
     agent_set_status "Ready"
@@ -368,6 +419,11 @@ remote_client_model_ensure() {
   REMOTE_ERROR="${REMOTE_MODEL_ERROR:-remote model warm-up failed}"
   agent_set_status "Warm-up Failed"
   return 1
+}
+
+remote_client_cancel_preparation() {
+  agent_emit system "⏹ Prompt cancelled before it was sent; remote model preparation may continue."
+  agent_set_status "Stopped"
 }
 
 _remote_client_emit_event() {
@@ -384,14 +440,24 @@ _remote_client_emit_event() {
 }
 
 remote_client_cancel_turn() {
-  remote_client_request POST /v1/cancel '{}' >/dev/null 2>&1 || true
+  local -i REMOTE_REQUEST_TIMEOUT=2 REMOTE_REQUEST_CANCELLED=0 acknowledged=0
+  if remote_client_request POST /v1/cancel '{}' >/dev/null 2>&1 &&
+     json_parse_flat_object "$HTTP_BODY" && [[ "${JSON_OBJECT[ok]:-}" == true ]]; then
+    acknowledged=1
+  fi
   transcript_interrupt_tool || true
-  agent_emit system "⏹ Remote response generation stopped."
-  agent_set_status "Stopped"
+  if (( acknowledged )); then
+    agent_emit system "⏹ Server acknowledged the stop request. Completed side effects were not rolled back."
+    agent_set_status "Stopped"
+  else
+    agent_emit system "⏹ Stopped waiting locally; the server did not confirm cancellation. Remote work may still be running."
+    agent_set_status "Stop unconfirmed"
+  fi
 }
 
 remote_client_user_turn() {
-  local -i interactive=0
+  local -i interactive=0 REMOTE_INTERACTIVE_TURN=1
+  REMOTE_REQUEST_CANCELLED=0
   (( ${UI_ACTIVE:-0} && $+functions[ui_activity_begin] )) && interactive=1
   (( interactive )) && ui_activity_begin
   {
@@ -423,6 +489,7 @@ _remote_client_user_turn() {
   fi
   agent_set_status "Connecting"
   while ! remote_client_request POST /v1/turn "$turn_payload"; do
+    if (( REMOTE_REQUEST_CANCELLED )); then remote_client_cancel_turn; return 130; fi
     if [[ "$REMOTE_ERROR" == "model is warming" ]]; then
       REMOTE_MODEL_STATUS="warming"
       remote_client_model_ensure || return $?
@@ -446,6 +513,7 @@ _remote_client_user_turn() {
       fi
     fi
     if ! remote_client_request GET "/v1/events?after=${REMOTE_CLIENT_EVENT_CURSOR}"; then
+      if (( REMOTE_REQUEST_CANCELLED )); then remote_client_cancel_turn; return 130; fi
       transcript_interrupt_tool || true
       agent_emit error "Remote event request failed: $REMOTE_ERROR"
       agent_set_status "Error"
@@ -527,6 +595,7 @@ _remote_client_user_turn() {
         json_quote "$decision"; decision="$REPLY"
         approval_json="{\"id\":${approval_id},\"decision\":${decision}}"
         if ! remote_client_request POST /v1/approval "$approval_json"; then
+          if (( REMOTE_REQUEST_CANCELLED )); then remote_client_cancel_turn; return 130; fi
           agent_emit error "Could not send approval response: $REMOTE_ERROR"
           remote_client_cancel_turn
           return 1
@@ -536,6 +605,11 @@ _remote_client_user_turn() {
         if transcript_interrupt_tool && (( ${UI_ACTIVE:-0} )); then ui_draw_chat; fi
         [[ "$exit_code" == <0-255> ]] || exit_code=1
         if (( REMOTE_SESSIONS_SUPPORTED )) && ! remote_client_refresh_sessions; then
+          if (( REMOTE_REQUEST_CANCELLED )); then
+            agent_emit system "Remote turn completed; session refresh stopped."
+            agent_set_status "Ready"
+            return 130
+          fi
           agent_emit error "Could not refresh remote sessions: $REMOTE_ERROR"
         fi
         (( exit_code == 0 )) && agent_set_status "Ready" || agent_set_status "Error"

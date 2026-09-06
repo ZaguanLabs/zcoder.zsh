@@ -1071,13 +1071,13 @@ ui_poll_activity() {
 }
 
 _ui_wait_for_activity() {
-  local ready="$1" expired="${2:-}"
+  local ready="$1" expired="${2:-}" poll_interval="${3:-50}"
   local -i poll_status=0
   ui_activity_begin
   {
     while ! "$ready"; do
       if [[ -n "$expired" ]] && "$expired"; then return 124; fi
-      ui_poll_activity
+      ui_poll_activity "$poll_interval"
       poll_status=$?
       (( poll_status == 0 )) || return "$poll_status"
     done
@@ -1097,6 +1097,9 @@ ui_wait_for_delegate() { _ui_wait_for_activity delegate_async_ready delegate_asy
 ui_wait_for_tool_process() { _ui_wait_for_activity tool_process_ready tool_process_expired; }
 ui_wait_for_mcp_request() { _ui_wait_for_activity _mcp_request_ready _mcp_request_expired; }
 ui_wait_for_mcp_start() { _ui_wait_for_activity _mcp_start_ready _mcp_request_expired; }
+# Remote events require one HTTP exchange apiece; avoid adding the generation
+# wait's 50 ms input timeout to each event in a burst.
+ui_wait_for_remote_request() { _ui_wait_for_activity http_async_ready remote_client_request_expired 10; }
 ui_poll_remote_turn() { ui_poll_activity "${1:-50}"; }
 
 ui_chat_select() {
