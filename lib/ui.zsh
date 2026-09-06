@@ -10,13 +10,13 @@ typeset -g UI_STATUS="Ready"
 typeset -gi UI_SCROLL=0 UI_AUTO_SCROLL=1
 typeset -g UI_FOCUS="input"
 # Rendering the whole transcript is linear in its size, so scrolling and tool
-# events must not re-render unchanged content. Non-append mutations of the
-# transcript arrays (toggles, session switches) bump the generation and force
-# a full render; plain appends render only the new messages, and a matching
-# generation, width, model label, and count reuses the cached render as is.
-typeset -gi UI_TRANSCRIPT_GENERATION=0
+# events must not re-render unchanged content. Session switches bump the
+# generation; block changes invalidate the layout from their position onward.
+# Plain appends render only new messages. Selection reuses the cached layout.
 typeset -g UI_RENDER_CACHE_KEY=""
 typeset -gi UI_RENDER_COUNT=0
+typeset -gi UI_REVEAL_SELECTED=0
+typeset -ga UI_MESSAGE_STARTS=() UI_MESSAGE_SEGMENT_STARTS=()
 typeset -ga UI_LINES=() UI_ATTRS=()
 typeset -ga UI_LINE_SEGMENT_STARTS=() UI_LINE_SEGMENT_COUNTS=()
 typeset -ga UI_SEGMENT_TEXTS=() UI_SEGMENT_ATTRS=()
@@ -54,6 +54,7 @@ ui_calculate_input_height() {
 
 ui_setup_windows() {
   ui_destroy_windows
+  [[ "$UI_FOCUS" == chat ]] && UI_REVEAL_SELECTED=1
   local -a pos=()
   zcurses position stdscr pos 2>/dev/null
   SCREEN_H=${pos[5]:-${LINES:-24}}
@@ -249,12 +250,27 @@ ui_plain_transcript() {
       error) label="Error" ;;
       *) label="${role:u}" ;;
     esac
+    if [[ "$role" == tool && -n "${UI_TOOL_NAMES[i]:-}" ]]; then
+      label+=" · ${UI_TOOL_SUMMARIES[i]:-${UI_TOOL_NAMES[i]}} · ${UI_TOOL_STATES[i]}"
+      if [[ "${UI_BLOCK_OPEN[i]:-1}" == 1 ]]; then
+        if [[ ( "${UI_TOOL_NAMES[i]}" == write_file || "${UI_TOOL_NAMES[i]}" == apply_patch ) &&
+              ( "${UI_TOOL_STATES[i]}" == completed || "${UI_TOOL_STATES[i]}" == failed ) ]]; then
+          : # The stored preview includes the edit and its outcome.
+        else
+          content=$'Arguments:\n'"${UI_TOOL_ARGS[i]}"$'\n\nResult:\n'"${UI_TOOL_RESULTS[i]:-(No result yet.)}"
+        fi
+      fi
+    fi
     [[ -n "$output" ]] && output+=$'\n'
     output+="=== ${label}${time:+  ${time}} ==="$'\n'
     if [[ -n "$thinking" ]] && (( ${UI_REASONING_OPEN[i]:-0} )); then
       output+=$'Reasoning:\n'"$thinking"$'\n\n'
     fi
-    [[ -n "$content" ]] && output+="$content"$'\n'
+    if [[ "${UI_BLOCK_OPEN[i]:-1}" == 0 ]]; then
+      output+=$'[collapsed]\n'
+    elif [[ -n "$content" ]]; then
+      output+="$content"$'\n'
+    fi
   done
   [[ -n "$output" ]] || output="(No transcript events yet.)"$'\n'
   REPLY="$output"
@@ -566,8 +582,10 @@ _ui_add_wrapped() {
 
 _ui_render_one_message() {
   local -i i=$1 width=$2 think_lines
-  local role content thinking time attr title
+  local role content thinking time attr title tool_attr="bold yellow/black"
   local -a thinking_lines=()
+  UI_MESSAGE_STARTS[i]=$(( ${#UI_LINES} + 1 ))
+  UI_MESSAGE_SEGMENT_STARTS[i]=$(( ${#UI_SEGMENT_TEXTS} + 1 ))
   role="${UI_ROLES[i]}"; content="${UI_CONTENTS[i]}"; thinking="${UI_THINKINGS[i]}"; time="${UI_TIMES[i]}"
   case "$role" in
     user) title="🧑 You  ${time}"; attr="green/black" ;;
@@ -585,7 +603,19 @@ _ui_render_one_message() {
     error) title="⚠ Error  ${time}"; attr="red/black" ;;
     *) title="ℹ ${role}  ${time}"; attr="magenta/black" ;;
   esac
-  [[ "$role" == tool ]] && _ui_add_line "$title" "bold yellow/black" || _ui_add_line "$title" "bold $attr"
+  if [[ "$role" == tool && -n "${UI_TOOL_NAMES[i]:-}" ]]; then
+    title="${UI_TOOL_SUMMARIES[i]:-${UI_TOOL_NAMES[i]}} · ${UI_TOOL_STATES[i]}  ${time}"
+    zcoder_terminal_safe "$title"; title="$REPLY"
+    case "${UI_TOOL_STATES[i]}" in
+      completed) tool_attr="bold green/black" ;;
+      failed) tool_attr="bold red/black" ;;
+      running) tool_attr="bold cyan/black" ;;
+    esac
+  fi
+  if [[ -n "$content" ]]; then
+    [[ "${UI_BLOCK_OPEN[i]:-1}" == 0 ]] && title="▶ ${title}" || title="▼ ${title}"
+  fi
+  [[ "$role" == tool ]] && _ui_add_line "$title" "$tool_attr" || _ui_add_line "$title" "bold $attr"
   if [[ -n "$thinking" ]]; then
     thinking_lines=("${(@f)thinking}")
     think_lines=${#thinking_lines}
@@ -596,7 +626,22 @@ _ui_render_one_message() {
       _ui_add_line "  ▶ Reasoning (${think_lines} lines) [^R to expand]" "dim magenta/black"
     fi
   fi
-  if [[ "$role" == tool ]]; then
+  if [[ "${UI_BLOCK_OPEN[i]:-1}" == 0 ]]; then
+    : # Keep the role and independently foldable reasoning visible.
+  elif [[ "$role" == tool && -n "${UI_TOOL_NAMES[i]:-}" ]]; then
+    if [[ ( "${UI_TOOL_NAMES[i]}" == write_file || "${UI_TOOL_NAMES[i]}" == apply_patch ) &&
+          ( "${UI_TOOL_STATES[i]}" == completed || "${UI_TOOL_STATES[i]}" == failed ) ]]; then
+      zcoder_terminal_safe "$content"
+      _ui_add_tool_content "$REPLY" "$width"
+    else
+      _ui_add_line "  Arguments" "dim cyan/black"
+      zcoder_terminal_safe "${UI_TOOL_ARGS[i]}"
+      _ui_add_wrapped "$REPLY" "$width" "    " "dim white/black"
+      _ui_add_line "  Result" "dim cyan/black"
+      zcoder_terminal_safe "${UI_TOOL_RESULTS[i]:-(No result yet.)}"
+      _ui_add_wrapped "$REPLY" "$width" "    " "white/black"
+    fi
+  elif [[ "$role" == tool ]]; then
     _ui_add_tool_content "$content" "$width"
   elif [[ -n "$content" ]]; then
     _ui_add_wrapped "$content" "$width" "  " "$attr"
@@ -609,6 +654,8 @@ ui_render_messages() {
   UI_LINES=(); UI_ATTRS=()
   UI_LINE_SEGMENT_STARTS=(); UI_LINE_SEGMENT_COUNTS=()
   UI_SEGMENT_TEXTS=(); UI_SEGMENT_ATTRS=()
+  UI_MESSAGE_STARTS=(); UI_MESSAGE_SEGMENT_STARTS=()
+  UI_RENDER_DIRTY_FROM=0
   if (( count == 0 )); then
     _ui_add_line "" default/default
     _ui_add_line "  👋 Welcome to zcoder.zsh" "bold cyan/black"
@@ -637,14 +684,37 @@ ui_draw_chat() {
   if [[ "$cache_key" != "$UI_RENDER_CACHE_KEY" ]] || \
      (( message_count < UI_RENDER_COUNT )) || (( UI_RENDER_COUNT == 0 && message_count > 0 )); then
     ui_render_messages "$inner_w"
-  elif (( message_count > UI_RENDER_COUNT )); then
+  else
+    if (( UI_RENDER_DIRTY_FROM > 0 && UI_RENDER_DIRTY_FROM <= UI_RENDER_COUNT )); then
+      local -i keep_lines=$(( UI_MESSAGE_STARTS[UI_RENDER_DIRTY_FROM] - 1 ))
+      local -i keep_segments=$(( UI_MESSAGE_SEGMENT_STARTS[UI_RENDER_DIRTY_FROM] - 1 ))
+      UI_LINES=("${(@)UI_LINES[1,keep_lines]}"); UI_ATTRS=("${(@)UI_ATTRS[1,keep_lines]}")
+      UI_LINE_SEGMENT_STARTS=("${(@)UI_LINE_SEGMENT_STARTS[1,keep_lines]}")
+      UI_LINE_SEGMENT_COUNTS=("${(@)UI_LINE_SEGMENT_COUNTS[1,keep_lines]}")
+      UI_SEGMENT_TEXTS=("${(@)UI_SEGMENT_TEXTS[1,keep_segments]}")
+      UI_SEGMENT_ATTRS=("${(@)UI_SEGMENT_ATTRS[1,keep_segments]}")
+      UI_RENDER_COUNT=$(( UI_RENDER_DIRTY_FROM - 1 ))
+    fi
     for (( render_index=UI_RENDER_COUNT+1; render_index<=message_count; render_index++ )); do
       _ui_render_one_message "$render_index" "$inner_w"
     done
     UI_RENDER_COUNT=$message_count
+    UI_RENDER_DIRTY_FROM=0
   fi
   total=${#UI_LINES}; max_scroll=$(( total - inner_h )); (( max_scroll < 0 )) && max_scroll=0
   (( UI_AUTO_SCROLL )) && UI_SCROLL=$max_scroll
+  if [[ "$UI_FOCUS" == chat ]] && (( message_count > 0 )); then
+    (( UI_SELECTED_EVENT > 0 && UI_SELECTED_EVENT <= message_count )) || UI_SELECTED_EVENT=$message_count
+    if (( UI_REVEAL_SELECTED )); then
+      local -i selected_line=${UI_MESSAGE_STARTS[UI_SELECTED_EVENT]:-1}
+      if (( selected_line <= UI_SCROLL )); then
+        UI_SCROLL=$(( selected_line - 1 ))
+      elif (( selected_line > UI_SCROLL + inner_h )); then
+        UI_SCROLL=$(( selected_line - inner_h ))
+      fi
+    fi
+  fi
+  UI_REVEAL_SELECTED=0
   (( UI_SCROLL > max_scroll )) && UI_SCROLL=$max_scroll
   (( UI_SCROLL < 0 )) && UI_SCROLL=0
   zcurses clear chat_win
@@ -676,6 +746,9 @@ ui_draw_chat() {
     else
       attr="${UI_ATTRS[idx]}"
       zcurses attr chat_win $=attr
+      if [[ "$UI_FOCUS" == chat ]] && (( UI_SELECTED_EVENT > 0 && idx == ${UI_MESSAGE_STARTS[UI_SELECTED_EVENT]:-0} )); then
+        zcurses attr chat_win reverse bold
+      fi
       zcoder_pad "${UI_LINES[idx][1,$inner_w]}" "$inner_w"
       zcurses string chat_win "$REPLY"
     fi
@@ -742,6 +815,7 @@ ui_draw_footer() {
   (( UI_ACTIVE )) || return 0
   local -i defer_refresh="${1:-0}"
   local text=" Enter Send  S/M-Enter Newline  ^Q Quit  Tab Sessions  ^Y Copy  Esc Stop  ^O Model  ^R Reason  ^N New  PgUp/Dn Scroll"
+  [[ "$UI_FOCUS" == chat ]] && text=" ↑/↓ Select  Enter/Space Fold  ^R Reasoning  Home/End First/Last  PgUp/Dn Scroll  Tab Prompt  ^Y Copy"
   text="${text[1,$SCREEN_W]}"
   zcurses clear foot_win; zcurses attr foot_win reverse dim white/black
   zcoder_pad "$text" "$SCREEN_W"; zcurses move foot_win 0 0; zcurses string foot_win "$REPLY"
@@ -840,12 +914,62 @@ ui_wait_for_delegate() {
   return 0
 }
 
+ui_chat_select() {
+  emulate -L zsh
+  setopt extendedglob
+  local -i delta=$1 count=${#UI_ROLES}
+  (( count > 0 )) || return 0
+  (( UI_SELECTED_EVENT > 0 && UI_SELECTED_EVENT <= count )) || UI_SELECTED_EVENT=$count
+  (( UI_SELECTED_EVENT += delta ))
+  (( UI_SELECTED_EVENT < 1 )) && UI_SELECTED_EVENT=1
+  (( UI_SELECTED_EVENT > count )) && UI_SELECTED_EVENT=$count
+  UI_AUTO_SCROLL=0
+  UI_REVEAL_SELECTED=1
+  ui_draw_chat
+}
+
+ui_toggle_block() {
+  emulate -L zsh
+  setopt extendedglob
+  local -i i=$UI_SELECTED_EVENT
+  (( i > 0 && i <= ${#UI_ROLES} )) || return 0
+  if [[ -z "${UI_CONTENTS[i]}" && -n "${UI_THINKINGS[i]}" ]]; then
+    ui_toggle_reasoning
+    return 0
+  fi
+  UI_BLOCK_OPEN[i]=$(( ! ${UI_BLOCK_OPEN[i]:-1} ))
+  transcript_changed "$i"
+  UI_AUTO_SCROLL=0; UI_REVEAL_SELECTED=1
+  [[ "${UI_BLOCK_OPEN[i]}" == 1 ]] && UI_SCROLL=$(( ${UI_MESSAGE_STARTS[i]:-1} - 1 ))
+  (( $+functions[state_save_session] )) && state_save_session
+  ui_draw_chat
+}
+
+ui_chat_input() {
+  emulate -L zsh
+  setopt extendedglob
+  local ch="$1" key="$2"
+  if [[ "$key" == UP || "$ch" == k ]]; then ui_chat_select -1
+  elif [[ "$key" == DOWN || "$ch" == j ]]; then ui_chat_select 1
+  elif [[ "$key" == HOME ]]; then ui_chat_select -${#UI_ROLES}
+  elif [[ "$key" == END ]]; then ui_chat_select ${#UI_ROLES}
+  elif [[ "$key" == ENTER || "$key" == PADENTER || "$ch" == $'\n' || "$ch" == $'\r' || "$ch" == ' ' ]]; then ui_toggle_block
+  else return 1
+  fi
+  return 0
+}
+
 ui_toggle_reasoning() {
-  local -i i
-  for (( i=${#UI_ROLES}; i>=1; i-- )); do
+  local -i i first=${#UI_ROLES} last=1
+  if [[ "$UI_FOCUS" == chat ]]; then
+    first=$UI_SELECTED_EVENT; last=$UI_SELECTED_EVENT
+    (( first > 0 && first <= ${#UI_ROLES} )) || return 0
+  fi
+  for (( i=first; i>=last; i-- )); do
     if [[ "${UI_ROLES[i]}" == assistant && -n "${UI_THINKINGS[i]}" ]]; then
       UI_REASONING_OPEN[i]=$(( ! ${UI_REASONING_OPEN[i]:-0} ))
-      (( UI_TRANSCRIPT_GENERATION++ ))
+      transcript_changed "$i"
+      [[ "$UI_FOCUS" == chat ]] && { UI_AUTO_SCROLL=0; UI_REVEAL_SELECTED=1; }
       break
     fi
   done

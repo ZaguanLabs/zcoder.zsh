@@ -99,6 +99,9 @@ state_save_session() {
     skills_start=$(( STATE_SAVED_SKILL_COUNT + 1 ))
   fi
 
+  if (( UI_PERSIST_DIRTY_FROM > 0 && UI_PERSIST_DIRTY_FROM < ui_start )); then
+    ui_start=$UI_PERSIST_DIRTY_FROM
+  fi
   mapfile[$session_dir/id]="$CURRENT_SESSION_ID"
   mapfile[$session_dir/title]="$SESSION_TITLE"
   mapfile[$session_dir/workspace]="${ZCODER_WORKSPACE:A}"
@@ -107,6 +110,7 @@ state_save_session() {
   mapfile[$session_dir/updated_at]="$EPOCHSECONDS"
   mapfile[$session_dir/agent_message_count]="${#AGENT_MESSAGES}"
   mapfile[$session_dir/ui_event_count]="${#UI_ROLES}"
+  mapfile[$session_dir/selected_event]="${UI_IDS[UI_SELECTED_EVENT]:-}"
   mapfile[$session_dir/context_user_count]="${#AGENT_USER_MESSAGES}"
   mapfile[$session_dir/active_skill_count]="${#SKILL_ACTIVE_NAMES}"
   mapfile[$session_dir/compaction_summary]="$AGENT_COMPACTION_SUMMARY"
@@ -139,6 +143,8 @@ state_save_session() {
     mapfile[$ui_dir/$seq.thinking]="${UI_THINKINGS[i]}"
     mapfile[$ui_dir/$seq.time]="${UI_TIMES[i]}"
     mapfile[$ui_dir/$seq.reasoning_open]="${UI_REASONING_OPEN[i]:-0}"
+    transcript_metadata_json "$i"
+    mapfile[$ui_dir/$seq.meta]="$REPLY"
   done
   for (( i=users_start; i<=${#AGENT_USER_MESSAGES}; i++ )); do
     printf -v seq '%06d' "$i"
@@ -157,6 +163,7 @@ state_save_session() {
   STATE_SAVED_USER_COUNT=${#AGENT_USER_MESSAGES}
   STATE_SAVED_SKILL_COUNT=${#SKILL_ACTIVE_NAMES}
   STATE_SAVED_REASONING="${(j::)UI_REASONING_OPEN}"
+  UI_PERSIST_DIRTY_FROM=0
 }
 
 state_save_and_refresh() {
@@ -169,14 +176,7 @@ state_new_session() {
   CURRENT_SESSION_ID="${EPOCHSECONDS}_${RANDOM}"
   SESSION_TITLE="New Job"
   agent_reset
-  UI_ROLES=()
-  UI_CONTENTS=()
-  UI_THINKINGS=()
-  UI_TIMES=()
-  UI_REASONING_OPEN=()
-  (( UI_TRANSCRIPT_GENERATION++ ))
-  UI_SCROLL=0
-  UI_AUTO_SCROLL=1
+  transcript_reset
   state_save_and_refresh
 }
 
@@ -200,12 +200,7 @@ state_load_session() {
     ZCODER_MODEL="$saved_model"
   fi
   agent_reset
-  UI_ROLES=()
-  UI_CONTENTS=()
-  UI_THINKINGS=()
-  UI_TIMES=()
-  UI_REASONING_OPEN=()
-  (( UI_TRANSCRIPT_GENERATION++ ))
+  transcript_reset
 
   local -i disk_agent_count=0 disk_ui_count=0 disk_user_count=0 disk_skill_count=0
   agent_dir="$session_dir/agent_messages"
@@ -228,7 +223,10 @@ state_load_session() {
     UI_TIMES+=("${mapfile[$ui_dir/$seq.time]}")
     _state_nonnegative "${mapfile[$ui_dir/$seq.reasoning_open]:-0}"
     (( REPLY > 0 )) && UI_REASONING_OPEN+=(1) || UI_REASONING_OPEN+=(0)
+    transcript_restore_metadata ${#UI_ROLES} "${mapfile[$ui_dir/$seq.meta]:-}"
   done
+  local selected_id="${mapfile[$session_dir/selected_event]:-}"
+  [[ -n "$selected_id" ]] && UI_SELECTED_EVENT=${UI_IDS[(Ie)$selected_id]}
 
   AGENT_COMPACTION_SUMMARY="${mapfile[$session_dir/compaction_summary]}"
   _state_nonnegative "${mapfile[$session_dir/compaction_count]:-0}"; AGENT_COMPACTION_COUNT=$REPLY

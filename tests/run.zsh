@@ -10,6 +10,7 @@ typeset -gr PROJECT_DIR="${TEST_DIR:h}"
 
 source "${PROJECT_DIR}/lib/util.zsh"
 source "${PROJECT_DIR}/lib/json.zsh"
+source "${PROJECT_DIR}/lib/transcript.zsh"
 source "${PROJECT_DIR}/lib/relay.zsh"
 source "${PROJECT_DIR}/lib/mcp.zsh"
 source "${PROJECT_DIR}/lib/http.zsh"
@@ -943,16 +944,10 @@ remote_next_status=$?
 assert_failure "remote event polling reports an empty tail" $remote_next_status
 assert_eq '{"event":"none"}' "$REPLY" "empty remote event polls return a stable envelope"
 
-ui_append_message() {
-  UI_ROLES+=("$1")
-  UI_CONTENTS+=("$2")
-  UI_THINKINGS+=("${3:-}")
-}
-UI_ROLES=(); UI_CONTENTS=(); UI_THINKINGS=()
+transcript_reset
 remote_server_worker_emit tool "persist this visible result" "worker reasoning"
 assert_eq "tool" "${UI_ROLES[1]}" "remote workers retain emitted roles in the persistent transcript"
 assert_eq "persist this visible result" "${UI_CONTENTS[1]}" "remote workers retain emitted content in the persistent transcript"
-unfunction ui_append_message
 
 saved_remote_sessions_dir="$ZCODER_SESSIONS_DIR"
 saved_remote_workspace="$ZCODER_WORKSPACE"
@@ -1530,7 +1525,6 @@ assert_failure "goal verifier dispatch rejects invented write calls" $?
 GOAL_VERIFIER_ACTIVE=0
 
 # The transcript exporter is UI code but does not require curses to be active.
-source "${PROJECT_DIR}/lib/transcript.zsh"
 source "${PROJECT_DIR}/lib/ui.zsh"
 
 ZCODER_SESSIONS_DIR="$TEST_TMP/zcoder-sessions"
@@ -2736,6 +2730,7 @@ agent_loop_detect
 assert_success "repeated requests are eventually detected despite changing output" $?
 
 typeset -gi MOCK_LOOP_TURNS=0 MOCK_LOOP_DISPATCHES=0
+functions[_test_loop_tool_dispatch]="${functions[tool_dispatch]}"
 agent_ollama_chat() {
   (( MOCK_LOOP_TURNS++ ))
   HTTP_BODY='{"message":{"content":"","tool_calls":[{"type":"function","function":{"name":"read_file","arguments":{"path":"same.txt"}}}]}}'
@@ -2820,6 +2815,8 @@ agent_loop_reset
 for round in {1..20}; do agent_loop_record "$round" "result:$round"; done
 assert_eq "6" "${#AGENT_TOOL_REQUEST_HISTORY}" "loop history remains bounded"
 assert_eq "15" "${AGENT_TOOL_REQUEST_HISTORY[1]}" "bounded history preserves individual array entries"
+functions[tool_dispatch]="${functions[_test_loop_tool_dispatch]}"
+unfunction _test_loop_tool_dispatch
 
 # External harnesses are built and parsed independently of curses. These tests
 # never invoke a paid model; the async checks use local Zsh child processes.
@@ -3105,6 +3102,8 @@ zcurses() {
   MOCK_ZCURSES_CALLS+=("${(j: :)@}")
   return 0
 }
+
+source "${TEST_DIR}/transcript.zsh"
 
 UI_ACTIVE=1
 SCREEN_H=30; SCREEN_W=100; SIDE_W=0; TOP_H=3; INPUT_H=3; FOOT_H=1

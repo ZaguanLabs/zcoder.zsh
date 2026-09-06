@@ -224,14 +224,10 @@ remote_client_refresh_sessions() {
 }
 
 remote_client_load_session() {
-  local id="$1" event="" role="" content="" thinking="" time="" reasoning_open="0"
+  local id="$1" event="" role="" content="" thinking="" time="" reasoning_open="0" metadata=""
   local -i cursor=0 next_cursor=0 index=${SESSION_IDS[(Ie)$id]}
   _state_valid_id "$id" || { REMOTE_ERROR="invalid remote session identifier"; return 1; }
-  UI_ROLES=()
-  UI_CONTENTS=()
-  UI_THINKINGS=()
-  UI_TIMES=()
-  UI_REASONING_OPEN=()
+  transcript_reset
   while true; do
     remote_client_request GET "/v1/session?id=${id}&after=${cursor}" || return 1
     json_parse_flat_object "$HTTP_BODY" || {
@@ -252,11 +248,13 @@ remote_client_load_session() {
     thinking="${JSON_OBJECT[thinking]:-}"
     time="${JSON_OBJECT[time]:-}"
     reasoning_open="${JSON_OBJECT[reasoning_open]:-0}"
+    metadata="${JSON_OBJECT[metadata]:-}"
     UI_ROLES+=("$role")
     UI_CONTENTS+=("$content")
     UI_THINKINGS+=("$thinking")
     UI_TIMES+=("$time")
     [[ "$reasoning_open" == 1 ]] && UI_REASONING_OPEN+=(1) || UI_REASONING_OPEN+=(0)
+    transcript_restore_metadata ${#UI_ROLES} "$metadata"
   done
   CURRENT_SESSION_ID="$id"
   (( index > 0 )) && SESSION_TITLE="${SESSION_TITLES[index]}"
@@ -387,6 +385,7 @@ _remote_client_emit_event() {
 
 remote_client_cancel_turn() {
   remote_client_request POST /v1/cancel '{}' >/dev/null 2>&1 || true
+  transcript_interrupt_tool || true
   agent_emit system "⏹ Remote response generation stopped."
   agent_set_status "Stopped"
 }
@@ -394,8 +393,8 @@ remote_client_cancel_turn() {
 remote_client_user_turn() {
   local user_content="$1" prompt_json="" turn_payload="" event="" role="" content="" thinking="" event_status=""
   local approval_id="" approval_kind="" command_text="" answer="n" decision="n" approval_json="" exit_code="0"
-  local tool_phase="" tool_name="" tool_args="{}" tool_result="" tool_succeeded="0"
-  local -i poll_status=0
+  local tool_phase="" tool_name="" tool_args="{}" tool_result="" tool_succeeded="0" tool_id=""
+  local -i poll_status=0 structured_tool_seen=0
   AGENT_LAST_RESPONSE=""
   if (( ${UI_ACTIVE:-0} )); then
     ui_append_message user "$user_content"
@@ -403,7 +402,7 @@ remote_client_user_turn() {
   fi
   json_quote "$user_content"; prompt_json="$REPLY"
   turn_payload="{\"prompt\":${prompt_json}}"
-  (( ${ACP_WORKER_ACTIVE:-0} )) && turn_payload="{\"prompt\":${prompt_json},\"structured_events\":true}"
+  (( ${ACP_WORKER_ACTIVE:-0} || ${UI_ACTIVE:-0} )) && turn_payload="{\"prompt\":${prompt_json},\"structured_events\":true}"
   remote_client_model_ensure
   poll_status=$?
   if (( poll_status != 0 )); then
@@ -426,11 +425,13 @@ remote_client_user_turn() {
   REMOTE_CLIENT_EVENT_CURSOR=0
   while true; do
     if ! remote_client_request GET "/v1/events?after=${REMOTE_CLIENT_EVENT_CURSOR}"; then
+      transcript_interrupt_tool || true
       agent_emit error "Remote event request failed: $REMOTE_ERROR"
       agent_set_status "Error"
       return 1
     fi
     if ! json_parse_flat_object "$HTTP_BODY"; then
+      transcript_interrupt_tool || true
       agent_emit error "Invalid remote event: ${JSON_ERROR:-parse error}"
       agent_set_status "Error"
       return 1
@@ -453,6 +454,7 @@ remote_client_user_turn() {
     [[ -n "$tool_args" ]] || tool_args="{}"
     tool_result="${JSON_OBJECT[result]:-}"
     tool_succeeded="${JSON_OBJECT[succeeded]:-0}"
+    tool_id="${JSON_OBJECT[tool_call_id]:-}"
     case "$event" in
       none)
         if (( ${UI_ACTIVE:-0} && $+functions[ui_poll_remote_turn] )); then
@@ -467,11 +469,20 @@ remote_client_user_turn() {
         fi
         ;;
       message|status)
-        _remote_client_emit_event "$event" "$role" "$content" "$thinking" "$event_status"
+        # Older structured-event servers also send legacy tool text. Once
+        # lifecycle events are present, those summaries would duplicate cards.
+        if [[ "$event" == message && "$role" == tool ]] && (( ${UI_ACTIVE:-0} && structured_tool_seen )); then
+          :
+        else
+          _remote_client_emit_event "$event" "$role" "$content" "$thinking" "$event_status"
+        fi
         ;;
       tool)
         if (( ${ACP_WORKER_ACTIVE:-0} && $+functions[acp_worker_tool_event] )); then
           acp_worker_tool_event "$tool_phase" "$tool_name" "$tool_args" "$tool_result" "$tool_succeeded"
+        elif (( ${UI_ACTIVE:-0} )); then
+          transcript_tool_event "$tool_phase" "$tool_name" "$tool_args" "$tool_result" "$tool_succeeded" "$tool_id" && structured_tool_seen=1
+          ui_draw_chat
         fi
         ;;
       approval_required)
@@ -501,6 +512,7 @@ remote_client_user_turn() {
         fi
         ;;
       complete)
+        if transcript_interrupt_tool && (( ${UI_ACTIVE:-0} )); then ui_draw_chat; fi
         [[ "$exit_code" == <0-255> ]] || exit_code=1
         if (( REMOTE_SESSIONS_SUPPORTED )) && ! remote_client_refresh_sessions; then
           agent_emit error "Could not refresh remote sessions: $REMOTE_ERROR"
@@ -509,6 +521,7 @@ remote_client_user_turn() {
         return "$exit_code"
         ;;
       *)
+        transcript_interrupt_tool || true
         agent_emit error "Unknown remote event: ${event:-missing event type}"
         return 1
         ;;
@@ -573,6 +586,7 @@ remote_server_worker_tool_event() {
     running|complete) [[ -n "$REMOTE_SERVER_TOOL_CALL_ID" ]] || return 0 ;;
     *) return 0 ;;
   esac
+  transcript_tool_event "$phase" "$name" "$args" "$result" "$succeeded" "$REMOTE_SERVER_TOOL_CALL_ID"
   json_quote "$REMOTE_SERVER_TOOL_CALL_ID"; id_json="$REPLY"
   json_quote "$name"; name_json="$REPLY"
   json_quote "$args"; args_json="$REPLY"
@@ -747,7 +761,7 @@ _remote_server_session_summary() {
 
 _remote_server_session_event() {
   local id="$1" after="$2" session_dir="" ui_dir="" seq=""
-  local role_json="" content_json="" thinking_json="" time_json="" reasoning_open="0"
+  local role_json="" content_json="" thinking_json="" time_json="" reasoning_open="0" metadata_json=""
   local -i index count
   _state_valid_id "$id" || return 2
   [[ "$after" == <0-> ]] || return 2
@@ -767,9 +781,10 @@ _remote_server_session_event() {
   json_quote "${mapfile[$ui_dir/$seq.content]}"; content_json="$REPLY"
   json_quote "${mapfile[$ui_dir/$seq.thinking]}"; thinking_json="$REPLY"
   json_quote "${mapfile[$ui_dir/$seq.time]}"; time_json="$REPLY"
+  json_quote "${mapfile[$ui_dir/$seq.meta]:-}"; metadata_json="$REPLY"
   _state_nonnegative "${mapfile[$ui_dir/$seq.reasoning_open]:-0}"; reasoning_open=$REPLY
   (( reasoning_open > 0 )) && reasoning_open=1
-  REPLY="{\"event\":\"message\",\"seq\":${index},\"role\":${role_json},\"content\":${content_json},\"thinking\":${thinking_json},\"time\":${time_json},\"reasoning_open\":${reasoning_open}}"
+  REPLY="{\"event\":\"message\",\"seq\":${index},\"role\":${role_json},\"content\":${content_json},\"thinking\":${thinking_json},\"time\":${time_json},\"reasoning_open\":${reasoning_open},\"metadata\":${metadata_json}}"
 }
 
 _remote_server_select_session() {

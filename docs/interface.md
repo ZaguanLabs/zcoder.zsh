@@ -9,7 +9,7 @@ The interface includes:
 
 - a header with the model, Ollama host or remote server, workspace, and status
 - a sidebar with resumable jobs and the active project/tool policy
-- a scrollable transcript with tool activity and collapsible reasoning
+- a selectable transcript with foldable messages, tool results, and reasoning
 - syntax-highlighted file previews and semantic patch colors
 - a multiline editor with a cursor-following viewport and prompt history
 - an exact-command approval dialog
@@ -32,7 +32,8 @@ entries.
 A session retains:
 
 - Ollama and tool-call history
-- the visible transcript and reasoning expansion state
+- the visible transcript, selected entry, and body/reasoning expansion state
+- tool identities, arguments, results, and lifecycle state
 - context checkpoints and accounting
 - active Skills
 - the selected model
@@ -55,25 +56,47 @@ Continuous curses redraws can make mouse selection unreliable. Ctrl+Y or
 plain text. Copy it with the terminal's normal controls, then press Enter to
 return.
 
-Expanded reasoning is included. Collapsed reasoning remains hidden, matching
-the TUI.
+Expanded message bodies, tool results, and reasoning are included. Collapsed
+details remain hidden, matching the TUI.
+
+## Inspect and fold transcript entries
+
+Press Tab until the transcript has focus. Up/Down (or k/j) selects an entry;
+Home/End selects the first/last entry. Enter or Space expands or collapses its
+body. Ctrl+R toggles the selected assistant's reasoning independently. For a
+reasoning-only entry, Enter also toggles its reasoning. Tab returns to the prompt.
+
+New tool calls occupy one entry that changes from pending to running and then
+completed or failed. Their details start collapsed; expand them to inspect the
+arguments and retained result, including read-file and MCP output. File writes
+and patches also retain their styled previews. Status text remains readable
+without relying on color. Incoming activity preserves a manually scrolled view.
+
+Local sessions retain selection and expansion state. Older saved transcripts
+remain readable with their original bodies expanded. An unfinished tool restored
+from disk is marked interrupted. Remote connections request structured tool
+events and restore saved tool metadata when supported by the server; legacy
+servers continue to display their ordinary tool text. Remote expansion changes
+remain local to the current view.
 
 ## Keyboard shortcuts
 
 | Key | Action |
 | --- | --- |
-| Enter | Send the prompt |
+| Enter | Send the prompt; fold the selected entry when transcript has focus |
 | Shift+Enter | Insert a newline; Alt+Enter is the fallback |
 | Escape | Stop the active model response, external delegate, or remote turn |
 | Tab | Move focus between prompt, sidebar, and transcript |
 | Ctrl+O | Open the Ollama model picker |
-| Ctrl+R | Toggle the latest reasoning block |
+| Ctrl+R | Toggle selected reasoning in the transcript, otherwise latest reasoning |
+| Space | Fold the selected entry when transcript has focus |
+| Home / End | Select the first/last entry when transcript has focus |
 | Ctrl+N | Start a new saved session |
 | Ctrl+Y | Open the plain-text transcript view |
 | Page Up / Page Down | Scroll the transcript |
 | Ctrl+U | Clear the input |
 | Ctrl+W | Delete the previous word |
-| Up / Down | Move inside multiline input, then through prompt history |
+| Up / Down | Move inside input/history, or select an entry when transcript has focus |
 | Ctrl+Q / Ctrl+D | Exit |
 
 ## Slash commands

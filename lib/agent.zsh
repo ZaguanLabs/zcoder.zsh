@@ -1047,13 +1047,19 @@ agent_set_status() {
   fi
 }
 
-# Protocol transports observe the same tool lifecycle without changing tool
-# dispatch or the local terminal presentation.
+agent_structured_tools_active() {
+  (( ! ${ACP_WORKER_ACTIVE:-0} && (${UI_ACTIVE:-0} || (${REMOTE_SERVER_WORKER:-0} && ${REMOTE_STRUCTURED_TOOL_EVENTS:-0})) ))
+}
+
+# Every presentation consumes the same lifecycle; dispatch remains headless.
 agent_tool_event() {
   if (( ${ACP_WORKER_ACTIVE:-0} && $+functions[acp_worker_tool_event] )); then
     acp_worker_tool_event "$@"
   elif (( ${REMOTE_SERVER_WORKER:-0} && $+functions[remote_server_worker_tool_event] )); then
     remote_server_worker_tool_event "$@"
+  elif (( ${UI_ACTIVE:-0} && $+functions[transcript_tool_event] )); then
+    transcript_tool_event "$@" || return $?
+    ui_refresh_all
   fi
 }
 
@@ -1515,7 +1521,9 @@ _agent_run_turn() {
       agent_tool_event begin "$tool_name" "$tool_args"
       summary="$tool_name $tool_args"
       (( ${#summary} > 240 )) && summary="${summary[1,237]}..."
-      if [[ "$tool_name" == mcp__* ]]; then
+      if agent_structured_tools_active; then
+        : # Lifecycle events own the single tool block.
+      elif [[ "$tool_name" == mcp__* ]]; then
         agent_format_tool_ui_result "$tool_name" "$tool_args" "" 0
         agent_emit tool "$REPLY"
       elif (( ! ${UI_ACTIVE:-0} )); then
@@ -1533,7 +1541,9 @@ _agent_run_turn() {
       zcoder_debug tool_result "step=$step index=$i name=${(qqq)tool_name} ok=$TOOL_RESULT_OK result_chars=${#result} result_head=${(qqq)${result[1,500]}}"
       outcome_signature+="${TOOL_RESULT_OK}:${#result}:$result"
       agent_add_message tool "$result" "$tool_name"
-      if [[ "$tool_name" == mcp__* ]]; then
+      if agent_structured_tools_active; then
+        :
+      elif [[ "$tool_name" == mcp__* ]]; then
         : # The call indicator was emitted before dispatch; keep its result private.
       elif (( ${UI_ACTIVE:-0} )); then
         agent_format_tool_ui_result "$tool_name" "$tool_args" "$result" "$TOOL_RESULT_OK"
