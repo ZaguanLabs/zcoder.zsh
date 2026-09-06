@@ -236,6 +236,7 @@ ui_init() {
 
 ui_end() {
   (( UI_ACTIVE )) || return 0
+  (( $+functions[agent_context_discovery_cancel] )) && agent_context_discovery_cancel
   UI_ACTIVE=0
   ui_destroy_windows
   terminal_end
@@ -244,6 +245,7 @@ ui_end() {
 }
 
 ui_poll_resize() {
+  (( ${UI_ACTIVE:-0} && $+functions[agent_context_discovery_poll] )) && agent_context_discovery_poll
   # The existing idle/activity/modal loops drive notices and animation. Cached
   # header keys cap repainting at four frames per second during activity; an
   # idle screen stays still. Modal ownership continues to suppress underlays.
@@ -1095,6 +1097,7 @@ ui_wait_for_generation() {
 }
 ui_wait_for_delegate() { _ui_wait_for_activity delegate_async_ready delegate_async_timed_out; }
 ui_wait_for_models() { _ui_wait_for_activity http_async_ready ollama_model_discovery_expired; }
+ui_wait_for_context() { _ui_wait_for_activity agent_context_discovery_ready; }
 ui_wait_for_tool_process() { _ui_wait_for_activity tool_process_ready tool_process_expired; }
 ui_wait_for_mcp_request() { _ui_wait_for_activity _mcp_request_ready _mcp_request_expired; }
 ui_wait_for_mcp_start() { _ui_wait_for_activity _mcp_start_ready _mcp_request_expired; }

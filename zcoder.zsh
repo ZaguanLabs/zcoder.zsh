@@ -247,6 +247,7 @@ cleanup() {
   [[ "$REMOTE_MODE" != server ]] && (( $+functions[state_save_session] )) && state_save_session
   (( $+functions[delegate_async_cancel] )) && delegate_async_cancel
   (( $+functions[remote_client_idle_cancel] )) && remote_client_idle_cancel
+  agent_context_discovery_cancel
   http_async_cancel
   (( $+functions[relay_stop] )) && relay_stop
   (( $+functions[remote_server_stop] )) && remote_server_stop

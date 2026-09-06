@@ -67,7 +67,7 @@ component estimates and textual context bill share the same accounting values.
 
 Modals collect an already-running local warm-up while retaining input ownership.
 Underlying status updates are deferred until the overlay closes. Model discovery
-and MCP connection/restart retain their existing synchronous behavior.
+and MCP connection/restart use responsive waits outside the modal lifecycle.
 
 ## Rendering and activity input
 
@@ -135,8 +135,17 @@ OpenCode catalogs use the native process runner with the same deadline. Its
 explicit truncation flag lets catalog consumers reject incomplete output before
 parsing; ordinary tool displays retain their bounded head/tail previews. Model
 pickers publish choices only after successful discovery and preserve selection
-on cancellation or failure. Headless discovery remains synchronous. Context
-allocation queries (`/api/ps`) still use the synchronous path.
+on cancellation or failure. Headless discovery remains synchronous.
+
+Interactive context-allocation queries (`/api/ps`) own a separate HTTP worker
+with a 30-second deadline. Initial payload preparation waits through the shared
+input loop; Escape propagates cancellation before generation starts. Queries
+after a response or warm-up start in the background and are collected by existing
+UI ticks, including modal ticks, without taking over input. Collection preserves
+the caller's transport, tokenizer, and model-response state. Failed queries keep
+the existing allocation or fallback estimate; unresolved auto sizing continues
+to omit `num_ctx`. Model/host changes, reset, and UI shutdown discard pending
+work. Headless context discovery remains synchronous.
 
 ### Interactive external processes
 

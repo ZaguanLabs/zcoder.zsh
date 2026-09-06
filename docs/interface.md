@@ -154,6 +154,11 @@ and keeps the selected model; the complete catalog must arrive before choices
 are displayed. Interactive discovery has a 60-second deadline. OpenCode catalogs
 that exceed the output budget are rejected instead of showing a partial list.
 
+Context-allocation discovery also keeps input responsive. Escape during initial
+preparation stops before generation; post-response lookups run in the background
+so an open inspector keeps its normal controls. A stalled lookup ends after 30
+seconds and retains the last allocation or the labelled fallback estimate.
+
 ## Drafting while the agent works
 
 Ordinary local interactive responses arrive incrementally in one assistant

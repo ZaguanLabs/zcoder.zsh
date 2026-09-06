@@ -10,6 +10,10 @@ typeset -gi ZCODER_COMPACT_MIN_YIELD_TOKENS="${ZCODER_COMPACT_MIN_YIELD_TOKENS:-
 typeset -gi ZCODER_COMPACT_RETRY_LIMIT="${ZCODER_COMPACT_RETRY_LIMIT:-2}"
 typeset -gi AGENT_CONTEXT_WINDOW="$ZCODER_CONTEXT_FALLBACK"
 typeset -g AGENT_CONTEXT_MODEL=""
+typeset -g AGENT_CONTEXT_HOST='' AGENT_CONTEXT_SETTING=''
+typeset -g AGENT_CONTEXT_PID='' AGENT_CONTEXT_BASE=''
+typeset -g AGENT_CONTEXT_REQUEST_MODEL='' AGENT_CONTEXT_REQUEST_HOST=''
+typeset -gF AGENT_CONTEXT_DEADLINE=0.0
 typeset -gi AGENT_CONTEXT_DISCOVERY_PENDING=0
 typeset -gi AGENT_LAST_PROMPT_TOKENS=0
 typeset -gi AGENT_LAST_OUTPUT_TOKENS=0
@@ -37,7 +41,9 @@ agent_compaction_schema_json() {
 }
 
 agent_compaction_reset() {
+  agent_context_discovery_cancel
   AGENT_CONTEXT_MODEL=""
+  AGENT_CONTEXT_HOST=''; AGENT_CONTEXT_SETTING=''
   AGENT_CONTEXT_WINDOW="$ZCODER_CONTEXT_FALLBACK"
   AGENT_CONTEXT_DISCOVERY_PENDING=0
   AGENT_LAST_PROMPT_TOKENS=0
@@ -52,11 +58,85 @@ agent_compaction_reset() {
   AGENT_PINNED_USER_MESSAGES=()
 }
 
-agent_context_configure() {
-  if [[ "$AGENT_CONTEXT_MODEL" == "$ZCODER_MODEL" ]]; then
+# Context discovery owns its HTTP worker independently of generation/warm-up.
+# Poll callbacks preserve transport and tokenizer state belonging to callers.
+agent_context_discovery_cancel() {
+  local HTTP_ASYNC_PID="$AGENT_CONTEXT_PID" HTTP_ASYNC_BASE="$AGENT_CONTEXT_BASE" HTTP_ASYNC_STREAM_FD=''
+  local HTTP_BODY='' HTTP_ERROR='' REPLY=''
+  [[ -n "$HTTP_ASYNC_PID" || -n "$HTTP_ASYNC_BASE" ]] && http_async_cancel 'context discovery stopped'
+  AGENT_CONTEXT_PID=''; AGENT_CONTEXT_BASE=''
+  AGENT_CONTEXT_REQUEST_MODEL=''; AGENT_CONTEXT_REQUEST_HOST=''
+  return 0
+}
+
+agent_context_discovery_start() {
+  agent_context_discovery_cancel
+  local HTTP_ASYNC_PID='' HTTP_ASYNC_BASE='' HTTP_ASYNC_STREAM_FD='' HTTP_ACTIVE_FD=''
+  local HTTP_BODY='' HTTP_ERROR='' HTTP_ASYNC_EXTRA_HEADERS='' REPLY=''
+  local -i HTTP_STREAM_REQUEST=0 HTTP_READ_TIMEOUT=30
+  AGENT_CONTEXT_REQUEST_MODEL="$ZCODER_MODEL"; AGENT_CONTEXT_REQUEST_HOST="$OLLAMA_HOST"
+  AGENT_CONTEXT_DEADLINE=$(( EPOCHREALTIME + HTTP_READ_TIMEOUT ))
+  {
+    http_async_start GET /api/ps '' "$OLLAMA_HOST"
+  } always {
+    AGENT_CONTEXT_PID="$HTTP_ASYNC_PID"; AGENT_CONTEXT_BASE="$HTTP_ASYNC_BASE"
+  }
+}
+
+agent_context_discovery_poll() {
+  [[ -n "$AGENT_CONTEXT_PID" ]] || return 0
+  if [[ "$AGENT_CONTEXT_REQUEST_MODEL" != "$ZCODER_MODEL" || "$AGENT_CONTEXT_REQUEST_HOST" != "$OLLAMA_HOST" || "$ZCODER_CONTEXT_WINDOW" != auto ]] || (( ! ${UI_ACTIVE:-0} )); then
+    agent_context_discovery_cancel
     return 0
   fi
+  local HTTP_ASYNC_PID="$AGENT_CONTEXT_PID" HTTP_ASYNC_BASE="$AGENT_CONTEXT_BASE" HTTP_ASYNC_STREAM_FD=''
+  local HTTP_BODY='' HTTP_ERROR='' REPLY=''
+  local JSON_SOURCE='' JSON_TOKEN_TYPE='' JSON_TOKEN_VALUE='' JSON_ERROR=''
+  local -a JSON_CHARS=()
+  local -i JSON_POS=1 JSON_LEN=0 JSON_TOKEN_START=1 JSON_RUNNING_MODEL_CONTEXT=0
+  {
+    if http_async_ready; then
+      if http_async_collect && json_parse_running_model_context "$HTTP_BODY" "$AGENT_CONTEXT_REQUEST_MODEL" && (( JSON_RUNNING_MODEL_CONTEXT > 0 )); then
+        AGENT_CONTEXT_WINDOW=$JSON_RUNNING_MODEL_CONTEXT
+        AGENT_CONTEXT_DISCOVERY_PENDING=0
+      fi
+    elif (( EPOCHREALTIME >= AGENT_CONTEXT_DEADLINE )); then
+      http_async_cancel 'context discovery timed out'
+    fi
+  } always {
+    AGENT_CONTEXT_PID="$HTTP_ASYNC_PID"; AGENT_CONTEXT_BASE="$HTTP_ASYNC_BASE"
+  }
+  return 0
+}
+
+agent_context_discovery_ready() {
+  agent_context_discovery_poll
+  [[ -z "$AGENT_CONTEXT_PID" ]]
+}
+
+agent_context_discovery_wait() {
+  [[ -n "$AGENT_CONTEXT_PID" ]] || return 0
+  # A modal retains input ownership. Its resize/input ticks collect the lookup.
+  (( ${UI_MODAL_ACTIVE:-0} )) && return 0
+  local -i wait_status=0
+  ui_wait_for_context || wait_status=$?
+  if (( wait_status != 0 )); then
+    agent_context_discovery_cancel
+    AGENT_CONTEXT_MODEL='' # Retry on the next explicit preparation attempt.
+    (( wait_status == 130 )) && AGENT_CANCELLED=1
+    HTTP_ERROR='Context discovery stopped'
+  fi
+  return "$wait_status"
+}
+
+agent_context_configure() {
+  if [[ "$AGENT_CONTEXT_MODEL" == "$ZCODER_MODEL" && "$AGENT_CONTEXT_HOST" == "$OLLAMA_HOST" && "$AGENT_CONTEXT_SETTING" == "$ZCODER_CONTEXT_WINDOW" ]]; then
+    agent_context_discovery_wait
+    return $?
+  fi
+  agent_context_discovery_cancel
   AGENT_CONTEXT_MODEL="$ZCODER_MODEL"
+  AGENT_CONTEXT_HOST="$OLLAMA_HOST"; AGENT_CONTEXT_SETTING="$ZCODER_CONTEXT_WINDOW"
   AGENT_LAST_PROMPT_TOKENS=0
   AGENT_LAST_PAYLOAD_BYTES=0
   AGENT_CONTEXT_DISCOVERY_PENDING=0
@@ -67,8 +147,15 @@ agent_context_configure() {
   fi
 
   AGENT_CONTEXT_WINDOW="$ZCODER_CONTEXT_FALLBACK"
+  AGENT_CONTEXT_DISCOVERY_PENDING=1
+  if (( ${UI_ACTIVE:-0} )); then
+    agent_context_discovery_start || true
+    agent_context_discovery_wait
+    return $?
+  fi
   if ollama_get_running_context "$ZCODER_MODEL" "$OLLAMA_HOST"; then
     AGENT_CONTEXT_WINDOW="$OLLAMA_RUNNING_CONTEXT"
+    AGENT_CONTEXT_DISCOVERY_PENDING=0
   else
     # A model absent from /api/ps has not been loaded yet. Refresh after the
     # first response, when Ollama can report the allocation it actually made.
@@ -198,6 +285,12 @@ agent_parse_compaction_summary() {
 
 agent_context_refresh_after_response() {
   (( AGENT_CONTEXT_DISCOVERY_PENDING )) || return 0
+  if (( ${UI_ACTIVE:-0} )); then
+    # Warm-up can complete inside a modal. Start once and let existing UI ticks
+    # collect it; never enter a second input loop beneath the overlay.
+    agent_context_discovery_start || true
+    return 0
+  fi
   if ollama_get_running_context "$ZCODER_MODEL" "$OLLAMA_HOST"; then
     AGENT_CONTEXT_WINDOW="$OLLAMA_RUNNING_CONTEXT"
     AGENT_CONTEXT_DISCOVERY_PENDING=0
@@ -365,7 +458,7 @@ agent_compact_history() {
   (( AGENT_COMPACTION_IN_PROGRESS )) && { HTTP_ERROR="compaction is already running"; return 1; }
   AGENT_COMPACTION_IN_PROGRESS=1
   {
-    agent_context_configure
+    agent_context_configure || return $?
     agent_build_payload || return $?
     agent_estimate_payload_tokens "$REPLY"
     before=$REPLY
@@ -496,7 +589,7 @@ agent_compact_history() {
 agent_prepare_payload() {
   local payload="" stream="${1:-false}"
   local -i estimate limit compact_status
-  agent_context_configure
+  agent_context_configure || return $?
   agent_build_payload "$stream" || return $?
   payload="$REPLY"
   agent_estimate_payload_tokens "$payload"
@@ -517,7 +610,7 @@ agent_prepare_payload() {
 agent_context_summary() {
   local last_prompt="unknown"
   local -i estimate limit
-  agent_context_configure
+  agent_context_configure || return $?
   agent_build_payload || return $?
   agent_estimate_payload_tokens "$REPLY"
   estimate=$REPLY

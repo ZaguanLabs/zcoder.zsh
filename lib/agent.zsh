@@ -695,7 +695,7 @@ agent_build_warmup_payload() {
   local model_json="" system_json="" user_json="" tools="" options="" prompt="" format=""
   local AGENT_TOOL_PHASE="full"
   [[ "$ZCODER_TOOL_EXPOSURE" == staged ]] && AGENT_TOOL_PHASE="routing"
-  agent_context_configure
+  agent_context_configure || return $?
   agent_tools_schema_json || return $?
   tools="$REPLY"
   agent_resolve_system_prompt
