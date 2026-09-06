@@ -47,6 +47,9 @@ ui_append_message() {
   zcoder_time; UI_TIMES+=("$REPLY")
   UI_REASONING_OPEN+=(0)
   transcript_default_metadata ${#UI_ROLES}
+  if [[ "$1" == error ]] && (( ${UI_ACTIVE:-0} && $+functions[ui_status_notice] )); then
+    ui_status_notice error "$2"
+  fi
   # Reading older blocks must not be interrupted by incoming activity.
   [[ "$1" == user && "${UI_FOCUS:-input}" != chat ]] && UI_AUTO_SCROLL=1
   return 0

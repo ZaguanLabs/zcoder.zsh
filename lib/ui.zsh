@@ -8,6 +8,10 @@ typeset -gi UI_RESIZE_PENDING=0
 typeset -gF UI_NEXT_RESIZE_CHECK=0.0
 typeset -grF UI_RESIZE_CHECK_INTERVAL=0.25
 typeset -g UI_STATUS="Ready"
+typeset -g UI_STATUS_KIND=success UI_STATUS_DISPLAY='' UI_STATUS_ATTR='bold green/black'
+typeset -g UI_NOTICE_TEXT='' UI_NOTICE_KIND=''
+typeset -gF UI_STATUS_SINCE=0.0 UI_NOTICE_UNTIL=0.0
+typeset -gi UI_NOTICE_GENERATION=0
 typeset -gi UI_SCROLL=0 UI_AUTO_SCROLL=1
 typeset -g UI_FOCUS="input"
 # Rendering the whole transcript is linear in its size, so scrolling and tool
@@ -35,7 +39,7 @@ ui_invalidate() {
 _ui_window_key() {
   local -a fields=("$SCREEN_H" "$SCREEN_W" "$SIDE_W" "$INPUT_H" "$TOP_H" "$FOOT_H")
   case "$1" in
-    header) fields+=("$UI_STATUS" "$ZCODER_NAME" "$ZCODER_VERSION" "$ZCODER_MODEL" "$OLLAMA_HOST" "$ZCODER_WORKSPACE" "${REMOTE_MODE:-local}" "$REMOTE_SERVER_NAME" "$REMOTE_ENDPOINT") ;;
+    header) fields+=("$UI_STATUS_DISPLAY" "$UI_STATUS_ATTR" "$ZCODER_NAME" "$ZCODER_VERSION" "$ZCODER_MODEL" "$OLLAMA_HOST" "$ZCODER_WORKSPACE" "${REMOTE_MODE:-local}" "$REMOTE_SERVER_NAME" "$REMOTE_ENDPOINT") ;;
     sidebar) fields+=("$UI_FOCUS" "$ZCODER_WORKSPACE" "$ZCODER_PROFILE" "$ZCODER_COMMAND_POLICY" "${TOOL_PATCH_RETRY_REQUIRED:-0}" "${#INSTRUCTION_SOURCES}" "$CURRENT_SESSION_ID"
       "${(j: :)${(@q)SESSION_IDS}}" "${(j: :)${(@q)SESSION_TITLES}}" "${(j: :)${(@q)SKILL_DISCOVERABLE_NAMES}}" "${(j: :)${(@q)SKILL_ACTIVE_NAMES}}") ;;
     chat) fields+=("$UI_FOCUS" "$UI_TRANSCRIPT_GENERATION" "${#UI_ROLES}" "$UI_RENDER_CACHE_KEY" "$ZCODER_MODEL" "$UI_SELECTED_EVENT" "$UI_SCROLL" "$UI_AUTO_SCROLL") ;;
@@ -50,6 +54,7 @@ _ui_draw_window() {
   local name="$1"
   local -i defer_refresh=${2:-0} dirty=${UI_DIRTY_WINDOWS[$1]:-0}
   (( UI_ACTIVE )) || return 0
+  [[ "$name" == header ]] && ui_status_update
   [[ "$name" == sidebar ]] && (( SIDE_W == 0 )) && return 0
   # Background status changes must not paint over the active modal.
   (( ${UI_MODAL_ACTIVE:-0} )) && { UI_DIRTY_WINDOWS[$name]=1; return 0; }
@@ -90,7 +95,90 @@ ui_draw_footer() { _ui_draw_window footer "${1:-0}"; }
 # from the normal event loop, never asynchronously in the middle of a redraw.
 TRAPWINCH() { UI_RESIZE_PENDING=1; }
 
-ui_set_status() { UI_STATUS="$1"; }
+# Existing local and remote status events share this presentation adapter.
+# Only known activity states animate; arbitrary remote text remains plain data.
+ui_set_status() {
+  emulate -L zsh
+  local kind=info value="$1"
+  zcoder_terminal_safe "${value[1,256]}"; value="${REPLY//$'\n'/ }"
+  case "${value:l}" in
+    ready|'goal complete') kind=success ;;
+    *error*|*failed*|denied*) kind=error ;;
+    stopped|incomplete|*blocked*|*budget*|*paused*|*stopped*) kind=warning ;;
+    thinking*|warming*|compacting*|'goal verifying'*|tool:*|connecting*|checking*|loading*|*' working'|*' consulting') kind=busy ;;
+  esac
+  [[ "$value" != "$UI_STATUS" || "$kind" != "$UI_STATUS_KIND" ]] && UI_STATUS_SINCE=$EPOCHREALTIME
+  UI_STATUS="$value"; UI_STATUS_KIND="$kind"
+  [[ "$kind" == error || "$kind" == warning ]] && ui_status_notice "$kind" "$value" 0
+  return 0
+}
+
+# One bounded notice, with errors taking precedence over warnings. A brief
+# generic status must not replace the detailed error already in the transcript.
+ui_status_notice() {
+  emulate -L zsh
+  local kind="$1" value="$2"
+  [[ "$kind" == error || "$kind" == warning ]] || return 1
+  if (( EPOCHREALTIME < UI_NOTICE_UNTIL && UI_NOTICE_GENERATION == UI_TRANSCRIPT_GENERATION )); then
+    [[ "$UI_NOTICE_KIND" == error && "$kind" == warning ]] && return 0
+    [[ "$UI_NOTICE_KIND" == "$kind" && ${3:-1} == 0 ]] && return 0
+  fi
+  zcoder_terminal_safe "${value[1,256]}"
+  UI_NOTICE_TEXT="${REPLY%%$'\n'*}"; UI_NOTICE_KIND="$kind"
+  UI_NOTICE_UNTIL=$(( EPOCHREALTIME + 6.0 ))
+  UI_NOTICE_GENERATION=$UI_TRANSCRIPT_GENERATION
+}
+
+ui_status_update() {
+  emulate -L zsh
+  local text="$UI_STATUS" kind="$UI_STATUS_KIND" extra=''
+  local -i elapsed=0 frame=1 percent=0 ticks=0
+  local -a frames=('|' '/' '-' $'\\')
+  if (( EPOCHREALTIME >= UI_NOTICE_UNTIL || UI_NOTICE_GENERATION != UI_TRANSCRIPT_GENERATION )); then
+    UI_NOTICE_TEXT=''; UI_NOTICE_KIND=''
+  fi
+  if [[ -n "$UI_NOTICE_TEXT" ]]; then
+    text="$UI_NOTICE_TEXT"; kind="$UI_NOTICE_KIND"
+  elif [[ "$kind" == busy ]]; then
+    (( UI_STATUS_SINCE > 0 )) || UI_STATUS_SINCE=$EPOCHREALTIME
+    elapsed=$(( EPOCHREALTIME - UI_STATUS_SINCE ))
+    (( elapsed < 0 )) && elapsed=0
+    if [[ ${ZCODER_ANIMATE:-true} != false ]]; then
+      ticks=$(( (EPOCHREALTIME - UI_STATUS_SINCE) * 4 ))
+      frame=$(( ticks % 4 + 1 ))
+      (( frame < 1 )) && frame=1
+      text="${frames[frame]} ${text} ${elapsed}s"
+    else
+      text="${text} ${elapsed}s"
+    fi
+  fi
+  case "$kind" in
+    error)
+      [[ "$text" == Error || "$text" == Error:* ]] || text="Error: ${text}"
+      UI_STATUS_ATTR='bold red/black' ;;
+    warning)
+      [[ "$text" == Warning:* ]] || text="Warning: ${text}"
+      UI_STATUS_ATTR='bold yellow/black' ;;
+    success) UI_STATUS_ATTR='bold green/black' ;;
+    busy) UI_STATUS_ATTR='bold magenta/black' ;;
+    *) UI_STATUS_ATTR='bold white/black' ;;
+  esac
+  # Display only local accounting here; remote servers do not expose these
+  # counters. Add whole metadata fields only when there is room for them.
+  if [[ "$kind" != error && "$kind" != warning && ${REMOTE_MODE:-local} != client ]] && (( SCREEN_W >= 100 )); then
+    if (( ${AGENT_CONTEXT_WINDOW:-0} > 0 )); then
+      percent=$(( 100.0 * ${AGENT_ESTIMATED_TOKENS:-0} / AGENT_CONTEXT_WINDOW ))
+      extra=" ~${percent}% ctx"
+      (( ${#text} + ${#extra} <= SCREEN_W / 2 - 6 )) && text+="$extra"
+    fi
+    case "${GOAL_STATUS:-none}" in
+      active|verifying|paused|blocked|complete)
+        extra=" goal:${GOAL_STATUS}"
+        (( ${#text} + ${#extra} <= SCREEN_W / 2 - 6 )) && text+="$extra" ;;
+    esac
+  fi
+  UI_STATUS_DISPLAY="$text"
+}
 
 ui_destroy_windows() {
   # delwin accepts exactly one window name. Passing the whole set leaves
@@ -156,6 +244,10 @@ ui_end() {
 }
 
 ui_poll_resize() {
+  # The existing idle/activity/modal loops drive notices and animation. Cached
+  # header keys cap repainting at four frames per second during activity; an
+  # idle screen stays still. Modal ownership continues to suppress underlays.
+  (( UI_ACTIVE )) && ui_draw_header
   local -F now=$EPOCHREALTIME
   if (( ! UI_RESIZE_PENDING && now < UI_NEXT_RESIZE_CHECK )); then
     return 0
@@ -184,25 +276,24 @@ ui_poll_resize() {
 _ui_paint_header() {
   (( UI_ACTIVE )) || return 0
   local -i defer_refresh="${1:-0}"
-  local badge="[ ${UI_STATUS} ]" workspace="${ZCODER_WORKSPACE:t}" host="$OLLAMA_HOST"
+  local badge='' identity='' workspace="${ZCODER_WORKSPACE:t}" host="$OLLAMA_HOST"
   [[ "${REMOTE_MODE:-local}" == client ]] && host="${REMOTE_SERVER_NAME:-remote}@${REMOTE_ENDPOINT}"
-  local -i badge_x=$(( SCREEN_W - ${#badge} - 3 ))
+  local -i badge_limit=$(( SCREEN_W / 2 - 4 ))
+  (( badge_limit < 1 )) && badge_limit=1
+  badge="${UI_STATUS_DISPLAY[1,badge_limit]}"
+  (( ${#UI_STATUS_DISPLAY} > badge_limit )) && badge="${badge[1,-2]}…"
+  badge="[ ${badge} ]"
+  local -i badge_x=$(( SCREEN_W - ${#badge} - 2 )) identity_limit=$(( badge_x - 3 ))
   zcurses clear top_win
   zcurses attr top_win bold cyan/black
   zcurses border top_win
   zcurses move top_win 1 2
-  zcurses string top_win "⚡ ${ZCODER_NAME} v${ZCODER_VERSION} │ "
-  zcurses attr top_win bold yellow/black
-  zcurses string top_win "${ZCODER_MODEL}"
-  zcurses attr top_win dim white/black
-  zcurses string top_win " @ ${host} │ ${workspace}"
-  if (( badge_x > 45 )); then
+  identity="${ZCODER_NAME} v${ZCODER_VERSION} │ ${ZCODER_MODEL} @ ${host} │ ${workspace}"
+  zcoder_terminal_safe "$identity"; identity="${REPLY//$'\n'/ }"
+  (( identity_limit > 0 )) && zcurses string top_win "${identity[1,identity_limit]}"
+  if (( badge_x >= 2 )); then
     zcurses move top_win 1 $badge_x
-    case "$UI_STATUS" in
-      Ready) zcurses attr top_win bold green/black ;;
-      Error*|Denied*) zcurses attr top_win bold red/black ;;
-      *) zcurses attr top_win bold magenta/black ;;
-    esac
+    zcurses attr top_win $=UI_STATUS_ATTR
     zcurses string top_win "$badge"
   fi
   (( defer_refresh )) || terminal_refresh top_win

@@ -15,11 +15,33 @@ The interface includes:
 - a searchable command palette and context inspector
 - an exact-command approval dialog
 
-At local interactive startup, the status badge reads `[ Warming Up ]` while
+At local interactive startup, the status badge reads `Warming Up` while
 zcoder loads the selected Ollama model and submits the stable system/tool
 context in the background. You can type immediately. The disposable readiness
 exchange is silent and is not part of the saved conversation. The badge changes
-to `[ Ready ]` after a successful warm-up.
+to `Ready` after a successful warm-up.
+
+## Status and activity
+
+The header reserves space for status even on narrow terminals. Long identity
+and status text are clipped to fit. At 100 columns or more, local sessions add
+an estimated context percentage and the current goal state when those fields
+fit. Remote sessions show the server's status without substituting local context
+or goal counters.
+
+Known activity states, including generation, warm-up, compaction, verification,
+and external consultations, show a small ASCII spinner and elapsed seconds for
+the current phase. Repeated status events do not reset the timer. Animation runs
+at four frames per second through the existing input loop; idle status stays
+still. Set `ZCODER_ANIMATE=false` to keep elapsed time without the spinner.
+Synchronous operations can still delay updates until control returns to the UI.
+
+Errors temporarily take precedence over warnings and ordinary activity for six
+seconds. A later `Ready` event does not immediately hide an error. The full error
+message remains in the transcript, while the header shows its first line.
+Notices expire back to the current status and clear when switching transcripts.
+Warnings and failures use text labels as well as color. Active dialogs retain
+exclusive screen ownership; their underlying header updates when they close.
 
 ## Saved sessions
 

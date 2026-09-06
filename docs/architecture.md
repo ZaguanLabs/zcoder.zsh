@@ -78,6 +78,15 @@ refreshed last to restore its cursor without repainting unchanged text. Resize,
 terminal re-entry, and modal dismissal explicitly invalidate the windows.
 Ncurses continues to own terminal cell comparison and output optimization.
 
+Status presentation separates the current phase from one bounded, expiring
+notice. Errors outrank warnings, and generic status events preserve detailed
+transcript errors. Known activity phases add elapsed time and a four-frame ASCII
+spinner to the header key; repeated phase events preserve the start time. The
+existing resize/input poll drives these updates, including notice expiry, with
+no separate timer process or event loop. Only the header changes for animation;
+modal ownership still suppresses underlying paints. Wide local headers read
+existing context and goal counters without recomputing context or making I/O.
+
 Generation and delegate waits share one input poller with remote turns. It
 supports draft editing, bracketed paste, transcript navigation/folding, and
 Escape cancellation. Enter in the editor leaves the draft unsent during activity;

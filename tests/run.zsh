@@ -3152,6 +3152,7 @@ source "${TEST_DIR}/activity.zsh"
 source "${PROJECT_DIR}/lib/stream.zsh"
 source "${TEST_DIR}/stream.zsh"
 source "${TEST_DIR}/terminal.zsh"
+source "${TEST_DIR}/status.zsh"
 
 if (( FAILURES > 0 )); then
   print -u2 -r -- "${FAILURES} test(s) failed"
