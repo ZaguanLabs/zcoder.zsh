@@ -1094,6 +1094,7 @@ ui_wait_for_generation() {
   fi
 }
 ui_wait_for_delegate() { _ui_wait_for_activity delegate_async_ready delegate_async_timed_out; }
+ui_wait_for_tool_process() { _ui_wait_for_activity tool_process_ready tool_process_expired; }
 ui_poll_remote_turn() { ui_poll_activity "${1:-50}"; }
 
 ui_chat_select() {

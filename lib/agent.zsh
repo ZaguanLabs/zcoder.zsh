@@ -1545,6 +1545,7 @@ _agent_run_turn() {
       tool_name="${call_names[i]}"
       tool_args="${call_args[i]}"
       agent_tool_event begin "$tool_name" "$tool_args"
+      TOOL_CANCELLED=0
       summary="$tool_name $tool_args"
       (( ${#summary} > 240 )) && summary="${summary[1,237]}..."
       if agent_structured_tools_active; then
@@ -1567,6 +1568,18 @@ _agent_run_turn() {
       zcoder_debug tool_result "step=$step index=$i name=${(qqq)tool_name} ok=$TOOL_RESULT_OK result_chars=${#result} result_head=${(qqq)${result[1,500]}}"
       outcome_signature+="${TOOL_RESULT_OK}:${#result}:$result"
       agent_add_message tool "$result" "$tool_name"
+      if (( TOOL_CANCELLED )); then
+        # Close every outstanding tool call in model history, without running
+        # the rest of this batch or requesting another model turn after Escape.
+        local -i cancelled_index
+        for (( cancelled_index=i+1; cancelled_index<=${#call_names}; cancelled_index++ )); do
+          agent_add_message tool 'Error: not executed because the user cancelled this tool round.' "${call_names[cancelled_index]}"
+        done
+        agent_emit system 'Tool execution stopped at your request. Completed side effects were not rolled back.'
+        agent_set_status Stopped
+        (( goal_turn )) && goal_pause 'tool execution cancelled by user' || true
+        return 130
+      fi
       if agent_structured_tools_active; then
         :
       elif [[ "$tool_name" == mcp__* ]]; then

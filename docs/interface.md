@@ -164,16 +164,33 @@ compaction, persistent goals and their verifier, LFM models, remote-server turns
 ACP, and one-shot prompts retain buffered Ollama requests in this stage. LFM's
 normalization and goal verification must finish before their answers are shown.
 
-While waiting for Ollama, an external delegate, or remote events, you can edit
+While waiting for Ollama, a local shell command or search, an external delegate,
+or remote events, you can edit
 and paste into the prompt. It is labelled **Draft** during activity. Enter leaves
 it unsent; send it after the current activity finishes. Escape stops the active
-response while preserving your draft.
+response or local tool process while preserving your draft.
 
 Tab switches between the draft and transcript during activity. Transcript
 selection, folding, reasoning inspection, and scrolling work with their usual
 keys. Session switching, model selection, and the command palette remain idle
-controls. Synchronous tools and remote HTTP requests can still delay input
-handling until their next polling point.
+controls. MCP calls, patch application, other synchronous tools, and remote HTTP
+requests can still delay input handling until their next polling point.
+
+Local interactive shell commands run only after the existing approval checks.
+Their output is collected when they finish; typing, paste, transcript folding,
+status animation, and resize handling remain available while they run. Escape
+stops the owned command process group and skips the rest of that tool batch.
+Completed side effects remain in place. Cancelling a verifier search pauses the
+goal instead of continuing verification.
+
+Commands receive EOF on standard input and have a private terminal, so they
+cannot read your draft or paint over curses. Interactive programs that require
+terminal input are not supported through this runner. It owns and cleans up
+the command's process group, including background children still in that group;
+it is not a persistent-service launcher. Processes that deliberately detach into
+another session are outside that group. Commands use their requested timeout;
+search has a 120-second deadline. These changes apply to local interactive
+execution; server, ACP, and one-shot tool execution keep their existing behavior.
 
 Status changes repaint the header, and typing normally repaints only the prompt.
 Window resizing and changing the prompt's height rebuild the layout as needed.
@@ -184,7 +201,7 @@ Window resizing and changing the prompt's height rebuild the layout as needed.
 | --- | --- |
 | Enter | Send the prompt; fold the selected entry when transcript has focus |
 | Shift+Enter | Insert a newline; Alt+Enter is the fallback |
-| Escape | Stop the active model response, external delegate, or remote turn |
+| Escape | Stop the active response, local command/search, external delegate, or remote turn |
 | Tab | Move focus between prompt, sidebar, and transcript |
 | Ctrl+P | Open the command palette |
 | Ctrl+O | Open the Ollama model picker |

@@ -22,6 +22,7 @@ lib/
   json.zsh              native tokenizer, decoder, and encoder
   mcp.zsh               MCP registry, stdio brokers, and tools
   overlays.zsh          shared modal lifecycle, pickers, and approval views
+  process.zsh           interactive command/search worker and process cleanup
   relay.zsh             same-host discovery, Unix sockets, and task spool
   remote.zsh            authenticated remote server and client protocol
   skills.zsh            Agent Skill discovery and progressive loading
@@ -95,8 +96,34 @@ deadline distinguishes cancellation from terminal protocol sequences.
 
 Remote turns poll input without blocking between nonempty events as well as
 during idle responses. This prevents continuous event traffic from starving
-input. Synchronous tool execution and in-flight remote HTTP requests still bound
-how often the UI can poll; there is no general asynchronous tool scheduler.
+input. MCP calls, patch application, other synchronous tool operations, and
+in-flight remote HTTP requests still bound how often the UI can poll.
+
+### Interactive external processes
+
+Local interactive `run_command` and `search` execute their external argv through
+`lib/process.zsh`. Validation, approvals, tool dispatch, result formatting, and
+session policy remain in the parent. The worker receives no dispatcher authority.
+`zsh/zpty` supplies an isolated terminal session and process group using native
+Zsh facilities. Its evaluated command is a constant function name; executable
+arguments are inherited as an array. Only an explicitly approved `run_command`
+passes shell source to `zsh -c`.
+
+A startup handshake publishes the worker PID before the parent admits execution.
+Output goes to private files; the worker publishes a completion marker only
+after writing the exit status successfully. Collection reads bounded head/tail
+windows instead of loading arbitrarily large command output into the UI shell.
+The worker holds its process-group identity until cleanup. Cancellation sends
+TERM, allows a short grace period while polling input, then releases the owned
+group with KILL. Normal completion also releases any remaining group members.
+The private PTY keeps `/dev/tty` output away from the application screen.
+
+The existing activity loop enforces the command's timeout (or 120 seconds for
+search), with no external timeout utility on this interactive path. Escape
+records the cancellation, closes remaining calls in that model response as
+unexecuted, and ends the turn. Cancellation during verifier search follows the
+existing goal-pause path. Completed side effects are never reported as rolled
+back. Server, ACP, and one-shot execution retain their existing synchronous path.
 
 ### Optional terminal protocol ownership
 

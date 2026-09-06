@@ -5,6 +5,7 @@ typeset -g ZCODER_COMMAND_POLICY="${ZCODER_COMMAND_POLICY:-ask}"
 typeset -gi ZCODER_MAX_TOOL_OUTPUT="${ZCODER_MAX_TOOL_OUTPUT:-32768}"
 typeset -g TOOL_RESULT=""
 typeset -gi TOOL_RESULT_OK=0
+typeset -gi TOOL_CANCELLED=0
 typeset -g TOOL_SAFETY_REASON=""
 typeset -gi TOOL_PATCH_RETRY_REQUIRED=0
 
@@ -382,6 +383,8 @@ tool_search() {
   local out_file="" raw="" line=""
   local -a lines=() selected=()
   local -i i limit exit_code
+  local -a search_argv=()
+  TOOL_CANCELLED=0
   [[ -n "$query" ]] || { _tool_fail "query is required"; return 1; }
   (( $+commands[rg] )) || { _tool_fail "search requires ripgrep (rg)"; return 1; }
   [[ "$max_results" == <1-9999> ]] || max_results=50
@@ -390,15 +393,26 @@ tool_search() {
   resolved_path="$REPLY"
   zcoder_temp_path search .out || { _tool_fail "could not create private temporary storage"; return 1; }
   out_file="$REPLY"
-  command rg --line-number --column --color never --hidden --no-require-git \
+  search_argv=(rg --line-number --column --color never --hidden --no-require-git \
     --glob '!.git/**' --glob '!.atlas/**' \
     --glob '!**/node_modules/**' --glob '!**/vendor/**' \
     --glob '!**/dist/**' --glob '!**/build/**' --glob '!**/target/**' \
     --glob '!**/coverage/**' --glob '!**/.next/**' \
     --glob '!**/.venv/**' --glob '!**/venv/**' --glob '!**/__pycache__/**' \
-    -- "$query" "$resolved_path" >| "$out_file" 2>&1
-  exit_code=$?
-  raw="${mapfile[$out_file]}"
+    -- "$query" "$resolved_path")
+  if (( ${UI_ACTIVE:-0} && $+functions[tool_process_run] )); then
+    tool_process_run "${ZCODER_WORKSPACE:A}" 120 "${search_argv[@]}"
+    exit_code=$?
+    raw="$TOOL_PROCESS_OUTPUT"
+    if (( TOOL_PROCESS_CANCELLED )); then
+      TOOL_CANCELLED=1; _tool_fail 'search cancelled by user'; return 130
+    fi
+    [[ -z "$TOOL_PROCESS_ERROR" ]] || { _tool_fail "$TOOL_PROCESS_ERROR"; return 1; }
+  else
+    command "${search_argv[@]}" >| "$out_file" 2>&1
+    exit_code=$?
+    raw="${mapfile[$out_file]}"
+  fi
   zf_rm -f "$out_file" 2>/dev/null
   (( exit_code == 0 || exit_code == 1 )) || { _tool_fail "ripgrep failed"$'\n'"$raw"; return 1; }
   [[ -n "$raw" ]] || {
@@ -648,6 +662,7 @@ tool_approve_external_action() {
 tool_run_command() {
   local command_text="$1" requested="${2:-.}" timeout_seconds="${3:-120}" cwd=""
   local out_file="" output="" exit_code=""
+  TOOL_CANCELLED=0
   [[ -n "$command_text" ]] || { _tool_fail "command is required"; return 1; }
   [[ "$timeout_seconds" == <1-3600> ]] || timeout_seconds=120
   _tool_resolve_existing "$requested" || return 1
@@ -665,14 +680,26 @@ tool_run_command() {
   zcoder_temp_path command .out || { _tool_fail "could not create private temporary storage"; return 1; }
   out_file="$REPLY"
 
-  if (( $+commands[timeout] )); then
+  if (( ${UI_ACTIVE:-0} && $+functions[tool_process_run] )); then
+    tool_process_run "$cwd" "$timeout_seconds" zsh -c "$command_text"
+    exit_code=$?
+    output="$TOOL_PROCESS_OUTPUT"
+    if (( TOOL_PROCESS_CANCELLED )); then
+      TOOL_CANCELLED=1
+      _tool_fail "command cancelled by user; completed side effects were not rolled back"$'\n'"$output"
+      return 130
+    fi
+    [[ -z "$TOOL_PROCESS_ERROR" ]] || { _tool_fail "$TOOL_PROCESS_ERROR"; return 1; }
+  elif (( $+commands[timeout] )); then
     command timeout --signal=TERM --kill-after=2 "$timeout_seconds" \
       zsh -c "cd ${(q)cwd} && ${command_text}" >| "$out_file" 2>&1
+    exit_code=$?
+    output="${mapfile[$out_file]}"
   else
     command zsh -c "cd ${(q)cwd} && ${command_text}" >| "$out_file" 2>&1
+    exit_code=$?
+    output="${mapfile[$out_file]}"
   fi
-  exit_code=$?
-  output="${mapfile[$out_file]}"
   zf_rm -f "$out_file" 2>/dev/null
   zcoder_truncate_head_tail "$output" "$ZCODER_MAX_TOOL_OUTPUT"; output="$REPLY"
   if (( exit_code == 124 )); then
@@ -686,6 +713,7 @@ tool_run_command() {
 
 tool_dispatch() {
   local name="$1" args_json="$2" effect="" action_summary=""
+  TOOL_CANCELLED=0
   if (( $+functions[agent_tool_is_admitted] )) && ! agent_tool_is_admitted "$name"; then
     _tool_fail "tool $name is not enabled in the current tool-exposure phase"
     return 1

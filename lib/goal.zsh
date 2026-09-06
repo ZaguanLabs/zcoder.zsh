@@ -168,6 +168,7 @@ goal_verifier_tools_schema_json() {
 
 goal_verifier_dispatch_read() {
   local name="$1" args_json="$2"
+  TOOL_CANCELLED=0
   if ! json_parse_flat_object "$args_json"; then
     _tool_fail "invalid verifier arguments for $name: ${JSON_ERROR:-parse error}"
     return 1
@@ -264,6 +265,11 @@ goal_verify_candidate() {
       goal_verifier_dispatch_read "$tool_name" "$tool_args"
       result="$TOOL_RESULT"
       agent_add_message tool "$result" "$tool_name"
+      if (( TOOL_CANCELLED )); then
+        GOAL_VERIFIER_VERDICT=cancelled
+        GOAL_VERIFIER_REASON='goal evidence search cancelled by user'
+        return 130
+      fi
       continue
     fi
     notice="Call exactly one read-only evidence tool, or call verify_goal as the only tool. Plain text and multiple tool calls are not a verdict."

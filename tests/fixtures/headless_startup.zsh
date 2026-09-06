@@ -4,7 +4,7 @@
 # transport entry points and model/approval responses. No listener or Ollama.
 headless_probe() {
   local name="" session_id=""
-  for name in ui input terminal overlays commands stream delegate relay; do
+  for name in ui input terminal process overlays commands stream delegate relay; do
     (( ! ${+ZCODER_LOADED_LIBS[$name]} )) || return 10
   done
   for name in ui_init input_reset ui_command_palette ui_modal_run TRAPWINCH main_tui handle_slash_command; do
