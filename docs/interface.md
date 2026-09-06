@@ -12,6 +12,7 @@ The interface includes:
 - a selectable transcript with foldable messages, tool results, and reasoning
 - syntax-highlighted file previews and semantic patch colors
 - a multiline editor with a cursor-following viewport and prompt history
+- a searchable command palette and context inspector
 - an exact-command approval dialog
 
 At local interactive startup, the status badge reads `[ Warming Up ]` while
@@ -79,6 +80,32 @@ events and restore saved tool metadata when supported by the server; legacy
 servers continue to display their ordinary tool text. Remote expansion changes
 remain local to the current view.
 
+## Command palette and context inspector
+
+Ctrl+P or `/commands` opens the command palette. Type a command name or a few
+letters, such as `ctx` for context, then use Up/Down and Enter to choose. Matching
+ignores case and accepts letters in sequence. Escape closes the palette and
+preserves the prompt and cursor position. Commands needing an argument prepare
+an editable prompt, keeping your existing draft after the command prefix.
+Slash commands remain available directly.
+
+The palette omits local-only commands in remote mode and editing workers in the
+sysadmin profile. Remote goal and harness entries follow the server's advertised
+capabilities; older servers keep the existing consultation-command fallback.
+
+`/context` opens a scrollable snapshot of the estimated next prompt, context
+window, last reported Ollama usage, component estimates, and effective compaction
+threshold. Component bars use the context window as their scale. These are
+estimates, not exact additive token counts. An undiscovered model allocation is
+labelled as a fallback estimate. Remote clients explain when the server does not
+expose accounting rather than displaying local counters.
+
+The palette, context inspector, model pickers, MCP list, and approval dialogs
+share a modal lifecycle and adapt when the terminal resizes. Up/Down and
+Page Up/Page Down scroll long context or approval details. Escape closes a view
+or denies an approval. Shell-command and external-action approval policies
+continue to apply.
+
 ## Keyboard shortcuts
 
 | Key | Action |
@@ -87,6 +114,7 @@ remain local to the current view.
 | Shift+Enter | Insert a newline; Alt+Enter is the fallback |
 | Escape | Stop the active model response, external delegate, or remote turn |
 | Tab | Move focus between prompt, sidebar, and transcript |
+| Ctrl+P | Open the command palette |
 | Ctrl+O | Open the Ollama model picker |
 | Ctrl+R | Toggle selected reasoning in the transcript, otherwise latest reasoning |
 | Space | Fold the selected entry when transcript has focus |
@@ -103,6 +131,7 @@ remain local to the current view.
 
 | Command | Action |
 | --- | --- |
+| `/commands` | Open the searchable command palette |
 | `/model` | Open the model picker |
 | `/model NAME` | Select a model directly |
 | `/host HOST` | Change the Ollama endpoint |
@@ -111,7 +140,7 @@ remain local to the current view.
 | `/skills`, `/skills reload` | Inspect or rediscover Skills |
 | `/skill NAME` | Activate a Skill |
 | `/compact` | Create a context checkpoint |
-| `/context` | Show context use and compaction threshold |
+| `/context` | Inspect context estimates, reported usage, and compaction threshold |
 | `/goal OBJECTIVE` | Run a persisted goal with independent completion verification |
 | `/goal --tokens N OBJECTIVE` | Run a goal with a cumulative model-token limit |
 | `/goal`, `/goal status` | Show the saved goal state, attempts, and usage |

@@ -1,6 +1,7 @@
 # Ollama conversation state and iterative tool-call loop.
 
 typeset -ga AGENT_MESSAGES=()
+typeset -ga AGENT_CONTEXT_COMPONENT_LABELS=() AGENT_CONTEXT_COMPONENT_VALUES=()
 typeset -g AGENT_LAST_RESPONSE=""
 typeset -gi AGENT_CANCELLED=0
 typeset -g AGENT_SYSTEM_PROMPT="${AGENT_SYSTEM_PROMPT:-}"
@@ -664,6 +665,8 @@ agent_context_bill() {
       *) (( user_tokens += REPLY )) ;;
     esac
   done
+  AGENT_CONTEXT_COMPONENT_LABELS=("Base guidance" "Project instructions" "Skills" "MCP guidance" "Checkpoint" "Tool schemas" "User/context" "Assistant" "Tool results")
+  AGENT_CONTEXT_COMPONENT_VALUES=("$base_tokens" "$instruction_tokens" "$skill_tokens" "$mcp_tokens" "$compacted_tokens" "$tool_schema_tokens" "$user_tokens" "$assistant_tokens" "$tool_result_tokens")
   REPLY="Estimated context bill: base=${base_tokens}; project=${instruction_tokens}; skills=${skill_tokens}; mcp=${mcp_tokens}; checkpoint=${compacted_tokens}; tool schemas=${tool_schema_tokens}; user/context=${user_tokens}; assistant=${assistant_tokens}; tool results=${tool_result_tokens}."
 }
 

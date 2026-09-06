@@ -1526,6 +1526,8 @@ GOAL_VERIFIER_ACTIVE=0
 
 # The transcript exporter is UI code but does not require curses to be active.
 source "${PROJECT_DIR}/lib/ui.zsh"
+source "${PROJECT_DIR}/lib/overlays.zsh"
+source "${PROJECT_DIR}/lib/commands.zsh"
 
 ZCODER_SESSIONS_DIR="$TEST_TMP/zcoder-sessions"
 STATE_ENABLED=0
@@ -1970,6 +1972,9 @@ agent_context_summary
 assert_contains "$REPLY" "estimated next prompt:" "context status reports the current transport estimate"
 assert_contains "$REPLY" "last Ollama prompt: unknown" "context status distinguishes reset usage from a measured prompt"
 assert_contains "$REPLY" "Estimated context bill:" "context status attributes model-visible components"
+assert_eq "${#AGENT_CONTEXT_COMPONENT_LABELS}" "${#AGENT_CONTEXT_COMPONENT_VALUES}" "context component labels align with their estimates"
+assert_eq "9" "${#AGENT_CONTEXT_COMPONENT_VALUES}" "context accounting exposes all nine bill components to the inspector"
+assert_contains "$REPLY" "checkpoint=${AGENT_CONTEXT_COMPONENT_VALUES[5]}" "inspector checkpoint accounting matches the context bill"
 
 functions[_test_valid_compaction_chat]="${functions[agent_ollama_chat]}"
 typeset -gi MOCK_COMPACTION_ATTEMPTS=0
@@ -3104,6 +3109,7 @@ zcurses() {
 }
 
 source "${TEST_DIR}/transcript.zsh"
+source "${TEST_DIR}/overlays.zsh"
 
 UI_ACTIVE=1
 SCREEN_H=30; SCREEN_W=100; SIDE_W=0; TOP_H=3; INPUT_H=3; FOOT_H=1

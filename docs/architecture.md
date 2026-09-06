@@ -11,6 +11,7 @@ zcoder.zsh              CLI and curses event loop
 lib/
   acp.zsh               ACP v1 stdio broker and protocol translation
   agent.zsh             Ollama messages and iterative tool loop
+  commands.zsh          command catalog, palette, and context inspector
   compact.zsh           token accounting and conversation checkpoints
   goal.zsh              persistent goals and read-only completion verifier
   harnesses.zsh         external harness catalog and availability
@@ -20,13 +21,14 @@ lib/
   instructions.zsh      AGENTS.md discovery and prompt assembly
   json.zsh              native tokenizer, decoder, and encoder
   mcp.zsh               MCP registry, stdio brokers, and tools
+  overlays.zsh          shared modal lifecycle, pickers, and approval views
   relay.zsh             same-host discovery, Unix sockets, and task spool
   remote.zsh            authenticated remote server and client protocol
   skills.zsh            Agent Skill discovery and progressive loading
   state.zsh             workspace/profile-scoped persistent sessions
   tools.zsh             schemas, confinement, dispatch, and execution
   transcript.zsh        shared session transcript recording
-  ui.zsh                adaptive curses layout and approval modal
+  ui.zsh                adaptive curses layout and transcript rendering
   util.zsh              wrapping, truncation, and display helpers
 tests/run.zsh           shell-level unit and integration tests
 ```
@@ -35,8 +37,8 @@ tests/run.zsh           shell-level unit and integration tests
 
 `zcoder_require` sources each library at most once. The core libraries load at
 startup; `acp.zsh` and `remote.zsh` load only when their modes are selected.
-Server and ACP modes skip `input.zsh`, `ui.zsh`, the terminal event handlers,
-and the curses/terminfo modules. They retain `transcript.zsh` for session
+Server and ACP modes skip `input.zsh`, `ui.zsh`, `overlays.zsh`, `commands.zsh`,
+the terminal event handlers, and the curses/terminfo modules. They retain `transcript.zsh` for session
 history. Remote handshakes load only `harnesses.zsh` for availability discovery;
 `delegate.zsh` loads on the first external consultation or worker command. The
 `mcp` maintenance CLI loads only the configuration and protocol libraries. Every
@@ -44,6 +46,25 @@ cross-library call into an optionally loaded library is guarded with
 `$+functions`. `make compile` optionally precompiles the libraries to `.zwc`
 wordcode, roughly halving launch time; a stale `.zwc` is ignored by zsh, so
 recompiling is never required for correctness.
+
+## Interactive overlays
+
+`overlays.zsh` owns one temporary curses window. Internal draw and input callbacks
+share dynamically scoped selection, scrolling, and geometry. The loop redraws
+when input or resizing changes the view and restores the underlying windows on
+every exit, including failure. Model pickers, MCP inspection, and approvals use
+the same lifecycle. Long approval text is wrapped again after resize; a dialog
+that cannot fit never grants approval.
+
+`commands.zsh` filters a trusted command catalog with native literal and
+subsequence matching. Selection closes the palette before invoking the existing
+slash-command dispatcher or preparing an argument-taking command in the editor.
+Search text is never evaluated. The context inspector snapshots the existing
+accounting once when opened; its draw callback only wraps that snapshot. The
+component estimates and textual context bill share the same accounting values.
+
+These modal loops do not yet unify background-activity polling. Model discovery
+and MCP connection/restart retain their existing synchronous behavior.
 
 ## Agent cycle
 
