@@ -412,6 +412,10 @@ _mcp_broker_exchange() {
 }
 
 _mcp_broker_main() {
+  # A broker must never run the parent's terminal/session EXIT cleanup when
+  # its transport is cancelled or shut down.
+  trap - EXIT INT TERM HUP WINCH
+  UI_ACTIVE=0
   local name="$1" runtime="$2" command_name="$3" args_json="$4" env_json="$5" cwd="$6"
   local request_file="" response_file="" envelope="" mode="" expected_id="" timeout_seconds="" request="" reply_status="" result=""
   local -a command_args=()
@@ -511,29 +515,63 @@ mcp_broker_start() {
   return 1
 }
 
+# These callbacks read the request-local variables in mcp_broker_request. The
+# broker continues to own stdio and framing; only the parent's wait changes.
+_mcp_request_ready() {
+  [[ -e "$response_file" ]] && return 0
+  ! kill -0 "${MCP_BROKER_PID[$name]:-}" 2>/dev/null
+}
+_mcp_request_expired() { (( EPOCHREALTIME >= deadline )); }
+
+_mcp_disconnect_request() {
+  local name="$1" reason="$2"
+  mcp_broker_stop "$name"
+  MCP_STATUS[$name]=configured
+  MCP_DETAIL[$name]="$reason; reconnect on next use"
+  MCP_ERROR="$reason"
+}
+
 mcp_broker_request() {
   local name="$1" mode="$2" expected_id="$3" request="$4" timeout_seconds="${5:-$MCP_REQUEST_TIMEOUT}"
   local runtime="" request_file="" response_file="" envelope="" reply_status=""
-  local -i seq=0
+  local -i seq=0 wait_status=0
   runtime="${MCP_BROKER_DIR[$name]}"
   seq=$(( ${MCP_BROKER_SEQ[$name]:-0} + 1 ))
   MCP_BROKER_SEQ[$name]=$seq
   request_file="$runtime/request.$seq"; response_file="$runtime/response.$seq"
   envelope="${mode}"$'\t'"${expected_id}"$'\t'"${timeout_seconds}"$'\t'"${request}"
-  mapfile[$request_file.tmp]="$envelope" || { MCP_ERROR="Could not queue MCP request"; return 1; }
+  zcoder_write_text_file "$request_file.tmp" "$envelope" || { MCP_ERROR="Could not queue MCP request"; return 1; }
   zf_mv -f "$request_file.tmp" "$request_file" 2>/dev/null || { MCP_ERROR="Could not publish MCP request"; return 1; }
   local -F deadline=$(( EPOCHREALTIME + timeout_seconds + 1 ))
-  while [[ ! -e "$response_file" ]] && (( EPOCHREALTIME < deadline )); do
-    kill -0 "${MCP_BROKER_PID[$name]}" 2>/dev/null || break
-    zselect -t 5
-  done
+  if (( ${MCP_INTERACTIVE_TOOL:-0} )); then
+    ui_wait_for_mcp_request
+    wait_status=$?
+    if (( wait_status == 130 )); then
+      TOOL_CANCELLED=1
+      _mcp_disconnect_request "$name" 'request cancelled by user; server disconnected; external side effects may have completed or may still be running'
+      return 130
+    elif (( wait_status != 0 )); then
+      _mcp_disconnect_request "$name" 'MCP request wait stopped or timed out; outcome unknown'
+      return 1
+    fi
+  else
+    while [[ ! -e "$response_file" ]] && (( EPOCHREALTIME < deadline )); do
+      kill -0 "${MCP_BROKER_PID[$name]}" 2>/dev/null || break
+      zselect -t 5
+    done
+  fi
   if [[ ! -e "$response_file" ]]; then
     MCP_ERROR="MCP broker stopped or timed out"
+    (( ${MCP_INTERACTIVE_TOOL:-0} )) && _mcp_disconnect_request "$name" "$MCP_ERROR; outcome unknown"
     return 1
   fi
   envelope="${mapfile[$response_file]}"; zf_rm -f "$response_file" 2>/dev/null
   reply_status="${envelope%%$'\t'*}"; MCP_RESPONSE="${envelope#*$'\t'}"
-  if [[ "$reply_status" != OK ]]; then MCP_ERROR="$MCP_RESPONSE"; return 1; fi
+  if [[ "$reply_status" != OK ]]; then
+    MCP_ERROR="$MCP_RESPONSE"
+    (( ${MCP_INTERACTIVE_TOOL:-0} )) && _mcp_disconnect_request "$name" "$MCP_ERROR; outcome unknown"
+    return 1
+  fi
   return 0
 }
 
@@ -545,8 +583,16 @@ mcp_broker_stop() {
   [[ -n "$runtime" && -d "$runtime" ]] && mapfile[$runtime/stop]="1"
   if [[ "$pid" == <1-> ]]; then
     local -F deadline=$(( EPOCHREALTIME + 1.0 ))
-    while [[ ! -e "$runtime/stopped" ]] && kill -0 "$pid" 2>/dev/null && (( EPOCHREALTIME < deadline )); do zselect -t 2; done
-    [[ -e "$runtime/stopped" ]] || kill -TERM "$pid" 2>/dev/null || true
+    while [[ ! -e "$runtime/stopped" ]] && kill -0 "$pid" 2>/dev/null && (( EPOCHREALTIME < deadline )); do
+      if (( ${MCP_INTERACTIVE_TOOL:-0} && ${UI_ACTIVE:-0} && ${RUNNING:-1} )); then ui_poll_activity 20 || true
+      else zselect -t 2
+      fi
+    done
+    if [[ ! -e "$runtime/stopped" ]]; then
+      kill -TERM "$pid" 2>/dev/null || true
+      zselect -t 5
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
     wait "$pid" 2>/dev/null || true
   fi
   if [[ "$server_pid" == <1-> ]] && kill -0 "$server_pid" 2>/dev/null; then
@@ -786,6 +832,9 @@ mcp_prompt_block() {
 
 mcp_call_tool() {
   local exposed="$1" args_json="$2" server="" original="" result=""
+  local -i MCP_INTERACTIVE_TOOL=0
+  TOOL_CANCELLED=0
+  (( ${UI_ACTIVE:-0} && $+functions[ui_wait_for_mcp_request] )) && MCP_INTERACTIVE_TOOL=1
   server="${MCP_TOOL_SERVER[$exposed]:-}"
   [[ -n "$server" ]] || { _tool_fail "unknown MCP tool: $exposed"; return 1; }
   original="${MCP_TOOL_ORIGINAL[$exposed]}"
@@ -796,6 +845,7 @@ mcp_call_tool() {
   json_quote "$original"; local name_json="$REPLY"
   if ! mcp_rpc "$server" tools/call "\"name\":${name_json},\"arguments\":${args_json}" "$MCP_REQUEST_TIMEOUT"; then
     _tool_fail "MCP ${server}/${original} failed: $MCP_ERROR"
+    (( TOOL_CANCELLED )) && return 130
     return 1
   fi
   result="$REPLY"

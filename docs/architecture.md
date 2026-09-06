@@ -96,12 +96,12 @@ deadline distinguishes cancellation from terminal protocol sequences.
 
 Remote turns poll input without blocking between nonempty events as well as
 during idle responses. This prevents continuous event traffic from starving
-input. MCP calls, patch application, other synchronous tool operations, and
-in-flight remote HTTP requests still bound how often the UI can poll.
+input. MCP startup/discovery, native file operations, and in-flight remote HTTP
+requests still bound how often the UI can poll.
 
 ### Interactive external processes
 
-Local interactive `run_command` and `search` execute their external argv through
+Local interactive `run_command`, `search`, and patch subprocesses execute argv through
 `lib/process.zsh`. Validation, approvals, tool dispatch, result formatting, and
 session policy remain in the parent. The worker receives no dispatcher authority.
 `zsh/zpty` supplies an isolated terminal session and process group using native
@@ -124,6 +124,27 @@ records the cancellation, closes remaining calls in that model response as
 unexecuted, and ends the turn. Cancellation during verifier search follows the
 existing goal-pause path. Completed side effects are never reported as rolled
 back. Server, ACP, and one-shot execution retain their existing synchronous path.
+
+Patch execution keeps validation, engine selection, workspace checks, and the
+patch-retry guard in the parent. Its process wrapper distinguishes ordinary
+rejection from cancellation, timeout, or worker failure. Only ordinary rejection
+permits fallback to another engine; an interrupted mutation is never retried
+implicitly. Function-local `always` cleanup removes patch scratch files.
+
+### Interactive MCP calls
+
+`mcp_call_tool` opts its broker request into the shared activity wait. The broker
+continues to own server stdio and JSON-RPC correlation; the parent retains the
+connection registry, approvals, and result parsing. Startup/discovery and
+headless transport waits keep their existing behavior. Cancellation and transport
+failure disconnect the affected broker, clear its ownership entries, and mark
+the server for reconnection. The tool round stops on cancellation without replay.
+Outcomes of external mutations remain explicitly uncertain after disconnection.
+
+Broker children clear inherited UI/session traps. Parent-side shutdown is
+bounded even if the broker is stuck reading a partial line, and the interactive
+shutdown grace period continues polling input. A subsequent connection starts
+with a fresh broker and clears old spool responses.
 
 ### Optional terminal protocol ownership
 

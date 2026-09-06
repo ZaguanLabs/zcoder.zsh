@@ -4,6 +4,14 @@ zcoder implements the MCP tools client subset over stdio. Enabled tools become
 part of the Ollama tool catalog and their results return through normal agent
 history.
 
+During local interactive tool calls, draft editing, transcript navigation, and
+resize handling remain available while the broker waits for the server. Escape
+disconnects that server and cancels the tool round; timed-out calls also disconnect.
+External side effects may have completed or may continue after disconnection.
+The next turn or an explicit reconnect establishes a fresh connection without
+replaying the cancelled request. External-write approvals still precede dispatch.
+Startup, negotiation, and tool discovery remain synchronous.
+
 ## Protocol support
 
 The client supports protocol versions `2025-11-25` and `2026-07-28`. It sends a

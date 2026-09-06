@@ -310,10 +310,47 @@ _tool_patch_strip_level() {
   fi
 }
 
+# Internal patch executor. The abort/error outputs are dynamically scoped by
+# tool_apply_patch so cancellation cannot be confused with a rejected diff.
+_tool_patch_run() {
+  local patch_out="$1" patch_phase="$2"
+  shift 2
+  local -i patch_status=0
+  if (( ${UI_ACTIVE:-0} && $+functions[tool_process_run] )); then
+    tool_process_run "${ZCODER_WORKSPACE:A}" 120 "$@"
+    patch_status=$?
+    # Git uses 128 for ordinary fatal errors, including unsupported context
+    # diffs. Signal exits start above 128 and must never trigger a retry.
+    if (( TOOL_PROCESS_CANCELLED || TOOL_PROCESS_TIMED_OUT || patch_status > 128 )) || [[ -n "$TOOL_PROCESS_ERROR" ]]; then
+      patch_process_aborted=1
+      if (( TOOL_PROCESS_CANCELLED )); then
+        TOOL_CANCELLED=1; patch_process_error="patch ${patch_phase} cancelled by user"
+        patch_status=130
+      elif (( TOOL_PROCESS_TIMED_OUT )); then
+        patch_process_error="patch ${patch_phase} timed out after 120s"
+      else
+        patch_process_error="patch ${patch_phase} interrupted: ${TOOL_PROCESS_ERROR:-exit ${patch_status}}"
+        (( patch_status > 0 )) || patch_status=125
+      fi
+      patch_process_error+='; no fallback attempted. Inspect the working tree before retrying; completed changes were not rolled back.'
+      return "$patch_status"
+    fi
+    if ! zcoder_write_text_file "$patch_out" "$TOOL_PROCESS_OUTPUT"; then
+      patch_process_aborted=1
+      patch_process_error='could not record patch output; no fallback attempted. Inspect the working tree before retrying.'
+      return 125
+    fi
+    return "$patch_status"
+  fi
+  command "$@" >| "$patch_out" 2>&1
+}
+
 tool_apply_patch() {
   local patch_text="$1" patch_file="" out_file=""
   local git_error="" patch_error="" output="" engine="" guidance="" success_message=""
-  local -i exit_code=1 strip=0
+  local -i exit_code=1 strip=0 patch_process_aborted=0
+  local patch_process_error=''
+  TOOL_CANCELLED=0
   TOOL_PATCH_RETRY_REQUIRED=1
   [[ -n "$patch_text" ]] || { _tool_fail "patch is empty"; return 1; }
   if [[ "$patch_text" == *'*** Begin Patch'* ]]; then
@@ -329,53 +366,59 @@ tool_apply_patch() {
   zcoder_temp_path patch .out || { _tool_fail "could not create private temporary storage"; return 1; }
   out_file="$REPLY"
   zcoder_write_text_file "$patch_file" "$patch_text" || { _tool_fail "could not stage patch safely"; return 1; }
-
-  if (( $+commands[git] )); then
-    command git -C "$ZCODER_WORKSPACE" apply --check --recount --unidiff-zero --whitespace=nowarn "$patch_file" >| "$out_file" 2>&1
-    exit_code=$?
-    git_error="${mapfile[$out_file]}"
-    if (( exit_code == 0 )); then
-      command git -C "$ZCODER_WORKSPACE" apply --recount --unidiff-zero --whitespace=nowarn "$patch_file" >| "$out_file" 2>&1
+  {
+    if (( $+commands[git] )); then
+      _tool_patch_run "$out_file" check git -C "$ZCODER_WORKSPACE" apply --check --recount --unidiff-zero --whitespace=nowarn "$patch_file"
       exit_code=$?
-      output="${mapfile[$out_file]}"
-      (( exit_code == 0 )) && engine="git apply"
-      (( exit_code != 0 )) && git_error+=$'\n'"$output"
-    fi
-  fi
-
-  if [[ -z "$engine" ]] && (( $+commands[patch] )); then
-    if _tool_patch_paths_are_safe "$patch_text"; then
-      _tool_patch_strip_level "$patch_text"; strip=$REPLY
-      command patch --directory="$ZCODER_WORKSPACE" --strip="$strip" --batch --forward --dry-run --input="$patch_file" >| "$out_file" 2>&1
-      exit_code=$?
-      patch_error="${mapfile[$out_file]}"
+      (( patch_process_aborted )) && { _tool_fail "$patch_process_error"; return "$exit_code"; }
+      git_error="${mapfile[$out_file]}"
       if (( exit_code == 0 )); then
-        command patch --directory="$ZCODER_WORKSPACE" --strip="$strip" --batch --forward --input="$patch_file" >| "$out_file" 2>&1
+        _tool_patch_run "$out_file" apply git -C "$ZCODER_WORKSPACE" apply --recount --unidiff-zero --whitespace=nowarn "$patch_file"
         exit_code=$?
+        (( patch_process_aborted )) && { _tool_fail "$patch_process_error"; return "$exit_code"; }
         output="${mapfile[$out_file]}"
-        (( exit_code == 0 )) && engine="patch -p${strip}"
-        (( exit_code != 0 )) && patch_error+=$'\n'"$output"
+        (( exit_code == 0 )) && engine="git apply"
+        (( exit_code != 0 )) && git_error+=$'\n'"$output"
       fi
-    else
-      patch_error="patch fallback rejected unsafe, ambiguous, or missing file paths"
     fi
-  fi
 
-  zf_rm -f "$patch_file" "$out_file" 2>/dev/null
-  if [[ -z "$engine" ]]; then
-    _tool_patch_contract
-    guidance=$'PATCH RETRY REQUIRED: re-read the exact current lines and correct the patch using this contract.\n'"${REPLY}"$'\nwrite_file is unavailable for this focused edit until apply_patch succeeds.'
-    if [[ "$patch_text" == '-old '* || "$patch_text" == *$'\n-old '* ||
-          "$patch_text" == '+new '* || "$patch_text" == *$'\n+new '* ]]; then
-      guidance+=$'\nTARGETED CORRECTION: old and new are not diff syntax. Remove those invented words. For a current file line `status: old`, the removed diff line is exactly `-status: old`; the replacement is exactly `+status: new`.'
+    if [[ -z "$engine" ]] && (( $+commands[patch] )); then
+      if _tool_patch_paths_are_safe "$patch_text"; then
+        _tool_patch_strip_level "$patch_text"; strip=$REPLY
+        _tool_patch_run "$out_file" check patch --directory="$ZCODER_WORKSPACE" --strip="$strip" --batch --forward --dry-run --input="$patch_file"
+        exit_code=$?
+        (( patch_process_aborted )) && { _tool_fail "$patch_process_error"; return "$exit_code"; }
+        patch_error="${mapfile[$out_file]}"
+        if (( exit_code == 0 )); then
+          _tool_patch_run "$out_file" apply patch --directory="$ZCODER_WORKSPACE" --strip="$strip" --batch --forward --input="$patch_file"
+          exit_code=$?
+          (( patch_process_aborted )) && { _tool_fail "$patch_process_error"; return "$exit_code"; }
+          output="${mapfile[$out_file]}"
+          (( exit_code == 0 )) && engine="patch -p${strip}"
+          (( exit_code != 0 )) && patch_error+=$'\n'"$output"
+        fi
+      else
+        patch_error="patch fallback rejected unsafe, ambiguous, or missing file paths"
+      fi
     fi
-    _tool_fail "patch rejected"$'\n'"${git_error:+git apply: ${git_error}}"$'\n'"${patch_error:+patch: ${patch_error}}"$'\n'"$guidance"
-    return 1
-  fi
-  TOOL_PATCH_RETRY_REQUIRED=0
-  success_message="Patch applied successfully with ${engine}."
-  [[ -n "$output" ]] && success_message+=$'\n'"$output"
-  _tool_succeed "$success_message"
+
+    if [[ -z "$engine" ]]; then
+      _tool_patch_contract
+      guidance=$'PATCH RETRY REQUIRED: re-read the exact current lines and correct the patch using this contract.\n'"${REPLY}"$'\nwrite_file is unavailable for this focused edit until apply_patch succeeds.'
+      if [[ "$patch_text" == '-old '* || "$patch_text" == *$'\n-old '* ||
+            "$patch_text" == '+new '* || "$patch_text" == *$'\n+new '* ]]; then
+        guidance+=$'\nTARGETED CORRECTION: old and new are not diff syntax. Remove those invented words. For a current file line `status: old`, the removed diff line is exactly `-status: old`; the replacement is exactly `+status: new`.'
+      fi
+      _tool_fail "patch rejected"$'\n'"${git_error:+git apply: ${git_error}}"$'\n'"${patch_error:+patch: ${patch_error}}"$'\n'"$guidance"
+      return 1
+    fi
+    TOOL_PATCH_RETRY_REQUIRED=0
+    success_message="Patch applied successfully with ${engine}."
+    [[ -n "$output" ]] && success_message+=$'\n'"$output"
+    _tool_succeed "$success_message"
+  } always {
+    zf_rm -f "$patch_file" "$out_file" 2>/dev/null
+  }
 }
 
 tool_search() {

@@ -164,8 +164,8 @@ compaction, persistent goals and their verifier, LFM models, remote-server turns
 ACP, and one-shot prompts retain buffered Ollama requests in this stage. LFM's
 normalization and goal verification must finish before their answers are shown.
 
-While waiting for Ollama, a local shell command or search, an external delegate,
-or remote events, you can edit
+While waiting for Ollama, a local shell command, search, patch, MCP tool call,
+external delegate, or remote events, you can edit
 and paste into the prompt. It is labelled **Draft** during activity. Enter leaves
 it unsent; send it after the current activity finishes. Escape stops the active
 response or local tool process while preserving your draft.
@@ -173,8 +173,8 @@ response or local tool process while preserving your draft.
 Tab switches between the draft and transcript during activity. Transcript
 selection, folding, reasoning inspection, and scrolling work with their usual
 keys. Session switching, model selection, and the command palette remain idle
-controls. MCP calls, patch application, other synchronous tools, and remote HTTP
-requests can still delay input handling until their next polling point.
+controls. MCP startup/discovery, native file operations, and remote HTTP requests
+can still delay input handling until their next polling point.
 
 Local interactive shell commands run only after the existing approval checks.
 Their output is collected when they finish; typing, paste, transcript folding,
@@ -192,6 +192,21 @@ another session are outside that group. Commands use their requested timeout;
 search has a 120-second deadline. These changes apply to local interactive
 execution; server, ACP, and one-shot tool execution keep their existing behavior.
 
+Patch validation and application use the same responsive runner. Each process
+has a 120-second deadline. A normal rejected diff can still use the checked
+`patch` fallback. Cancellation, timeout, or worker failure stops further engines
+and keeps the patch-retry guard active. A cancelled application may already have
+changed files; inspect the working tree before retrying. Patch scratch files are
+cleaned on both completion and cancellation.
+
+MCP tool calls keep their persistent stdio broker while the UI polls for a reply.
+Escape disconnects the affected server, ends the tool round, and reports an
+uncertain outcome. An external action may already have completed or may continue
+after disconnection. Calls that time out also disconnect. The next turn or an
+explicit MCP reconnect starts a fresh connection; cancelled requests are not
+replayed. External-write approval still happens before the request is sent.
+Server startup, protocol negotiation, and tool discovery remain synchronous.
+
 Status changes repaint the header, and typing normally repaints only the prompt.
 Window resizing and changing the prompt's height rebuild the layout as needed.
 
@@ -201,7 +216,7 @@ Window resizing and changing the prompt's height rebuild the layout as needed.
 | --- | --- |
 | Enter | Send the prompt; fold the selected entry when transcript has focus |
 | Shift+Enter | Insert a newline; Alt+Enter is the fallback |
-| Escape | Stop the active response, local command/search, external delegate, or remote turn |
+| Escape | Stop the active response, local tool wait, external delegate, or remote turn |
 | Tab | Move focus between prompt, sidebar, and transcript |
 | Ctrl+P | Open the command palette |
 | Ctrl+O | Open the Ollama model picker |
