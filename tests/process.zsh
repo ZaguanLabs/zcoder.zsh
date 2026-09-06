@@ -29,6 +29,7 @@ assert_success "large command output is collected through bounded reads" $?
 assert_contains "$TOOL_PROCESS_OUTPUT" HEAD "bounded output retains its beginning"
 assert_contains "$TOOL_PROCESS_OUTPUT" TAIL "bounded output retains its ending"
 assert_contains "$TOOL_PROCESS_OUTPUT" omitted "bounded output labels omitted content"
+assert_eq 1 "$TOOL_PROCESS_OUTPUT_TRUNCATED" "bounded output reports incomplete data to structured consumers"
 assert_success "bounded output respects the configured character limit" $(( ${#TOOL_PROCESS_OUTPUT} <= 120 ? 0 : 1 ))
 ZCODER_MAX_TOOL_OUTPUT=32768
 

@@ -127,6 +127,17 @@ model checks, prompts, and session mutations cancel that worker before proceedin
 endpoint changes also discard it. The parent commits model state only after a
 complete response and cleans up the worker on completion, deadline, or exit.
 
+### Interactive model discovery
+
+Interactive Ollama model discovery uses a request-local HTTP worker and a
+60-second parent deadline, independently of pending model warm-up ownership.
+OpenCode catalogs use the native process runner with the same deadline. Its
+explicit truncation flag lets catalog consumers reject incomplete output before
+parsing; ordinary tool displays retain their bounded head/tail previews. Model
+pickers publish choices only after successful discovery and preserve selection
+on cancellation or failure. Headless discovery remains synchronous. Context
+allocation queries (`/api/ps`) still use the synchronous path.
+
 ### Interactive external processes
 
 Local interactive `run_command`, `search`, and patch subprocesses execute argv through

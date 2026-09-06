@@ -148,6 +148,12 @@ Page Up/Page Down scroll long context or approval details. Escape closes a view
 or denies an approval. Shell-command and external-action approval policies
 continue to apply.
 
+Ollama and OpenCode model discovery keep draft editing, paste, transcript
+folding, and resizing available before the picker opens. Escape cancels loading
+and keeps the selected model; the complete catalog must arrive before choices
+are displayed. Interactive discovery has a 60-second deadline. OpenCode catalogs
+that exceed the output budget are rejected instead of showing a partial list.
+
 ## Drafting while the agent works
 
 Ordinary local interactive responses arrive incrementally in one assistant

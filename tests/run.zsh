@@ -3158,6 +3158,7 @@ source "${TEST_DIR}/tool_wait.zsh"
 source "${TEST_DIR}/mcp_connect_wait.zsh"
 source "${TEST_DIR}/remote_wait.zsh"
 source "${TEST_DIR}/remote_browse.zsh"
+source "${TEST_DIR}/models_wait.zsh"
 
 if (( FAILURES > 0 )); then
   print -u2 -r -- "${FAILURES} test(s) failed"

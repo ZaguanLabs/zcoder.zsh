@@ -311,13 +311,45 @@ ollama_chat() {
 ollama_get_models() {
   local host="${1:-$OLLAMA_HOST}"
   OLLAMA_MODELS=()
-  http_request GET /api/tags "" "$host" || return 1
+  if (( ${UI_ACTIVE:-0} )); then
+    _ollama_get_models_interactive "$host" || return $?
+  else
+    http_request GET /api/tags "" "$host" || return 1
+  fi
   if ! json_parse_models "$HTTP_BODY"; then
     HTTP_ERROR="could not parse Ollama model list: ${JSON_ERROR:-invalid JSON}"
     return 1
   fi
   OLLAMA_MODELS=("${JSON_MODEL_NAMES[@]}")
 }
+
+# Discovery owns a separate worker so an existing model warm-up can finish
+# independently. The activity loop owns input until a complete list is ready.
+_ollama_get_models_interactive() {
+  local HTTP_ASYNC_PID='' HTTP_ASYNC_BASE='' HTTP_ASYNC_STREAM_FD='' HTTP_ACTIVE_FD=''
+  local HTTP_ASYNC_EXTRA_HEADERS=''
+  local -i HTTP_STREAM_REQUEST=0 HTTP_READ_TIMEOUT=60 wait_status=0
+  local -F model_discovery_deadline=$(( EPOCHREALTIME + HTTP_READ_TIMEOUT ))
+  {
+    http_async_start GET /api/tags '' "$1" || return 1
+    ui_wait_for_models
+    wait_status=$?
+    if (( wait_status != 0 )); then
+      http_async_cancel 'model discovery stopped'
+      case "$wait_status" in
+        130) HTTP_ERROR='Model discovery cancelled by user' ;;
+        124) HTTP_ERROR='Model discovery timed out after 60s' ;;
+        *) HTTP_ERROR="Model discovery input wait failed with status ${wait_status}" ;;
+      esac
+      return "$wait_status"
+    fi
+    http_async_collect
+  } always {
+    [[ -n "$HTTP_ASYNC_PID" || -n "$HTTP_ASYNC_BASE" ]] && http_async_cancel 'model discovery cleanup'
+  }
+}
+
+ollama_model_discovery_expired() { (( EPOCHREALTIME >= model_discovery_deadline )); }
 
 ollama_get_running_context() {
   local model="$1" host="${2:-$OLLAMA_HOST}"

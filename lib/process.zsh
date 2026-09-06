@@ -4,6 +4,7 @@
 typeset -g TOOL_PROCESS_NAME='' TOOL_PROCESS_BASE='' TOOL_PROCESS_PID=''
 typeset -g TOOL_PROCESS_OUTPUT='' TOOL_PROCESS_ERROR=''
 typeset -gi TOOL_PROCESS_STARTED=0 TOOL_PROCESS_CANCELLED=0 TOOL_PROCESS_TIMED_OUT=0
+typeset -gi TOOL_PROCESS_OUTPUT_TRUNCATED=0
 typeset -gF TOOL_PROCESS_DEADLINE=0.0
 
 _tool_process_worker() {
@@ -111,6 +112,7 @@ _tool_process_output() {
     fi
     zcoder_truncate_head_tail "$head" "$ZCODER_MAX_TOOL_OUTPUT"
     TOOL_PROCESS_OUTPUT="$REPLY"
+    (( output_stat[size] > 2 * budget || ${#head} > ZCODER_MAX_TOOL_OUTPUT )) && TOOL_PROCESS_OUTPUT_TRUNCATED=1
     if (( output_stat[size] > 2 * budget )); then
       TOOL_PROCESS_OUTPUT="${TOOL_PROCESS_OUTPUT//\[... <-> characters omitted ...\]/[... output omitted ...]}"
     fi
@@ -127,7 +129,7 @@ tool_process_run() {
   local -i wait_result=0 command_result=1
   local result_text=''
   [[ -z "$TOOL_PROCESS_NAME" ]] || { TOOL_PROCESS_ERROR='Another tool process is active.'; return 1; }
-  TOOL_PROCESS_OUTPUT=''; TOOL_PROCESS_ERROR=''; TOOL_PROCESS_CANCELLED=0; TOOL_PROCESS_TIMED_OUT=0
+  TOOL_PROCESS_OUTPUT=''; TOOL_PROCESS_ERROR=''; TOOL_PROCESS_CANCELLED=0; TOOL_PROCESS_TIMED_OUT=0; TOOL_PROCESS_OUTPUT_TRUNCATED=0
   [[ "$process_timeout" == <1-3600> && ${#process_argv} -gt 0 ]] || return 1
   zmodload zsh/zpty zsh/system zsh/stat || { TOOL_PROCESS_ERROR='Required native process modules are unavailable.'; return 1; }
   zcoder_temp_path process || { TOOL_PROCESS_ERROR='Could not create private process storage.'; return 1; }

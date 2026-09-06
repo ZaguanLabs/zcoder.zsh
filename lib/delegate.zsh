@@ -416,9 +416,29 @@ delegate_parse_opencode_models() {
 delegate_discover_opencode_models() {
   local raw="" command_status=0
   DELEGATE_ERROR=""
+  DELEGATE_MODELS=()
   delegate_refresh_availability
   delegate_require_available opencode || return $?
-  raw="$(command opencode models 2>&1)" || command_status=$?
+  if (( ${UI_ACTIVE:-0} )); then
+    # A catalog must be complete, unlike display-only tool output. Use a
+    # separate generous budget and reject truncation before parsing choices.
+    local -i ZCODER_MAX_TOOL_OUTPUT=1048576 TOOL_PROCESS_OUTPUT_TRUNCATED=0
+    local -i TOOL_PROCESS_CANCELLED=0 TOOL_PROCESS_TIMED_OUT=0
+    local TOOL_PROCESS_OUTPUT='' TOOL_PROCESS_ERROR=''
+    tool_process_run "$ZCODER_WORKSPACE" 60 opencode models || command_status=$?
+    raw="$TOOL_PROCESS_OUTPUT"
+    if (( TOOL_PROCESS_CANCELLED )); then
+      DELEGATE_ERROR='Model discovery cancelled by user'; return 130
+    elif (( TOOL_PROCESS_TIMED_OUT )); then
+      DELEGATE_ERROR='Model discovery timed out after 60s'; return 124
+    elif (( TOOL_PROCESS_OUTPUT_TRUNCATED )); then
+      DELEGATE_ERROR='OpenCode model list exceeds the discovery output limit'; return 1
+    elif [[ -n "$TOOL_PROCESS_ERROR" ]]; then
+      DELEGATE_ERROR="$TOOL_PROCESS_ERROR"; return 1
+    fi
+  else
+    raw="$(command opencode models 2>&1)" || command_status=$?
+  fi
   (( command_status == 0 )) || { DELEGATE_ERROR="${raw:-opencode models failed}"; return "$command_status"; }
   delegate_parse_opencode_models "$raw" || {
     DELEGATE_ERROR="OpenCode returned no provider/model choices"

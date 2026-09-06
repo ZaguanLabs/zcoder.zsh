@@ -159,8 +159,13 @@ _ui_modal_view_input() {
 
 ui_select_model() {
   local previous_status="$UI_STATUS"
+  local -i discovery_status=0
   ui_set_status "Loading models"; ui_draw_header
-  if ! ollama_get_models "$OLLAMA_HOST" || (( ! ${#OLLAMA_MODELS} )); then
+  ollama_get_models "$OLLAMA_HOST" || discovery_status=$?
+  if (( discovery_status == 130 )); then
+    ui_set_status "$previous_status"; ui_draw_header; return 130
+  fi
+  if (( discovery_status != 0 || ! ${#OLLAMA_MODELS} )); then
     ui_set_status Error
     ui_append_message error "Could not load Ollama models: ${HTTP_ERROR:-the server returned no models}"
     ui_refresh_all
@@ -176,9 +181,13 @@ ui_select_model() {
 
 ui_select_opencode_model() {
   local previous_status="$UI_STATUS"
-  local -i accepted=0
+  local -i accepted=0 discovery_status=0
   ui_set_status "Loading OpenCode models"; ui_draw_header
-  if ! delegate_discover_opencode_models || (( ! ${#DELEGATE_MODELS} )); then
+  delegate_discover_opencode_models || discovery_status=$?
+  if (( discovery_status == 130 )); then
+    ui_set_status "$previous_status"; ui_draw_header; return 130
+  fi
+  if (( discovery_status != 0 || ! ${#DELEGATE_MODELS} )); then
     ui_set_status Error
     ui_append_message error "Could not load OpenCode models: ${DELEGATE_ERROR:-no models}"
     ui_refresh_all
