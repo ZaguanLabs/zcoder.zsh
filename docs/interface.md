@@ -80,6 +80,26 @@ events and restore saved tool metadata when supported by the server; legacy
 servers continue to display their ordinary tool text. Remote expansion changes
 remain local to the current view.
 
+## Optional terminal modes
+
+`/terminal` (also in the command palette) shows synchronized-output detection,
+bracketed paste, and current terminal geometry. The default
+`ZCODER_SYNC_OUTPUT=auto` queries mode 2026 once on each UI entry. A positive
+reply enables synchronized refreshes; an unsupported or absent reply keeps
+ordinary curses updates. Detection never blocks startup and stops accepting
+replies after one second. Late replies are still consumed as protocol input.
+Set `ZCODER_SYNC_OUTPUT=false` to disable the query and synchronization, or
+`true` to force synchronization on a terminal whose support you already know.
+Multiplexers use the same query; terminal names alone do not enable support.
+
+Each batch of changed windows, including a modal, gets one synchronized frame.
+The frame ends before waiting for input or network activity. Terminal modes and
+the private output descriptor are released on exit and when entering the plain
+text copy view. Headless modes do not load this layer. This follows the
+[mode 2026 protocol](https://contour-terminal.org/vt-extensions/synchronized-output/).
+OSC hyperlinks, clipboard writes, truecolor, and enhanced keyboard negotiation
+are not enabled by this stage.
+
 ## Command palette and context inspector
 
 Ctrl+P or `/commands` opens the command palette. Type a command name or a few
@@ -170,6 +190,7 @@ Window resizing and changing the prompt's height rebuild the layout as needed.
 | `/skills`, `/skills reload` | Inspect or rediscover Skills |
 | `/skill NAME` | Activate a Skill |
 | `/compact` | Create a context checkpoint |
+| `/terminal` | Inspect terminal capabilities and synchronized-output policy |
 | `/context` | Inspect context estimates, reported usage, and compaction threshold |
 | `/goal OBJECTIVE` | Run a persisted goal with independent completion verification |
 | `/goal --tokens N OBJECTIVE` | Run a goal with a cumulative model-token limit |

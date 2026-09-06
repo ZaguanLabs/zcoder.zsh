@@ -13,6 +13,7 @@ commands_init() {
   emulate -L zsh
   COMMAND_LABELS=(); COMMAND_TEXTS=(); COMMAND_ACTIONS=(); COMMAND_KEYWORDS=(); COMMAND_MATCHES=()
   _commands_add "Inspect context" /context run all 'tokens budget usage'
+  _commands_add "Inspect terminal" /terminal run all 'diagnostics capabilities synchronized output paste'
   _commands_add "Switch Ollama model" /model run local 'picker local'
   _commands_add "Change Ollama host" '/host ' draft local 'server connection'
   _commands_add "Start a new session" /new run all 'clear conversation job'
@@ -203,3 +204,35 @@ ui_show_context() {
 }
 
 typeset -ga UI_CONTEXT_LINES=()
+
+_ui_terminal_draw() {
+  local line='' paste_state=inactive
+  [[ -n "$TERMINAL_FD" ]] && paste_state=enabled
+  terminal_poll
+  terminal_inspected_state="$TERMINAL_SYNC_STATE"
+  local -a lines=("Terminal: ${TERM:-unset}" "Size: ${SCREEN_W} columns × ${SCREEN_H} rows"
+    "Synchronized output: ${TERMINAL_SYNC_STATE}" "Policy: ${TERMINAL_SYNC_POLICY}"
+    "Bracketed paste: ${paste_state}" ""
+    "ZCODER_SYNC_OUTPUT=auto queries terminal support once on UI entry."
+    "No reply within one second keeps ordinary curses updates."
+    "Use false to disable, or true to force support for a known terminal."
+    "" "Detection uses the terminal's reply, including through a multiplexer.")
+  modal_lines=()
+  for line in "${lines[@]}"; do
+    zcoder_terminal_safe "$line"
+    zcoder_wrap "$REPLY" $(( modal_w-4 ))
+    modal_lines+=("${ZCODER_WRAPPED[@]}")
+  done
+  _ui_modal_view_draw
+}
+
+_ui_terminal_input() {
+  [[ "$terminal_inspected_state" != "$TERMINAL_SYNC_STATE" ]] && modal_dirty=1
+  _ui_modal_view_input
+}
+
+ui_show_terminal() {
+  local -a modal_lines=()
+  local terminal_inspected_state=''
+  ui_modal_run "Terminal diagnostics" _ui_terminal_draw _ui_terminal_input 20 88 || true
+}

@@ -89,6 +89,16 @@ during idle responses. This prevents continuous event traffic from starving
 input. Synchronous tool execution and in-flight remote HTTP requests still bound
 how often the UI can poll; there is no general asynchronous tool scheduler.
 
+### Optional terminal protocol ownership
+
+`lib/terminal.zsh` owns bracketed paste and optional mode 2026 synchronization.
+All curses refreshes pass through its balanced begin/end wrapper; all UI input
+passes through its bounded CSI decoder before reaching editors or modals. The
+decoder consumes capability replies (including late replies) so their final `y`
+cannot approve a command. Other sequences are queued unchanged, and protocol
+lookalikes inside bracketed paste remain text. Detection shares the existing
+event loop and never adds a startup wait or worker-owned terminal output.
+
 ## Agent cycle
 
 Both profiles teach the model a small operating loop:

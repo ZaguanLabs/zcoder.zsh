@@ -51,12 +51,12 @@ ui_modal_run() {
         zcurses border overlay_win
         ui_modal_text 0 " ${modal_title} " "bold white/black"
         "$modal_draw" || return 1
-        zcurses refresh overlay_win
+        terminal_refresh overlay_win
         modal_dirty=0
       fi
       modal_ch=""; modal_key=""; modal_mouse=""
       zcurses timeout overlay_win 100
-      zcurses input overlay_win modal_ch modal_key modal_mouse
+      terminal_read_event overlay_win modal_ch modal_key modal_mouse
       if [[ "$modal_key" == RESIZE ]]; then
         UI_RESIZE_PENDING=1
         continue

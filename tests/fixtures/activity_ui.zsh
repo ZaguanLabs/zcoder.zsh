@@ -3,7 +3,7 @@ emulate -R zsh
 setopt extendedglob
 zmodload zsh/curses zsh/terminfo zsh/datetime zsh/mapfile || exit 1
 typeset -g fixture_root="$1" fixture_base="$2"
-for fixture_lib in util json transcript input ui; do
+for fixture_lib in util json transcript input terminal ui; do
   source "$fixture_root/lib/${fixture_lib}.zsh"
 done
 typeset -g ZCODER_NAME=zcoder ZCODER_VERSION=test ZCODER_MODEL=fixture

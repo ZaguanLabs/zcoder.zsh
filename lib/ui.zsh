@@ -76,7 +76,7 @@ ui_flush() {
   # Refreshing an unchanged input window restores its cursor without repainting
   # its contents. Keep it last in the one physical update.
   windows+=(input_win)
-  zcurses refresh "${windows[@]}"
+  terminal_refresh "${windows[@]}"
   UI_PENDING_WINDOWS=()
 }
 
@@ -141,9 +141,7 @@ ui_setup_windows() {
 ui_init() {
   zcurses init || return 1
   UI_ACTIVE=1
-  # Ask compatible terminals to delimit pasted text so embedded newlines are
-  # inserted into the editor instead of submitting partial prompts.
-  print -rn -- $'\e[?2004h' > /dev/tty 2>/dev/null
+  terminal_start
   ui_setup_windows
   ui_refresh_all
 }
@@ -152,8 +150,8 @@ ui_end() {
   (( UI_ACTIVE )) || return 0
   UI_ACTIVE=0
   ui_destroy_windows
+  terminal_end
   zcurses end 2>/dev/null
-  print -rn -- $'\e[?2004l' > /dev/tty 2>/dev/null
   print -rn -- "${terminfo[cnorm]}" 2>/dev/null
 }
 
@@ -207,7 +205,7 @@ _ui_paint_header() {
     esac
     zcurses string top_win "$badge"
   fi
-  (( defer_refresh )) || zcurses refresh top_win
+  (( defer_refresh )) || terminal_refresh top_win
 }
 
 _ui_paint_sidebar() {
@@ -290,7 +288,7 @@ _ui_paint_sidebar() {
   if (( row <= inner_h )); then zcurses move side_win $row 2; zcurses attr side_win bold white/black; zcurses string side_win "Shell approval"; fi
   (( row++ ))
   if (( row <= inner_h )); then zcurses move side_win $row 2; zcurses attr side_win yellow/black; zcurses string side_win "$policy"; fi
-  (( defer_refresh )) || zcurses refresh side_win
+  (( defer_refresh )) || terminal_refresh side_win
 }
 
 ui_plain_transcript() {
@@ -823,7 +821,7 @@ _ui_paint_chat() {
     fi
   done
   (( UI_SCROLL > 0 )) && { zcurses move chat_win 0 $(( inner_w - 12 )); zcurses attr chat_win dim yellow/black; zcurses string chat_win " [PgUp/PgDn] "; }
-  (( defer_refresh )) || zcurses refresh chat_win
+  (( defer_refresh )) || terminal_refresh chat_win
 }
 
 _ui_paint_input() {
@@ -864,7 +862,7 @@ _ui_paint_input() {
   (( cursor_x < 4 )) && cursor_x=4
   (( cursor_x > SCREEN_W - 2 )) && cursor_x=$(( SCREEN_W - 2 ))
   zcurses move input_win $cursor_y $cursor_x
-  (( defer_refresh )) || zcurses refresh input_win
+  (( defer_refresh )) || terminal_refresh input_win
 }
 
 # Rebuild only when the editor crosses a visual-row boundary. Keeping the
@@ -890,7 +888,7 @@ _ui_paint_footer() {
   text="${text[1,$SCREEN_W]}"
   zcurses clear foot_win; zcurses attr foot_win reverse dim white/black
   zcoder_pad "$text" "$SCREEN_W"; zcurses move foot_win 0 0; zcurses string foot_win "$REPLY"
-  (( defer_refresh )) || zcurses refresh foot_win
+  (( defer_refresh )) || terminal_refresh foot_win
 }
 
 ui_refresh_all() {
@@ -977,7 +975,7 @@ ui_poll_activity() {
   local ch="" key="" mouse=""
   ui_poll_resize
   zcurses timeout input_win "${1:-50}"
-  zcurses input input_win ch key mouse
+  terminal_read_event input_win ch key mouse
   ui_activity_input "$ch" "$key"
 }
 

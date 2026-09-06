@@ -1525,6 +1525,7 @@ assert_failure "goal verifier dispatch rejects invented write calls" $?
 GOAL_VERIFIER_ACTIVE=0
 
 # The transcript exporter is UI code but does not require curses to be active.
+source "${PROJECT_DIR}/lib/terminal.zsh"
 source "${PROJECT_DIR}/lib/ui.zsh"
 source "${PROJECT_DIR}/lib/overlays.zsh"
 source "${PROJECT_DIR}/lib/commands.zsh"
@@ -3150,6 +3151,7 @@ assert_eq "delwin top_win" "${MOCK_ZCURSES_CALLS[1]}" "UI passes one name to eac
 source "${TEST_DIR}/activity.zsh"
 source "${PROJECT_DIR}/lib/stream.zsh"
 source "${TEST_DIR}/stream.zsh"
+source "${TEST_DIR}/terminal.zsh"
 
 if (( FAILURES > 0 )); then
   print -u2 -r -- "${FAILURES} test(s) failed"

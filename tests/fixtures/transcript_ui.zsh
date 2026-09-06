@@ -8,6 +8,7 @@ source "$fixture_root/lib/util.zsh"
 source "$fixture_root/lib/json.zsh"
 source "$fixture_root/lib/transcript.zsh"
 source "$fixture_root/lib/input.zsh"
+source "$fixture_root/lib/terminal.zsh"
 source "$fixture_root/lib/ui.zsh"
 typeset -g ZCODER_NAME=zcoder ZCODER_VERSION=test ZCODER_MODEL=fixture
 typeset -g ZCODER_WORKSPACE="$fixture_root" OLLAMA_HOST=fixture
@@ -25,7 +26,7 @@ mapfile[${fixture_base}.ready]=1
 while true; do
   fixture_ch=""; fixture_key=""; fixture_mouse=""
   zcurses timeout input_win 100
-  zcurses input input_win fixture_ch fixture_key fixture_mouse || continue
+  terminal_read_event input_win fixture_ch fixture_key fixture_mouse || continue
   [[ "$fixture_ch" == q ]] && break
   if [[ "$fixture_ch" == $'\x12' ]]; then
     ui_toggle_reasoning

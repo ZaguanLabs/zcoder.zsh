@@ -10,7 +10,9 @@ zcurses() {
     (( OVERLAY_CURSOR++ ))
     local next_ch="${OVERLAY_CHARS[OVERLAY_CURSOR]:-}" next_key="${OVERLAY_KEYS[OVERLAY_CURSOR]:-}"
     if (( OVERLAY_CURSOR > ${#OVERLAY_CHARS} && OVERLAY_CURSOR > ${#OVERLAY_KEYS} )); then
-      [[ "${INPUT_TERM_STATE:-normal}" == escape ]] || next_ch=$'\e'
+      if [[ "$TERMINAL_SEQUENCE" == $'\e' ]]; then TERMINAL_ESCAPE_AT=0
+      elif [[ "${INPUT_TERM_STATE:-normal}" != escape ]]; then next_ch=$'\e'
+      fi
     fi
     printf -v "$3" '%s' "$next_ch"
     printf -v "$4" '%s' "$next_key"
@@ -26,6 +28,7 @@ ui_poll_resize() {
 }
 overlay_keys() {
   OVERLAY_CURSOR=0; OVERLAY_CALLS=(); OVERLAY_CHARS=(); OVERLAY_KEYS=()
+  TERMINAL_SEQUENCE=''; TERMINAL_INPUT_QUEUE=()
 }
 UI_ACTIVE=1; STATE_ENABLED=0; SCREEN_W=80; SCREEN_H=24; SIDE_W=0; UI_RESIZE_PENDING=0
 INPUT_BUF="unfinished prompt"; INPUT_POS=6; UI_FOCUS=input
