@@ -22,6 +22,8 @@ ui_append_message assistant 'PTY assistant body' 'PTY private reasoning'
 ui_append_message assistant 'PTY final entry'
 UI_FOCUS=chat; UI_SELECTED_EVENT=1; UI_AUTO_SCROLL=0
 ui_init || exit 1
+typeset -a fixture_headers=("${(@M)UI_LINES:#*Assistant  *}")
+mapfile[${fixture_base}.headers]=${#fixture_headers}
 mapfile[${fixture_base}.ready]=1
 while true; do
   fixture_ch=""; fixture_key=""; fixture_mouse=""
@@ -38,6 +40,7 @@ while true; do
     continue
   fi
   (( fixture_events++ ))
+  mapfile[${fixture_base}.rendered]="${(F)UI_LINES}"
   mapfile[${fixture_base}.state]="${fixture_events}:${UI_SELECTED_EVENT}:${UI_BLOCK_OPEN[1]}:${UI_REASONING_OPEN[2]}:${SCREEN_W}:${UI_IDS[UI_SELECTED_EVENT]}"
 done
 ui_end

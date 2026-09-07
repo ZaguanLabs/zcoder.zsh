@@ -208,6 +208,62 @@ assert_eq "interrupted" "${UI_TOOL_STATES[2]}" "disconnection does not leave an 
 functions[remote_client_request]="${functions[_test_transcript_remote_request]}"
 functions[remote_client_model_ensure]="${functions[_test_transcript_remote_model]}"
 unfunction _test_transcript_remote_request _test_transcript_remote_model
+
+# One assistant conversation spans reasoning, tool calls, and the final answer.
+transcript_reset
+UI_FOCUS=input
+ui_append_message user 'Inspect and explain'
+ui_append_message assistant '' 'Inspect first'
+UI_TIMES[2]='12:21'
+transcript_tool_event begin read_file '{"path":"example.zsh"}'
+transcript_tool_event complete read_file '{}' 'Grouped tool result' 1
+UI_TIMES[3]='12:22'
+ui_draw_chat
+ui_append_message assistant 'Final grouped answer' 'Explain the result'
+UI_TIMES[4]='12:23'
+UI_STREAM_INDEX=4
+ui_draw_chat
+grouped_headers=("${(@M)UI_LINES:#*Assistant  *}")
+assert_eq 1 "${#grouped_headers}" "incremental tool-loop rendering shares one assistant heading"
+assert_contains "${grouped_headers[1]}" '12:21' "the assistant block keeps its original timestamp"
+assert_not_contains "${grouped_headers[1]}" "$ZCODER_MODEL" "assistant headings omit the model already shown at the top"
+assert_contains "${(F)UI_LINES}" '12:22' "nested tool activity retains its timestamp"
+assert_contains "${(F)UI_LINES}" 'receiving · 12:23' "a streaming continuation stays visibly in progress"
+assert_contains "${(F)UI_LINES}" 'Final grouped answer' "continuation content remains in the conversation"
+assert_eq '0 2 2 2' "${(j: :)UI_ASSISTANT_GROUPS}" "assistant and tool events share a group without changing event IDs"
+UI_STREAM_INDEX=0
+transcript_changed 4
+ui_draw_chat
+ui_plain_transcript
+grouped_headers=("${(@M)${(@f)REPLY}:#=== Assistant*}")
+assert_eq 1 "${#grouped_headers}" "copy view also uses one assistant heading"
+assert_contains "$REPLY" 'Final grouped answer' "copy view retains the final continuation"
+UI_FOCUS=chat; UI_SELECTED_EVENT=4
+ui_toggle_reasoning
+assert_contains "${(F)UI_LINES}" 'Explain the result' "continuation reasoning remains independently expandable"
+ui_toggle_block
+assert_eq 2 "$UI_SELECTED_EVENT" "folding a continuation selects its conversation heading"
+assert_not_contains "${(F)UI_LINES}" 'Final grouped answer' "folding an assistant block hides all its continuations"
+assert_not_contains "${(F)UI_LINES}" 'Read(example.zsh)' "folding an assistant block hides its tools"
+ui_plain_transcript
+assert_not_contains "$REPLY" 'Final grouped answer' "copy view respects the folded conversation"
+ui_append_message user 'Next question'
+ui_append_message assistant 'Next answer'
+ui_draw_chat
+ui_chat_select 1
+assert_eq 5 "$UI_SELECTED_EVENT" "Down skips the contents of a folded conversation"
+ui_chat_select -1
+assert_eq 2 "$UI_SELECTED_EVENT" "Up returns to the folded conversation heading"
+ui_toggle_block
+assert_contains "${(F)UI_LINES}" 'Final grouped answer' "reopening a conversation restores the final answer"
+grouped_headers=("${(@M)UI_LINES:#*Assistant  *}")
+assert_eq 2 "${#grouped_headers}" "a new user message starts a separate assistant conversation"
+ui_render_messages 40
+grouped_headers=("${(@M)UI_LINES:#*Assistant  *}")
+assert_eq 2 "${#grouped_headers}" "full rewrapping preserves assistant grouping"
+assert_eq 6 "${#UI_IDS}" "visual grouping preserves all underlying transcript events"
+transcript_reset
+UI_FOCUS=input
 REMOTE_SESSIONS_SUPPORTED=$saved_transcript_remote_sessions
 transcript_reset
 MOCK_ZCURSES_CALLS=()
@@ -237,6 +293,7 @@ TERM=xterm-256color zpty -b transcript-ui transcript_pty_run
 assert_success "real curses transcript fixture starts in a PTY" $?
 transcript_pty_wait "$transcript_pty_base.ready" 1
 assert_success "real curses transcript renders its initial frame" $?
+assert_eq 1 "${mapfile[$transcript_pty_base.headers]:-}" "real curses groups consecutive assistant output under one heading"
 zpty -w -n transcript-ui $'\r'
 transcript_pty_wait "$transcript_pty_base.state" '1:1:1:0:80:event_1'
 assert_success "real Enter expands the selected tool" $?
@@ -250,6 +307,14 @@ assert_success "real Ctrl+R expands the selected reasoning" $?
 zpty -w -n transcript-ui w
 transcript_pty_wait "$transcript_pty_base.state" '4:2:1:1:60:event_2'
 assert_success "terminal resize preserves selection and expansion" $?
+zpty -w -n transcript-ui $'\r'
+transcript_pty_wait "$transcript_pty_base.state" '5:2:1:1:60:event_2'
+assert_success "real Enter folds the assistant conversation" $?
+assert_not_contains "${mapfile[$transcript_pty_base.rendered]:-}" 'PTY final entry' "folding in the terminal hides later assistant output"
+zpty -w -n transcript-ui $'\r'
+transcript_pty_wait "$transcript_pty_base.state" '6:2:1:1:60:event_2'
+assert_success "real Enter reopens the assistant conversation" $?
+assert_contains "${mapfile[$transcript_pty_base.rendered]:-}" 'PTY final entry' "reopening in the terminal restores later assistant output"
 zpty -w -n transcript-ui q
 transcript_pty_wait "$transcript_pty_base.done" 1
 transcript_pty_exit_status=$?

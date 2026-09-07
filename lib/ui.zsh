@@ -22,6 +22,7 @@ typeset -g UI_RENDER_CACHE_KEY=""
 typeset -gi UI_RENDER_COUNT=0
 typeset -gi UI_REVEAL_SELECTED=0
 typeset -ga UI_MESSAGE_STARTS=() UI_MESSAGE_SEGMENT_STARTS=()
+typeset -ga UI_ASSISTANT_GROUPS=()
 typeset -ga UI_LINES=() UI_ATTRS=()
 typeset -ga UI_LINE_SEGMENT_STARTS=() UI_LINE_SEGMENT_COUNTS=()
 typeset -ga UI_SEGMENT_TEXTS=() UI_SEGMENT_ATTRS=()
@@ -395,17 +396,33 @@ _ui_paint_sidebar() {
   (( defer_refresh )) || terminal_refresh side_win
 }
 
+# Consecutive assistant responses and their tools share a visual conversation
+# block. Keep event IDs and storage intact for streaming, replay, and selection.
+# The previous owner is passed in so full and incremental rendering stay linear.
+_ui_assistant_group() {
+  emulate -L zsh
+  local -i index=$1 previous=${2:-0}
+  case "${UI_ROLES[index]}" in
+    assistant) REPLY=$(( previous > 0 ? previous : index )) ;;
+    tool) REPLY=$previous ;;
+    *) REPLY=0 ;;
+  esac
+}
+
 ui_plain_transcript() {
   local output="" label="" role="" content="" thinking="" time=""
-  local -i i
+  local -i i group=0 continuation=0
   for (( i=1; i<=${#UI_ROLES}; i++ )); do
+    _ui_assistant_group "$i" "$group"; group=$REPLY
+    continuation=$(( group > 0 && group != i ))
+    (( continuation && ! ${UI_BLOCK_OPEN[group]:-1} )) && continue
     role="${UI_ROLES[i]}"
     content="${UI_CONTENTS[i]}"
     thinking="${UI_THINKINGS[i]}"
     time="${UI_TIMES[i]}"
     case "$role" in
       user) label="You" ;;
-      assistant) label="Assistant (${ZCODER_MODEL})" ;;
+      assistant) label="Assistant" ;;
       tool) label="Tool activity" ;;
       claude) label="Claude consultant" ;;
       codex) label="Codex consultant" ;;
@@ -431,11 +448,17 @@ ui_plain_transcript() {
       fi
     fi
     [[ -n "$output" ]] && output+=$'\n'
-    output+="=== ${label}${time:+  ${time}} ==="$'\n'
+    if [[ "$role" != assistant ]] || (( ! continuation )); then
+      output+="=== ${label}${time:+  ${time}} ==="$'\n'
+    fi
+    if (( group == i && ! ${UI_BLOCK_OPEN[i]:-1} )); then
+      output+=$'[collapsed]\n'
+      continue
+    fi
     if [[ -n "$thinking" ]] && (( ${UI_REASONING_OPEN[i]:-0} )); then
       output+=$'Reasoning:\n'"$thinking"$'\n\n'
     fi
-    if [[ "${UI_BLOCK_OPEN[i]:-1}" == 0 ]]; then
+    if [[ "$role" != assistant && "${UI_BLOCK_OPEN[i]:-1}" == 0 ]]; then
       output+=$'[collapsed]\n'
     elif [[ -n "$content" ]]; then
       output+="$content"$'\n'
@@ -750,15 +773,19 @@ _ui_add_wrapped() {
 }
 
 _ui_render_one_message() {
-  local -i i=$1 width=$2 think_lines
+  local -i i=$1 width=$2 think_lines group continuation
   local role content thinking time attr title tool_attr="bold yellow/black"
   local -a thinking_lines=()
   UI_MESSAGE_STARTS[i]=$(( ${#UI_LINES} + 1 ))
   UI_MESSAGE_SEGMENT_STARTS[i]=$(( ${#UI_SEGMENT_TEXTS} + 1 ))
+  _ui_assistant_group "$i" "${UI_ASSISTANT_GROUPS[i-1]:-0}"
+  group=$REPLY; UI_ASSISTANT_GROUPS[i]=$group
+  continuation=$(( group > 0 && group != i ))
+  (( continuation && ! ${UI_BLOCK_OPEN[group]:-1} )) && return 0
   role="${UI_ROLES[i]}"; content="${UI_CONTENTS[i]}"; thinking="${UI_THINKINGS[i]}"; time="${UI_TIMES[i]}"
   case "$role" in
     user) title="🧑 You  ${time}"; attr="green/black" ;;
-    assistant) title="🤖 Assistant (${ZCODER_MODEL})  ${time}"; attr="white/black" ;;
+    assistant) title="🤖 Assistant  ${time}"; attr="white/black" ;;
     tool) title="⚙ Tool activity  ${time}"; attr="white/black" ;;
     claude) title="◇ Claude consultant  ${time}"; attr="cyan/black" ;;
     codex) title="◇ Codex consultant  ${time}"; attr="cyan/black" ;;
@@ -782,10 +809,21 @@ _ui_render_one_message() {
       running) tool_attr="bold cyan/black" ;;
     esac
   fi
-  if [[ -n "$content" ]]; then
+  if [[ -n "$content" || "$role" == assistant ]]; then
     [[ "${UI_BLOCK_OPEN[i]:-1}" == 0 ]] && title="▶ ${title}" || title="▼ ${title}"
   fi
-  [[ "$role" == tool ]] && _ui_add_line "$title" "$tool_attr" || _ui_add_line "$title" "bold $attr"
+  if [[ "$role" == tool ]]; then
+    (( continuation )) && title="  ${title}"
+    _ui_add_line "$title" "$tool_attr"
+  elif (( ! continuation )); then
+    _ui_add_line "$title" "bold $attr"
+  elif (( i == UI_STREAM_INDEX )); then
+    _ui_add_line "  receiving · ${time}" "dim $attr"
+  fi
+  if (( group == i && ! ${UI_BLOCK_OPEN[i]:-1} )); then
+    _ui_add_line "" default/default
+    return 0
+  fi
   if [[ -n "$thinking" ]]; then
     thinking_lines=("${(@f)thinking}")
     think_lines=${#thinking_lines}
@@ -796,7 +834,7 @@ _ui_render_one_message() {
       _ui_add_line "  ▶ Reasoning (${think_lines} lines) [^R to expand]" "dim magenta/black"
     fi
   fi
-  if [[ "${UI_BLOCK_OPEN[i]:-1}" == 0 ]]; then
+  if [[ "$role" != assistant && "${UI_BLOCK_OPEN[i]:-1}" == 0 ]]; then
     : # Keep the role and independently foldable reasoning visible.
   elif [[ "$role" == tool && -n "${UI_TOOL_NAMES[i]:-}" ]]; then
     if [[ ( "${UI_TOOL_NAMES[i]}" == write_file || "${UI_TOOL_NAMES[i]}" == apply_patch ) &&
@@ -825,6 +863,7 @@ ui_render_messages() {
   UI_LINE_SEGMENT_STARTS=(); UI_LINE_SEGMENT_COUNTS=()
   UI_SEGMENT_TEXTS=(); UI_SEGMENT_ATTRS=()
   UI_MESSAGE_STARTS=(); UI_MESSAGE_SEGMENT_STARTS=()
+  UI_ASSISTANT_GROUPS=()
   UI_RENDER_DIRTY_FROM=0
   if (( count == 0 )); then
     _ui_add_line "" default/default
@@ -876,6 +915,10 @@ _ui_paint_chat() {
   (( UI_AUTO_SCROLL )) && UI_SCROLL=$max_scroll
   if [[ "$UI_FOCUS" == chat ]] && (( message_count > 0 )); then
     (( UI_SELECTED_EVENT > 0 && UI_SELECTED_EVENT <= message_count )) || UI_SELECTED_EVENT=$message_count
+    local -i selected_group=${UI_ASSISTANT_GROUPS[UI_SELECTED_EVENT]:-0}
+    if (( selected_group > 0 && ! ${UI_BLOCK_OPEN[selected_group]:-1} )); then
+      UI_SELECTED_EVENT=$selected_group
+    fi
     if (( UI_REVEAL_SELECTED )); then
       local -i selected_line=${UI_MESSAGE_STARTS[UI_SELECTED_EVENT]:-1}
       if (( selected_line <= UI_SCROLL )); then
@@ -1128,12 +1171,23 @@ ui_poll_remote_turn() { ui_poll_activity "${1:-50}"; }
 ui_chat_select() {
   emulate -L zsh
   setopt extendedglob
-  local -i delta=$1 count=${#UI_ROLES}
+  local -i delta=$1 count=${#UI_ROLES} group
   (( count > 0 )) || return 0
   (( UI_SELECTED_EVENT > 0 && UI_SELECTED_EVENT <= count )) || UI_SELECTED_EVENT=$count
   (( UI_SELECTED_EVENT += delta ))
   (( UI_SELECTED_EVENT < 1 )) && UI_SELECTED_EVENT=1
   (( UI_SELECTED_EVENT > count )) && UI_SELECTED_EVENT=$count
+  group=${UI_ASSISTANT_GROUPS[UI_SELECTED_EVENT]:-0}
+  if (( group > 0 && group != UI_SELECTED_EVENT && ! ${UI_BLOCK_OPEN[group]:-1} )); then
+    if (( delta > 0 )); then
+      while (( UI_SELECTED_EVENT < count && ${UI_ASSISTANT_GROUPS[UI_SELECTED_EVENT+1]:-0} == group )); do
+        (( UI_SELECTED_EVENT++ ))
+      done
+      (( UI_SELECTED_EVENT < count )) && (( UI_SELECTED_EVENT++ )) || UI_SELECTED_EVENT=$group
+    else
+      UI_SELECTED_EVENT=$group
+    fi
+  fi
   UI_AUTO_SCROLL=0
   UI_REVEAL_SELECTED=1
   ui_draw_chat
@@ -1144,7 +1198,10 @@ ui_toggle_block() {
   setopt extendedglob
   local -i i=$UI_SELECTED_EVENT
   (( i > 0 && i <= ${#UI_ROLES} )) || return 0
-  if [[ -z "${UI_CONTENTS[i]}" && -n "${UI_THINKINGS[i]}" ]]; then
+  if [[ "${UI_ROLES[i]}" == assistant ]]; then
+    i=${UI_ASSISTANT_GROUPS[i]:-$i}
+    UI_SELECTED_EVENT=$i
+  elif [[ -z "${UI_CONTENTS[i]}" && -n "${UI_THINKINGS[i]}" ]]; then
     ui_toggle_reasoning
     return 0
   fi
