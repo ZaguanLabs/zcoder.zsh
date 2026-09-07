@@ -63,6 +63,72 @@ all tool results must precede steering, and follow-ups must wait for completion.
 Its PTY fixture checks Enter, Ctrl+G, Unicode/multiline paste, draft preservation,
 and cancellation using the actual editor and queue.
 
+## Building the curses dependency
+
+`vendor/zcurses` is a pinned Git submodule using
+`https://github.com/ZaguanLabs/zcurses`. Initialize it over public HTTPS:
+
+```sh
+git submodule update --init --recursive
+ZSH_BUILD_ROOT=/path/to/matching/configured/zsh make curses
+make test
+make compile
+```
+
+For an existing checkout, synchronize the local submodule URL after updating:
+
+```sh
+git submodule sync --recursive
+git submodule update --init --recursive
+```
+
+The dependency can now configure and build an extracted public Zsh release in
+isolation; its tested baseline is 5.9.2. See `vendor/zcurses/README.md` for that
+standalone workflow. Our `make curses` integration still requires a configured,
+built source tree matching the installed shell, because it enables the module
+for ordinary zcoder launches. `make curses` checks the
+source-tree shell's version, patch level, and platform against the running Zsh,
+builds in `vendor/zcurses/.build`, checks that the module loads in a fresh shell,
+and writes a local version/platform/host stamp. It never installs a system module.
+The source tree and its C toolchain/development dependencies are build-time
+requirements; ordinary `make compile` still only compiles Zsh libraries.
+
+Fresh application processes select the bundle only with a matching stamp and
+available binary. A load failure falls back to the normal module search path.
+An already loaded curses module is retained. `ZCODER_CURSES=stock` bypasses the
+bundle; `/terminal` reports selection and native versus fallback resize queries.
+The stamp guards against common mismatches, including copying the build to a
+different farm host; it is not proof of ABI compatibility for arbitrary builds
+with different configuration flags. Supply a source build matching the installed
+shell. The experimental C module has not been validated against Zsh 5.8.
+
+Rebuild after changing the pinned submodule revision or upgrading the local
+shell. When changing source trees or build configuration, run
+`make -C vendor/zcurses clean` first; this preserves downloaded sources while
+removing the working build and staged module. Farm headless
+processes need no module build; the NAS may receive the source via rsync and
+continues to run headlessly without a compiler or Make.
+
+`make test` automatically includes the production module loader in the resize
+PTY tests when a matching local build is present. It also runs stock-module
+resize tests, verifies native polling launches no `stty` subprocesses, and tests
+missing/mismatched builds and failed loads independently of curses. To test an
+external development build as well, set `ZCODER_TEST_CURSES_PATH` to its modules
+directory. The dependency's own broader module checks use a Python 3 PTY driver:
+
+```sh
+ZSH_BUILD_ROOT=/path/to/matching/configured/zsh make -C vendor/zcurses test
+```
+
+The pinned module adds `geometry` and the read-only `zcurses_features` array.
+zcoder checks the discovery parameter with `zmodload -F -e` on UI entry; an
+advertised geometry feature selects native polling even if its first query
+fails. A known feature set without geometry selects stty without probing the
+command. Missing/disabled discovery retains the legacy one-time probe, including
+compatibility with the original geometry-only fork. `/terminal` lists compiled
+features separately from negotiated terminal state. Cursor control, drawing
+batches, richer events, and color extensions remain upstream roadmap items.
+
 ## Performance measurements
 
 Run the opt-in native microbenchmarks with:

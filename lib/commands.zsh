@@ -208,11 +208,21 @@ ui_show_context() {
 typeset -ga UI_CONTEXT_LINES=()
 
 _ui_terminal_draw() {
-  local line='' paste_state=inactive
+  local line='' paste_state=inactive geometry_state=unprobed features_state=unknown
+  if zmodload -F -e zsh/curses +p:zcurses_features; then
+    features_state="${(j:, :)zcurses_features}"
+    [[ -n $features_state ]] || features_state=none
+  fi
+  case $UI_NATIVE_GEOMETRY in
+    0) geometry_state='stty fallback' ;;
+    1) geometry_state='native (no subprocess)' ;;
+  esac
   [[ -n "$TERMINAL_FD" ]] && paste_state=enabled
   terminal_poll
   terminal_inspected_state="$TERMINAL_SYNC_STATE"
   local -a lines=("Terminal: ${TERM:-unset}" "Size: ${SCREEN_W} columns × ${SCREEN_H} rows"
+    "Curses module: ${ZCODER_CURSES_BACKEND:-preloaded}" "Resize queries: ${geometry_state}"
+    "Compiled features: ${features_state}"
     "Synchronized output: ${TERMINAL_SYNC_STATE}" "Policy: ${TERMINAL_SYNC_POLICY}"
     "Bracketed paste: ${paste_state}" ""
     "ZCODER_SYNC_OUTPUT=auto queries terminal support once on UI entry."

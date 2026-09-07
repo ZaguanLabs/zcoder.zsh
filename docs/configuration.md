@@ -15,6 +15,7 @@ Run `./zcoder.zsh --help` for the complete CLI reference.
 | `ZCODER_PROFILE` | `coding` | `coding` or `sysadmin` prompt |
 | `ZCODER_COMMAND_POLICY` | `ask` | `ask`, `allow`, or `deny` |
 | `ZCODER_THINK` | `true` | Request model reasoning |
+| `ZCODER_CURSES` | `auto` | Load the matching local bundled module when built; `stock` skips the bundle |
 | `ZCODER_SYNC_OUTPUT` | `auto` | Query synchronized-output support; `false` disables it, `true` forces it |
 | `ZCODER_ANIMATE` | `true` | Animate active status at four frames per second; `false` keeps elapsed time without a spinner |
 | `ZCODER_STREAM` | `true` | Stream eligible local interactive responses; `false` retains buffered responses |

@@ -1,0 +1,3 @@
+[submodule "vendor/zcurses"]
+	path = vendor/zcurses
+	url = https://github.com/ZaguanLabs/zcurses

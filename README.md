@@ -45,6 +45,10 @@ Then ask for a concrete outcome:
 Find the cause of the failing tests, make the smallest safe fix, and verify it.
 ```
 
+The optional [enhanced curses module](docs/getting-started.md#enhanced-curses-module)
+is pinned as a Git submodule. Build it locally to enable terminal resize queries
+without spawning `stty`; ordinary installs retain the stock-module fallback.
+
 Prefer a non-interactive run? Use `--prompt`:
 
 ```sh

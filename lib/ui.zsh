@@ -5,6 +5,8 @@ typeset -gF UI_ACTIVITY_ESCAPE_AT=0.0
 typeset -gi SCREEN_H=24 SCREEN_W=80 TOP_H=3 SIDE_W=24 INPUT_H=3 FOOT_H=1
 typeset -gr INPUT_MAX_ROWS=4
 typeset -gi UI_RESIZE_PENDING=0
+# -1 probes older modules once, 0 uses stty, 1 uses native geometry.
+typeset -gi UI_NATIVE_GEOMETRY=-1
 typeset -gF UI_NEXT_RESIZE_CHECK=0.0
 typeset -grF UI_RESIZE_CHECK_INTERVAL=0.25
 typeset -g UI_STATUS="Ready"
@@ -227,8 +229,21 @@ ui_setup_windows() {
   zcurses addwin foot_win $FOOT_H $SCREEN_W $(( SCREEN_H - FOOT_H )) 0 2>/dev/null
 }
 
+ui_detect_geometry() {
+  emulate -L zsh
+  # An enabled discovery parameter distinguishes compiled support from a
+  # transient terminal-query failure. Older modules retain the one-time probe.
+  UI_NATIVE_GEOMETRY=-1
+  if zmodload -F -e zsh/curses +p:zcurses_features; then
+    UI_NATIVE_GEOMETRY=0
+    (( ${zcurses_features[(Ie)geometry]} )) && UI_NATIVE_GEOMETRY=1
+  fi
+  return 0
+}
+
 ui_init() {
   zcurses init || return 1
+  ui_detect_geometry
   UI_ACTIVE=1
   terminal_start
   ui_setup_windows
@@ -258,14 +273,25 @@ ui_poll_resize() {
   UI_RESIZE_PENDING=0
   UI_NEXT_RESIZE_CHECK=$(( now + UI_RESIZE_CHECK_INTERVAL ))
 
-  # zsh/curses keeps stdscr, LINES, COLUMNS, and zsh/terminfo at their old
-  # values until curses has already been resized. Querying the controlling
-  # terminal avoids both that stale state and unloading zsh/terminfo while
-  # curses is painting. `stty` is the small external capability here.
+  # Query the controlling terminal, not curses' cached window dimensions.
+  # Advertised native support survives even a failed first query; retry on the
+  # next poll. With older modules, a successful query selects the native path,
+  # while an unsuccessful first probe selects stty until the next ui_init.
   local size=""
   local -a dimensions=()
-  size="$(command stty size </dev/tty 2>/dev/null)" || return 0
-  dimensions=(${=size})
+  if (( UI_NATIVE_GEOMETRY != 0 )); then
+    if zcurses geometry dimensions 2>/dev/null; then
+      UI_NATIVE_GEOMETRY=1
+    elif (( UI_NATIVE_GEOMETRY == 1 )); then
+      return 0
+    else
+      UI_NATIVE_GEOMETRY=0
+    fi
+  fi
+  if (( UI_NATIVE_GEOMETRY == 0 )); then
+    size="$(command stty size </dev/tty 2>/dev/null)" || return 0
+    dimensions=(${=size})
+  fi
   (( ${#dimensions} == 2 )) || return 0
   [[ "${dimensions[1]}" == <1-> && "${dimensions[2]}" == <1-> ]] || return 0
   local -i h=${dimensions[1]} w=${dimensions[2]}

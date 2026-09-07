@@ -1,7 +1,11 @@
-.PHONY: check test benchmark model-eval compile clean
+.PHONY: check test benchmark model-eval compile clean curses
 
 check:
-	zsh -fc 'for f in zcoder.zsh chat.sh lib/*.zsh tests/*.zsh tests/fixtures/*.zsh; do zsh -n "$$f" || exit $$?; done'
+	zsh -fc 'for f in zcoder.zsh chat.sh lib/*.zsh scripts/*.zsh tests/*.zsh tests/fixtures/*.zsh; do zsh -n "$$f" || exit $$?; done'
+
+# Requires an initialized submodule and ZSH_BUILD_ROOT for this host's Zsh ABI.
+curses: check
+	zsh -df scripts/build-curses.zsh
 
 test: check
 	zsh tests/run.zsh

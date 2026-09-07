@@ -12,7 +12,15 @@ For normal interactive use:
 - a running Ollama server and a model with tool-calling support
 - `ripgrep` (`rg`) for file listing and search
 - `git` or `patch` for applying patches; install both for the broadest format support
-- `stty` for adaptive terminal resize detection
+- `stty` for adaptive terminal resize detection with the stock curses module
+
+When the loaded `zsh/curses` module supports `zcurses geometry`, resize polling
+uses its native terminal query. Otherwise it uses `stty`. Modules exposing the
+read-only `zcurses_features` array select the backend on UI entry, without a
+terminal query. Advertised geometry support survives transient query failures,
+including the first one: the layout stays intact until a successful poll.
+Older modules are probed on the first resize poll; a failed initial probe keeps
+the fallback for that session. No configuration is required.
 
 GNU `timeout` is optional. Without it, approved shell commands still work, but
 their configured time limits are not enforced. `make` and `mktemp` are needed
@@ -41,6 +49,31 @@ cd zcoder.zsh
 
 The model name is passed to Ollama as written. Your model must support
 structured tool calls for agent work.
+
+## Enhanced curses module
+
+The Git submodule at `vendor/zcurses` pins the experimental
+[ZaguanLabs module](https://github.com/ZaguanLabs/zcurses). Its native geometry
+query removes the `stty size` subprocess from each due resize poll (up to four
+per second). Enable it locally with:
+
+```sh
+git submodule update --init --recursive
+ZSH_BUILD_ROOT=/path/to/matching/configured/zsh make curses
+make test
+./zcoder.zsh --workspace /path/to/project
+```
+
+The current dependency builds against its recorded Zsh 5.9.2 source baseline;
+it needs a configured, built source tree matching the installed shell, Make,
+a C compiler, and that tree's development dependencies. See
+[development](development.md#building-the-curses-dependency) for details.
+Zsh 5.8 continues to use the stock module.
+
+Once built, ordinary launches automatically select the local module. `/terminal`
+shows the selected module and resize-query backend. Set `ZCODER_CURSES=stock`
+to bypass the bundled module for a run. Without a matching local build, zcoder
+uses the system module. Headless server and ACP modes do not load curses.
 
 ## One-shot mode
 

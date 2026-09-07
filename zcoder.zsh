@@ -8,7 +8,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.12.3"
+typeset -gr ZCODER_VERSION="0.12.4"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -163,8 +163,8 @@ if (( ACP_MODE )) && [[ "$REMOTE_MODE" == server ]]; then
 fi
 
 if [[ "$REMOTE_MODE" != server ]] && (( ! ACP_MODE )); then
-  zcoder_require input terminal process ui overlays commands stream
-  zmodload zsh/curses zsh/terminfo || {
+  zcoder_require curses input terminal process ui overlays commands stream
+  zcoder_curses_load && zmodload zsh/terminfo || {
     print -u2 -- "Error: required Zsh curses modules are unavailable."
     exit 1
   }
