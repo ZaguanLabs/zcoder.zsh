@@ -12,7 +12,8 @@ ui_modal_text() {
   zcurses move overlay_win "$row" "$col"
   zcurses attr overlay_win -bold -dim -reverse -underline default/default
   zcurses attr overlay_win $=attr
-  zcurses string overlay_win "${value[1,available]}"
+  zcoder_clip "$value" "$available"
+  zcurses string overlay_win "$REPLY"
 }
 
 ui_modal_run() {

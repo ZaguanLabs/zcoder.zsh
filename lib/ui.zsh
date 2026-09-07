@@ -283,10 +283,12 @@ _ui_paint_header() {
   [[ "${REMOTE_MODE:-local}" == client ]] && host="${REMOTE_SERVER_NAME:-remote}@${REMOTE_ENDPOINT}"
   local -i badge_limit=$(( SCREEN_W / 2 - 4 ))
   (( badge_limit < 1 )) && badge_limit=1
-  badge="${UI_STATUS_DISPLAY[1,badge_limit]}"
-  (( ${#UI_STATUS_DISPLAY} > badge_limit )) && badge="${badge[1,-2]}…"
+  zcoder_clip "$UI_STATUS_DISPLAY" "$badge_limit"; badge="$REPLY"
+  if (( ${(m)#UI_STATUS_DISPLAY} > badge_limit )); then
+    zcoder_clip "$badge" $(( badge_limit - 1 )); badge="${REPLY}…"
+  fi
   badge="[ ${badge} ]"
-  local -i badge_x=$(( SCREEN_W - ${#badge} - 2 ))
+  local -i badge_x=$(( SCREEN_W - ${(m)#badge} - 2 ))
   local -i identity_limit=$(( badge_x - 3 ))
   local -i section=1
   local -a identities=("⚡ ${ZCODER_NAME} v${ZCODER_VERSION} │ " "$ZCODER_MODEL" " @ ${host} │ ${workspace}")
@@ -298,9 +300,7 @@ _ui_paint_header() {
   for identity in "${identities[@]}"; do
     (( identity_limit > 0 )) || break
     zcoder_terminal_safe "$identity"; identity="${REPLY//$'\n'/ }"
-    identity="${identity[1,identity_limit]}"
-    # Count terminal columns, including the two-column lightning symbol.
-    while (( ${(m)#identity} > identity_limit )); do identity="${identity[1,-2]}"; done
+    zcoder_clip "$identity" "$identity_limit"; identity="$REPLY"
     zcurses attr top_win -bold -dim $=identity_attrs[section]
     zcurses string top_win "$identity"
     (( identity_limit -= ${(m)#identity}, section++ ))
@@ -355,7 +355,7 @@ _ui_paint_sidebar() {
   for (( i=session_start; i<=${#SESSION_IDS} && row<=session_rows; i++ )); do
     session_id="${SESSION_IDS[i]}"
     title="${SESSION_TITLES[i]:-Untitled}"
-    display="${title[1,$(( inner_w - 4 ))]}"
+    display="$title"
     zcoder_pad "$display" $(( inner_w - 4 )); display="$REPLY"
     zcurses move side_win $row 1
     if [[ "$session_id" == "$CURRENT_SESSION_ID" ]]; then
@@ -377,7 +377,7 @@ _ui_paint_sidebar() {
   row=$(( divider_row + 1 ))
   if (( row <= inner_h )); then zcurses move side_win $row 2; zcurses attr side_win bold white/black; zcurses string side_win "Project"; fi
   (( row++ ))
-  if (( row <= inner_h )); then zcurses move side_win $row 2; zcurses attr side_win green/black; zcurses string side_win "${root[1,$(( inner_w - 1 ))]}"; fi
+  if (( row <= inner_h )); then zcurses move side_win $row 2; zcurses attr side_win green/black; zcoder_clip "$root" $(( inner_w - 1 )); zcurses string side_win "$REPLY"; fi
   (( row++ ))
   if (( row <= inner_h )); then zcurses move side_win $row 2; zcurses attr side_win dim cyan/black; zcurses string side_win "${ZCODER_PROFILE} · Guides: ${#INSTRUCTION_SOURCES}"; fi
   (( row++ ))
@@ -679,36 +679,23 @@ _ui_add_syntax_line() {
   done
 }
 
-# Both hard wrappers chunk via a character array and index arithmetic;
-# repeatedly re-slicing the shrinking remainder is quadratic in Zsh.
+# Both preview renderers use the same cell boundaries as the editor.
 _ui_add_hard_wrapped() {
-  local content="$1" width="$2" prefix="${3:-  }" attr="${4:-white/black}"
-  local -a content_chars=()
-  local -i available=$(( width - ${#prefix} )) pos=1 total
+  local content="$1" prefix="${3:-  }" attr="${4:-white/black}" line=""
+  local -i available=$(( $2 - ${(m)#prefix} ))
   (( available < 1 )) && available=1
-  if [[ -z "$content" ]]; then _ui_add_line "$prefix" "$attr"; return 0; fi
-  content_chars=("${(@s::)content}")
-  total=${#content_chars}
-  while (( total - pos + 1 > available )); do
-    _ui_add_line "${prefix}${(j::)content_chars[pos,pos+available-1]}" "$attr"
-    (( pos += available ))
-  done
-  _ui_add_line "${prefix}${(j::)content_chars[pos,total]}" "$attr"
+  zcoder_hard_wrap "$content" "$available"
+  local -a lines=("${ZCODER_WRAPPED[@]}")
+  for line in "${lines[@]}"; do _ui_add_line "${prefix}${line}" "$attr"; done
 }
 
 _ui_add_syntax_wrapped() {
-  local content="$1" width="$2" prefix="${3:-  }" language="${4:-plain}"
-  local -a content_chars=()
-  local -i available=$(( width - ${#prefix} )) pos=1 total
+  local content="$1" prefix="${3:-  }" language="${4:-plain}" line=""
+  local -i available=$(( $2 - ${(m)#prefix} ))
   (( available < 1 )) && available=1
-  if [[ -z "$content" ]]; then _ui_add_line "$prefix" "white/black"; return 0; fi
-  content_chars=("${(@s::)content}")
-  total=${#content_chars}
-  while (( total - pos + 1 > available )); do
-    _ui_add_syntax_line "${(j::)content_chars[pos,pos+available-1]}" "$language" "$prefix"
-    (( pos += available ))
-  done
-  _ui_add_syntax_line "${(j::)content_chars[pos,total]}" "$language" "$prefix"
+  zcoder_hard_wrap "$content" "$available"
+  local -a lines=("${ZCODER_WRAPPED[@]}")
+  for line in "${lines[@]}"; do _ui_add_syntax_line "$line" "$language" "$prefix"; done
 }
 
 _ui_diff_attr() {
@@ -765,7 +752,7 @@ _ui_add_wrapped() {
       _ui_add_line "" default/default
       continue
     fi
-    zcoder_wrap "$line" $(( width - ${#prefix} ))
+    zcoder_wrap "$line" $(( width - ${(m)#prefix} ))
     for wrapped in "${ZCODER_WRAPPED[@]}"; do
       _ui_add_line "${prefix}${wrapped}" "$attr"
     done
@@ -944,13 +931,15 @@ _ui_paint_chat() {
     if (( segment_count > 0 )); then
       segment_start=${UI_LINE_SEGMENT_STARTS[idx]}
       remaining=$inner_w
-      for (( segment_index=segment_start; segment_index<segment_start+segment_count && remaining>0; segment_index++ )); do
-        segment="${UI_SEGMENT_TEXTS[segment_index][1,$remaining]}"
+      for (( segment_index=segment_start; segment_index<segment_start+segment_count && remaining>=0; segment_index++ )); do
+        zcoder_clip "${UI_SEGMENT_TEXTS[segment_index]}" "$remaining"
+        segment="$REPLY"
         attr="${UI_SEGMENT_ATTRS[segment_index]}"
         zcurses attr chat_win -bold -dim -reverse -underline default/default
         zcurses attr chat_win $=attr
         zcurses string chat_win "$segment"
-        (( remaining -= ${#segment} ))
+        (( remaining -= ${(m)#segment} ))
+        [[ "$segment" == "${UI_SEGMENT_TEXTS[segment_index]}" ]] || break
       done
       if (( remaining > 0 )); then
         zcurses attr chat_win -bold -dim -reverse -underline default/default
@@ -963,7 +952,7 @@ _ui_paint_chat() {
       if [[ "$UI_FOCUS" == chat ]] && (( UI_SELECTED_EVENT > 0 && idx == ${UI_MESSAGE_STARTS[UI_SELECTED_EVENT]:-0} )); then
         zcurses attr chat_win reverse bold
       fi
-      zcoder_pad "${UI_LINES[idx][1,$inner_w]}" "$inner_w"
+      zcoder_pad "${UI_LINES[idx]}" "$inner_w"
       zcurses string chat_win "$REPLY"
     fi
   done
@@ -991,7 +980,7 @@ _ui_paint_input() {
   fi
   zcurses move input_win 0 2
   zcurses attr input_win bold white/black
-  zcurses string input_win "${title[1,$(( SCREEN_W - 4 ))]}"
+  zcoder_clip "$title" $(( SCREEN_W - 4 )); zcurses string input_win "$REPLY"
   for (( row=1; row<=INPUT_VISIBLE_ROWS; row++ )); do
     visual_row=$(( INPUT_VIEW_TOP + row - 1 ))
     visible="${INPUT_VISUAL_LINES[visual_row]}"
@@ -1035,7 +1024,7 @@ _ui_paint_footer() {
   local text=" ^P Commands  Enter Send  S/M-Enter Newline  ^Q Quit  Tab Focus  ^Y Copy  Esc Stop  ^O Model  ^R Reason  PgUp/Dn Scroll"
   [[ "$UI_FOCUS" == chat ]] && text=" ^P Commands  ↑/↓ Select  Enter/Space Fold  ^R Reasoning  Home/End First/Last  PgUp/Dn Scroll  Tab Prompt  ^Y Copy"
   (( UI_ACTIVITY_DEPTH > 0 )) && text=" Esc Stop  Tab Prompt/Transcript  ↑/↓ Navigate  Enter Fold in Transcript  ^R Reasoning  PgUp/Dn Scroll"
-  text="${text[1,$SCREEN_W]}"
+  zcoder_clip "$text" "$SCREEN_W"; text="$REPLY"
   zcurses clear foot_win; zcurses attr foot_win reverse dim white/black
   zcoder_pad "$text" "$SCREEN_W"; zcurses move foot_win 0 0; zcurses string foot_win "$REPLY"
   (( defer_refresh )) || terminal_refresh foot_win

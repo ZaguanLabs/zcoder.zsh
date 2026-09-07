@@ -10,6 +10,9 @@ typeset -ga INPUT_VISUAL_LINES=() INPUT_VISUAL_STARTS=() INPUT_VISUAL_LENGTHS=()
 typeset -gi INPUT_CURSOR_ROW=1 INPUT_CURSOR_COL=0 INPUT_VIEW_TOP=1 INPUT_VISIBLE_ROWS=1
 typeset -gi INPUT_GOAL_COL=-1
 typeset -g INPUT_TERM_STATE="normal" INPUT_ESCAPE_BUF="" INPUT_PASTE_BUF=""
+typeset -ga INPUT_PASTE_CHUNKS=()
+typeset -g INPUT_LAYOUT_BUFFER=""
+typeset -gi INPUT_LAYOUT_WIDTH=-1 INPUT_LAYOUT_POS=-1
 typeset -g INPUT_EVENT_ACTION="" INPUT_EVENT_TEXT=""
 
 input_reset() {
@@ -22,6 +25,9 @@ input_reset() {
   INPUT_TERM_STATE="normal"
   INPUT_ESCAPE_BUF=""
   INPUT_PASTE_BUF=""
+  INPUT_PASTE_CHUNKS=()
+  INPUT_LAYOUT_WIDTH=-1
+  INPUT_LAYOUT_BUFFER=""
   INPUT_EVENT_ACTION=""
   INPUT_EVENT_TEXT=""
 }
@@ -70,12 +76,14 @@ input_end() { INPUT_POS=${#INPUT_BUF}; INPUT_GOAL_COL=-1; }
 input_clear() { INPUT_BUF=""; INPUT_POS=0; INPUT_GOAL_COL=-1; }
 
 input_kill_word() {
+  emulate -L zsh
+  setopt extendedglob
   local left right
   (( INPUT_POS > 0 )) || return 0
   left="${INPUT_BUF[1,INPUT_POS]}"
   right="${INPUT_BUF[INPUT_POS+1,-1]}"
-  left="${left%# }"
-  left="${left%#* }"
+  left="${left%%[[:space:]]#}"
+  left="${left%%[^[:space:]]#}"
   INPUT_BUF="${left}${right}"
   INPUT_POS=${#left}
   INPUT_GOAL_COL=-1
@@ -89,80 +97,46 @@ input_layout() {
   (( width < 1 )) && width=1
   (( max_rows < 1 )) && max_rows=1
 
-  INPUT_VISUAL_LINES=()
-  INPUT_VISUAL_STARTS=()
-  INPUT_VISUAL_LENGTHS=()
-  INPUT_CURSOR_ROW=1
-  INPUT_CURSOR_COL=0
-
-  # Lay out per logical line with arithmetic instead of walking the buffer one
-  # character at a time, which is quadratic per keystroke on pasted prompts.
-  # Quoted (@ps) splitting keeps the empty fields that represent blank lines.
-  local -a logical_lines=("${(@ps:\n:)INPUT_BUF}") line_chars=()
-  local line=""
-  local -i line_count=${#logical_lines} length=${#INPUT_BUF}
-  local -i row=0 offset=0 rows j i n k first_row segment_start segment_length
-
-  for (( j=1; j<=line_count; j++ )); do
-    line="${logical_lines[j]}"
-    n=${#line}
-    rows=1
-    (( n > width )) && rows=$(( (n + width - 1) / width ))
-    first_row=$(( row + 1 ))
-    if (( n <= width )); then
+  if (( width == INPUT_LAYOUT_WIDTH && INPUT_POS == INPUT_LAYOUT_POS )) &&
+     [[ "$INPUT_BUF" == "$INPUT_LAYOUT_BUFFER" ]]; then
+    _input_layout_viewport "$max_rows"
+    return 0
+  fi
+  INPUT_LAYOUT_BUFFER="$INPUT_BUF"; INPUT_LAYOUT_WIDTH=$width
+  INPUT_LAYOUT_POS=$INPUT_POS
+  INPUT_VISUAL_LINES=(); INPUT_VISUAL_STARTS=(); INPUT_VISUAL_LENGTHS=()
+  INPUT_CURSOR_ROW=1; INPUT_CURSOR_COL=0
+  local -a logical_lines=("${(@ps:\n:)INPUT_BUF}")
+  local line="" segment="" prefix=""
+  local -i length=${#INPUT_BUF} row=0 offset=0 i segment_length k
+  for line in "${logical_lines[@]}"; do
+    zcoder_hard_wrap "$line" "$width"
+    for (( i=1; i<=${#ZCODER_WRAPPED}; i++ )); do
+      segment="${ZCODER_WRAPPED[i]}"; segment_length=${ZCODER_WRAPPED_LENGTHS[i]}
       (( row++ ))
-      INPUT_VISUAL_LINES+=("$line")
-      INPUT_VISUAL_STARTS+=("$offset")
-      INPUT_VISUAL_LENGTHS+=("$n")
-    else
-      line_chars=("${(@s::)line}")
-      for (( i=1; i<=rows; i++ )); do
-        segment_start=$(( (i - 1) * width ))
-        segment_length=$(( n - segment_start ))
-        (( segment_length > width )) && segment_length=width
-        (( row++ ))
-        INPUT_VISUAL_LINES+=("${(j::)line_chars[segment_start+1,segment_start+segment_length]}")
-        INPUT_VISUAL_STARTS+=($(( offset + segment_start )))
-        INPUT_VISUAL_LENGTHS+=("$segment_length")
-      done
-    fi
-
-    if (( INPUT_POS >= offset && INPUT_POS <= offset + n )); then
-      k=$(( INPUT_POS - offset ))
-      if (( k == 0 )); then
-        # Only a row that begins a fresh logical line owns a cursor at its
-        # very start; the buffer start keeps the default position.
-        if (( j > 1 )); then
-          INPUT_CURSOR_ROW=$first_row
-          INPUT_CURSOR_COL=0
-        fi
-      elif (( k % width == 0 && k < n )); then
-        # A cursor on a wrapped-row boundary belongs at the start of the next
-        # visual row; before a newline it stays at the end of its own row.
-        INPUT_CURSOR_ROW=$(( first_row + k / width ))
-        INPUT_CURSOR_COL=0
-      else
-        i=$(( (k - 1) / width + 1 ))
-        INPUT_CURSOR_ROW=$(( first_row + i - 1 ))
-        INPUT_CURSOR_COL=$(( k - (i - 1) * width ))
+      INPUT_VISUAL_LINES+=("$segment"); INPUT_VISUAL_STARTS+=("$offset")
+      INPUT_VISUAL_LENGTHS+=("$segment_length")
+      if (( INPUT_POS >= offset && INPUT_POS <= offset + segment_length )); then
+        k=$(( INPUT_POS - offset ))
+        prefix="${segment[1,k]}"
+        INPUT_CURSOR_ROW=$row; INPUT_CURSOR_COL=${(m)#prefix}
       fi
-    fi
-    offset=$(( offset + n + 1 ))
+      (( offset += segment_length ))
+    done
+    (( offset++ )) # A logical newline occupies one original character.
   done
-
-  # A cursor immediately after a full final row belongs at the start of a new
-  # visual row; placing it on the border would make it disappear.
-  n=${#logical_lines[line_count]}
-  if (( length > 0 && INPUT_POS == length && n > 0 && n % width == 0 )); then
-    INPUT_VISUAL_LINES+=("")
-    INPUT_VISUAL_STARTS+=("$length")
-    INPUT_VISUAL_LENGTHS+=(0)
-    (( row++ ))
-    INPUT_CURSOR_ROW=$row
-    INPUT_CURSOR_COL=0
+  # Keep an end cursor off the border after a completely filled final row.
+  if (( length > 0 && INPUT_POS == length && INPUT_CURSOR_COL == width )); then
+    INPUT_VISUAL_LINES+=(""); INPUT_VISUAL_STARTS+=("$length"); INPUT_VISUAL_LENGTHS+=(0)
+    (( row++ )); INPUT_CURSOR_ROW=$row; INPUT_CURSOR_COL=0
   fi
 
-  local -i total=$row
+  _input_layout_viewport "$max_rows"
+}
+
+# A height-only change reuses wrapping and cursor geometry.
+_input_layout_viewport() {
+  local -i max_rows=$1 total=${#INPUT_VISUAL_LINES}
   INPUT_VISIBLE_ROWS=$total
   (( INPUT_VISIBLE_ROWS > max_rows )) && INPUT_VISIBLE_ROWS=$max_rows
   INPUT_VIEW_TOP=1
@@ -181,9 +155,9 @@ input_move_vertical() {
   local -i target=$(( INPUT_CURSOR_ROW + direction ))
   (( target >= 1 && target <= ${#INPUT_VISUAL_LINES} )) || return 1
   (( INPUT_GOAL_COL < 0 )) && INPUT_GOAL_COL=$INPUT_CURSOR_COL
-  local -i target_col=$INPUT_GOAL_COL target_length=${INPUT_VISUAL_LENGTHS[target]}
-  (( target_col > target_length )) && target_col=$target_length
-  INPUT_POS=$(( INPUT_VISUAL_STARTS[target] + target_col ))
+  local -i target_col=$INPUT_GOAL_COL
+  zcoder_clip "${INPUT_VISUAL_LINES[target]}" "$target_col"
+  INPUT_POS=$(( INPUT_VISUAL_STARTS[target] + ${#REPLY} ))
   return 0
 }
 
@@ -207,14 +181,18 @@ input_decode_terminal_event() {
 
   if [[ "$INPUT_TERM_STATE" == paste ]]; then
     INPUT_PASTE_BUF+="$ch"
-    if [[ "$INPUT_PASTE_BUF" == *$'\e[201~' ]]; then
-      INPUT_EVENT_TEXT="${INPUT_PASTE_BUF%$'\e[201~'}"
-      local newline=$'\n' carriage_return=$'\r' crlf=$'\r\n'
-      INPUT_EVENT_TEXT="${INPUT_EVENT_TEXT//$crlf/$newline}"
-      INPUT_EVENT_TEXT="${INPUT_EVENT_TEXT//$carriage_return/$newline}"
+    if [[ "${INPUT_PASTE_BUF[-6,-1]}" == $'\e[201~' ]]; then
+      INPUT_EVENT_TEXT="${(j::)INPUT_PASTE_CHUNKS}${INPUT_PASTE_BUF%$'\e[201~'}"
+      INPUT_PASTE_CHUNKS=()
+      INPUT_EVENT_TEXT="${(pj:\n:)${(@ps:\r\n:)INPUT_EVENT_TEXT}}"
+      INPUT_EVENT_TEXT="${(pj:\n:)${(@ps:\r:)INPUT_EVENT_TEXT}}"
       INPUT_PASTE_BUF=""
       INPUT_TERM_STATE="normal"
       INPUT_EVENT_ACTION="paste"
+    elif (( ${#INPUT_PASTE_BUF} >= 262 )); then
+      # Keep the delimiter tail together across chunk boundaries.
+      INPUT_PASTE_CHUNKS+=("${INPUT_PASTE_BUF[1,-7]}")
+      INPUT_PASTE_BUF="${INPUT_PASTE_BUF[-6,-1]}"
     fi
     return 0
   fi
@@ -226,6 +204,7 @@ input_decode_terminal_event() {
         INPUT_TERM_STATE="paste"
         INPUT_ESCAPE_BUF=""
         INPUT_PASTE_BUF=""
+        INPUT_PASTE_CHUNKS=()
         ;;
       $'\e[13;2u'|$'\e[13;2~'|$'\e[27;2;13~'|$'\e\n'|$'\e\r')
         INPUT_TERM_STATE="normal"

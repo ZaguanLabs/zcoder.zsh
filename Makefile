@@ -1,10 +1,13 @@
-.PHONY: check test model-eval compile clean
+.PHONY: check test benchmark model-eval compile clean
 
 check:
 	zsh -fc 'for f in zcoder.zsh chat.sh lib/*.zsh tests/*.zsh tests/fixtures/*.zsh; do zsh -n "$$f" || exit $$?; done'
 
 test: check
 	zsh tests/run.zsh
+
+benchmark: check
+	zsh tests/benchmark.zsh
 
 model-eval: check
 	zsh tests/model_eval.zsh
