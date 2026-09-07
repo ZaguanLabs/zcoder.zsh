@@ -31,9 +31,11 @@ zcoder.zsh. If you are new to the project, begin with
 | [Remote access system API specification](remote-access-system-specification.md) | Protocol-1 wire API, state machines, reimplementation requirements, security, and conformance tests |
 | [HTTPS and WSS libcurl bridge](libcurl-transport-bridge.md) | Proposed hosted-model transport boundary, helper process, loadable module, security, and test plan |
 | [External agent runtimes](external-agent-runtimes.md) | Codex, Claude, and Antigravity protocols, authentication, Zsh boundaries, and implementation direction |
-| [Development](development.md) | Test suite, model evaluation, compatibility expectations, and contribution checks |
+| [Development](development.md) | Test suite, repeatable benchmarks, model evaluation, compatibility expectations, and contribution checks |
 
 ## Releases
+
+- [v0.12.2 — Native Zsh performance and reliability](releases/v0.12.2.md)
 
 - [v0.12.1 — Steering, queued follow-ups, and a clearer conversation](releases/v0.12.1.md)
 - [v0.12.0 — Steering and queued follow-ups](releases/v0.12.0.md)

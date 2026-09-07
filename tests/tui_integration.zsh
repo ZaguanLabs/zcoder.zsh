@@ -59,8 +59,11 @@ assert_eq 1 "${mapfile[$integration_base.chat_count]:-}" "inspector, copy, and q
 typeset -a integration_sessions=("$integration_base.home"/sessions/*.session(N/))
 assert_eq 1 "${#integration_sessions}" "the recovered interaction remains in one saved session"
 if (( ${#integration_sessions} == 1 )); then
-  assert_eq 2 "${mapfile[$integration_sessions[1]/agent_message_count]:-}" "saved history contains only the user and completed assistant response"
-  assert_contains "${mapfile[$integration_sessions[1]/agent_messages/000002]:-}" 'Integration complete.' "session persistence retains the final streamed response"
+  state_snapshot_dir "$integration_sessions[1]"
+  integration_snapshot="$REPLY"
+  assert_eq 2 "${mapfile[$integration_snapshot/agent_message_count]:-}" "saved history contains only the user and completed assistant response"
+  state_record_paths "$integration_snapshot" agent_messages 2
+  assert_contains "${mapfile[$reply[2]]:-}" 'Integration complete.' "session persistence retains the final streamed response"
 fi
 typeset -a integration_scratch=("$integration_base.tmp"/*(ND))
 assert_eq 0 "${#integration_scratch}" "the real entrypoint removes all private worker storage on exit"

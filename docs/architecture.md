@@ -18,6 +18,7 @@ lib/
   delegate.zsh          external harness consultations and editing workers
   http.zsh              native TCP/HTTP client
   input.zsh             multiline editor, viewport, and history
+  input_queue.zsh       durable steering and queued follow-ups
   instructions.zsh      AGENTS.md discovery and prompt assembly
   json.zsh              native tokenizer, decoder, and encoder
   mcp.zsh               MCP registry, stdio brokers, and tools
@@ -29,10 +30,12 @@ lib/
   state.zsh             workspace/profile-scoped persistent sessions
   stream.zsh            incremental HTTP/NDJSON and local assistant previews
   tools.zsh             schemas, confinement, dispatch, and execution
+  terminal.zsh          terminal capabilities and protocol decoding
   transcript.zsh        shared session transcript recording
   ui.zsh                adaptive curses layout and transcript rendering
   util.zsh              wrapping, truncation, and display helpers
 tests/run.zsh           shell-level unit and integration tests
+tests/benchmark.zsh     opt-in native performance measurements
 ```
 
 ## Library loading
@@ -47,7 +50,9 @@ history. Remote handshakes load only `harnesses.zsh` for availability discovery;
 cross-library call into an optionally loaded library is guarded with
 `$+functions`. `make compile` optionally precompiles the libraries to `.zwc`
 wordcode, roughly halving launch time; a stale `.zwc` is ignored by zsh, so
-recompiling is never required for correctness.
+recompiling is never required for correctness. Compile with the destination
+host's installed Zsh. A successful build on a newer Zsh is not a substitute for
+running the suite under the minimum supported Zsh 5.8 runtime.
 
 ## Interactive overlays
 
@@ -64,6 +69,9 @@ slash-command dispatcher or preparing an argument-taking command in the editor.
 Search text is never evaluated. The context inspector snapshots the existing
 accounting once when opened; its draw callback only wraps that snapshot. The
 component estimates and textual context bill share the same accounting values.
+Unchanged serialized history records reuse cached byte and reasoning lengths;
+changed records invalidate their entries. The inspector uses the prepared tool
+catalog and does not start MCP discovery or a nested input loop.
 
 Modals collect an already-running local warm-up while retaining input ownership.
 Underlying status updates are deferred until the overlay closes. Model discovery
@@ -78,6 +86,11 @@ physical update; an unchanged frame issues no curses calls. The input window is
 refreshed last to restore its cursor without repainting unchanged text. Resize,
 terminal re-entry, and modal dismissal explicitly invalidate the windows.
 Ncurses continues to own terminal cell comparison and output optimization.
+Wrapping, clipping, padding, and cursor layout use terminal display-cell widths.
+Wide characters and combining marks are handled together; complex emoji shaping
+and widths still depend on the terminal. Paste input accumulates in bounded
+chunks, and layout scans character arrays with reusable cursor coordinates,
+avoiding repeated scans through an ever-growing scalar.
 
 Status presentation separates the current phase from one bounded, expiring
 notice. Errors outrank warnings, and generic status events preserve detailed
@@ -267,6 +280,11 @@ sessions, prompt content, streamed message updates, tool lifecycle events,
 permissions, and cancellation into the same state, agent, and tool functions
 used by the TUI. The broker owns stdio while each active prompt runs in a Zsh
 coprocess, keeping client responses and cancellation observable during a turn.
+Both channels retain partial byte frames and process bounded batches of complete
+lines. A readable descriptor does not imply a complete JSON line. ACP permission
+responses must match the currently outstanding request ID and session; an
+`allow-always` result can change session policy only when that exact request
+offered the option. Completion and cancellation clear the pending permission.
 
 In direct mode, ACP session setup chooses the confined local workspace and may
 add client-forwarded stdio MCP servers. In remote-client mode, the broker maps
@@ -283,6 +301,12 @@ turn supersedes an unfinished warm-up because generation and warm-up share one
 worker slot. Model and context discovery own separate workers. Warm-up output
 is validated and discarded;
 it never enters agent or session state.
+
+MCP broker responses likewise use bounded byte reads and keep the exchange
+deadline active across partial lines. Response matching reads only top-level
+JSON-RPC IDs and methods, so nested tool-result fields cannot redirect a reply.
+An uncertain failed exchange disconnects the broker, including in headless mode.
+These read-side changes do not make every pipe or network write asynchronous.
 
 ## Same-host agent relay
 
@@ -327,13 +351,13 @@ remain compatible and are treated as availability unknown.
 
 | Tool | Purpose | Implementation |
 | --- | --- | --- |
-| `list_files` | Discover a bounded workspace tree | `rg --files --no-require-git` plus Zsh formatting |
+| `list_files` | Discover a bounded workspace tree | `rg --no-config --no-follow --files --no-require-git` plus Zsh formatting |
 | `read_file` | Read a complete small text file | `zsh/mapfile` |
-| `read_file_range` | Read numbered inclusive lines | Native Zsh splitting and indexing |
+| `read_file_range` | Read numbered inclusive lines | Block reads, native line splitting, bounded head-and-tail output |
 | `write_file` | Create or deliberately replace a file | Confined `zsh/system` descriptor writes |
 | `replace_text` | Replace one unique exact text fragment | Native Zsh matching and confined writes |
 | `apply_patch` | Apply a unified or context diff | `git apply`, then `patch` fallback |
-| `search` | Search text with locations | `rg` |
+| `search` | Search text with locations | `rg --no-config --no-follow` |
 | `run_command` | Run builds, tests, and diagnostics | Approved `zsh -c` |
 | `list_agents` | Discover live same-user local peers | Private manifests plus protocol ping |
 | `send_agent_message` | Queue a task for one exact peer | Framed Unix-domain socket request |
@@ -345,7 +369,15 @@ remain compatible and are treated as availability unknown.
 `list_files` and `search` honor nested `.gitignore` files even outside a Git
 repository and skip common dependency and build directories. The prompt directs
 the model to search first, then read relevant ranges rather than whole large
-files.
+files. Ripgrep configuration is disabled explicitly: inherited `--follow` and
+`--pre` options cannot weaken workspace confinement or execute a preprocessor
+through a read tool. A root workspace of `/` uses the same descendant check.
+
+Ranged reads count preceding lines in 32 KiB blocks and stop reading once the
+requested final line is complete. A trailing newline terminates its preceding
+line rather than creating another line. Returned output retains bounded first
+and last sections; a single selected long line is still assembled before output
+truncation, so memory for that line follows its length.
 
 `replace_text` is the low-complexity path for a small literal edit. It fails
 closed when the old text is absent or occurs more than once, so the model must
@@ -361,6 +393,21 @@ contract; the system prompt points to that single model-visible definition
 instead of duplicating it. It includes a valid and invalid example, explains
 numeric hunk counts and line prefixes, and explicitly rejects Markdown fences,
 bare `@@`, placeholders, and `*** Begin Patch`-style harness envelopes.
+
+## JSON and buffered HTTP validation
+
+The shared JSON tokenizer accepts the JSON number grammar and only space, tab,
+CR, and LF as whitespace. It rejects trailing container commas and literal
+U+0000 through U+001F inside strings. Public object parsers require end of input;
+invalid suffixes cannot be silently ignored. Escaped unpaired UTF-16 surrogates
+retain the existing replacement-character behavior. DEL is legal literal JSON.
+Encoding uses native split/join transforms, including uncommon controls, rather
+than indexing every character in a growing Unicode scalar.
+
+The buffered HTTP decoder validates chunk sizes, data CRLF delimiters, and the
+terminal zero chunk. Missing completion fails the response even when earlier
+chunks were complete. This complements the incremental framing checks in
+`stream.zsh`.
 
 ## Multiple tool calls
 
@@ -417,7 +464,11 @@ separated from a tool-free final answer. Other model families and ordinary JSON
 answers keep the standard adaptive completion behavior. Explicit requests for
 a plan without execution or for a JSON-only response bypass LFM recovery.
 
-Set `ZCODER_REQUIRE_FINISH_TOOL=1` for strict structural completion.
+Set `ZCODER_REQUIRE_FINISH_TOOL=1` for strict structural completion. Setting
+`ZCODER_INCOMPLETE_RETRY_LIMIT=0` disables recovery attempts, not strict completion:
+a response without the required `finish` fails immediately. Active goals keep
+the same requirement and cannot bypass independent verification through a
+zero-retry setting.
 
 ## Persistent goal loop
 
@@ -452,6 +503,33 @@ token counts live with the saved session. Compaction cannot erase the objective
 because the active goal prompt injects it into every worker request. A session
 loaded after an interrupted worker or verifier is marked paused rather than
 silently pretending the loop is still running.
+
+## Session persistence
+
+Each session directory has an atomically replaced `current` file identifying
+one committed directory below `generations/`. A save writes its metadata and
+manifests with checked writes before publishing that pointer. The manifests
+reference immutable message, UI, user-ledger, and active-Skill records. Unchanged
+records can be reused from prior generations; readers resolve one committed
+snapshot instead of mixing independently rewritten files.
+
+Publication holds the session's exclusive writer lock. Readers hold a shared
+lease on the same lock throughout snapshot access, including history, summaries,
+and queued-input recovery. Generation collection runs under the writer lock
+after publication when more than 32 manifest generations exist. It retains the
+current and previous manifests plus every immutable record they reference.
+Older directories can remain when they contain referenced records; the policy
+bounds obsolete manifests rather than promising exactly two directories.
+
+Legacy sessions remain readable until their first generation save, which keeps
+the original files while migrating. A malformed `current` marker is an error,
+not a reason to silently load older legacy content. Atomic publication protects
+against interrupted processes, but there is no `fsync` power-loss guarantee.
+Older binaries cannot read the generation format. Back up session storage before
+upgrading; downgrading requires explicitly restoring compatible legacy data and
+loses work newer than that backup. Preserve a copy of newer storage before any
+restore. There is no automatic downgrade. See the
+[v0.12.2 upgrade precautions](releases/v0.12.2.md#session-storage-and-upgrade-precautions).
 
 ## Remote transport
 

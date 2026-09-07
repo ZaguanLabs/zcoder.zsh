@@ -15,19 +15,21 @@ make test
 `make test` first parses the entry points, libraries, tests, and fixtures with `zsh -n`,
 then runs the shell-level suite. The suite covers:
 
-- native JSON parsing and encoding
+- strict native JSON grammar, Unicode controls, and encoding
 - both supported MCP protocol generations
 - paginated MCP discovery and nested tool calls
 - reasoning and tool history
 - serialized per-call dispatch and transport recovery
 - context accounting and compaction
-- path and symlink confinement
+- path and symlink confinement, including inherited ripgrep configuration
 - file reads, writes, search, and patch fallback
 - loop detection and completion recovery
 - sessions, Skills, and project instructions
+- interrupted session publication, immutable record reuse, reader leases, and generation collection
 - Ollama, delegate, and remote cancellation
 - command approval, denial, and safety guards
 - authenticated remote events and approvals
+- partial ACP/MCP frames, top-level response IDs, and request-bound ACP permissions
 - same-host relay framing, discovery, delivery, and origin isolation
 - input handling and curses rendering
 - queued-input ordering, stable IDs, interrupted consumption recovery, and HTTP/ACP admission
@@ -41,7 +43,11 @@ make check
 Run `make compile` after changes and after a Git push. It also runs the syntax
 checks, then compiles the libraries with the installed Zsh. These commands do
 not substitute for executing the suite on Zsh 5.8 when checking that minimum
-version specifically.
+version specifically. Run the suite using an actual Zsh 5.8 runtime to establish
+that compatibility; source parsing and wordcode compilation on the development
+host establish only compatibility with that host's installed Zsh. Rebuild `.zwc`
+files with the destination host's Zsh instead of assuming generated wordcode is
+portable between versions.
 
 The TUI integration checks run real local and remote entrypoints in PTYs against
 native TCP fixtures. They cover startup cancellation, draft recovery, streaming,
@@ -56,6 +62,44 @@ latency benchmarks or measurements of live Ollama inference.
 all tool results must precede steering, and follow-ups must wait for completion.
 Its PTY fixture checks Enter, Ctrl+G, Unicode/multiline paste, draft preservation,
 and cancellation using the actual editor and queue.
+
+## Performance measurements
+
+Run the opt-in native microbenchmarks with:
+
+```sh
+make benchmark
+```
+
+The target runs syntax checks, then `tests/benchmark.zsh`. Each case uses three
+warmups and five measured samples by default and reports elapsed milliseconds
+as median/minimum/maximum, alongside Zsh, platform, and locale information.
+To change the sample counts:
+
+```sh
+ZCODER_BENCHMARK_WARMUPS=3 ZCODER_BENCHMARK_SAMPLES=7 make benchmark
+```
+
+At least one warmup and three samples are required. Cases cover paste decoding,
+Unicode JSON controls, fresh and cached input layout, cold and warm context
+accounting, and cached transcript redraw. The redraw case mocks curses; the
+benchmarks require no Ollama server or interactive terminal and measure neither
+network latency nor actual terminal painting. Timing thresholds are deliberately
+absent from `make test`.
+
+Compare the same fixture, locale, Zsh version, and sample settings on a quiet
+machine. The [v0.12.2 release notes](releases/v0.12.2.md) record targeted local
+before/after measurements, including ranged file reads; those targeted fixtures
+are separate from the reusable benchmark target. Functional assertions remain
+the gate for correctness. Broaden performance checks when a change affects a
+new path or a measurement exposes a regression.
+
+Session persistence tests distinguish interruption before publication from a
+committed save. They do not establish durability against power loss: generation
+publication uses atomic rename and checked writes without an `fsync` guarantee.
+See [session persistence](architecture.md#session-persistence) for reader and
+writer coordination and [upgrade precautions](releases/v0.12.2.md#session-storage-and-upgrade-precautions)
+before testing a downgrade against saved user sessions.
 
 ## Real-model evaluation
 

@@ -82,7 +82,7 @@ TEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zcoder-tests.XXXXXX")" || exit 1
 ZCODER_WORKSPACE="$TEST_TMP"
 ZCODER_MAX_TOOL_OUTPUT=32768
 
-print -r -- "1..1006"
+# The final plan is derived from the assertions actually executed.
 
 # Headless startup must retain transcripts and remote approvals without loading
 # terminal libraries, handlers, or the delegate execution runtime.
@@ -1048,6 +1048,8 @@ zf_mkdir -p "$ZCODER_SESSIONS_DIR/7777777777_888.session"
 saved_remote_cancel_session_id="$REMOTE_SESSION_ID"
 REMOTE_SESSION_ID="7777777777_888"
 mapfile[$ZCODER_SESSIONS_DIR/$REMOTE_SESSION_ID.session/goal_status]="active"
+mapfile[$ZCODER_SESSIONS_DIR/$REMOTE_SESSION_ID.session/workspace]="$ZCODER_WORKSPACE"
+mapfile[$ZCODER_SESSIONS_DIR/$REMOTE_SESSION_ID.session/profile]="$ZCODER_PROFILE"
 (while true; do zselect -t 10; done) &
 remote_cancel_pid=$!
 mapfile[$remote_runtime/active.pid]="$remote_cancel_pid"
@@ -1060,7 +1062,8 @@ assert_success "remote turn cancellation clears the active marker" "$remote_canc
 _remote_server_next_event 1
 assert_success "remote turn cancellation publishes a completion event" $?
 assert_contains "$REPLY" '"exit_code":130' "remote cancellation completion carries the stopped status"
-assert_eq "paused" "${mapfile[$ZCODER_SESSIONS_DIR/$REMOTE_SESSION_ID.session/goal_status]}" "remote cancellation persists an active goal as paused"
+state_snapshot_values "$ZCODER_SESSIONS_DIR/$REMOTE_SESSION_ID.session" goal_status
+assert_eq "paused" "$reply[1]" "remote cancellation persists an active goal as paused"
 REMOTE_SESSION_ID="$saved_remote_cancel_session_id"
 
 saved_remote_context_lookup="${functions[ollama_get_running_context]}"
@@ -2649,8 +2652,8 @@ AGENT_INCOMPLETE_RETRY_LIMIT=0
 MOCK_INCOMPLETE_TURNS=0
 agent_reset
 agent_user_turn "leave continuation disabled" >/dev/null 2>&1
-assert_success "zero disables automatic incomplete-response continuation" $?
-assert_eq "1" "$MOCK_INCOMPLETE_TURNS" "disabled continuation accepts the first no-tool response"
+assert_failure "zero retries cannot bypass required structural completion" $?
+assert_eq "1" "$MOCK_INCOMPLETE_TURNS" "disabled continuation rejects without another model request"
 AGENT_INCOMPLETE_RETRY_LIMIT=3
 AGENT_REQUIRE_FINISH_TOOL=0
 
@@ -3168,7 +3171,12 @@ source "${TEST_DIR}/tui_integration.zsh"
 source "${TEST_DIR}/tool_labels.zsh"
 source "${TEST_DIR}/context_accounting.zsh"
 source "${TEST_DIR}/input_queue.zsh"
+source "${TEST_DIR}/hardening_state.zsh"
+source "${TEST_DIR}/hardening_json_tools.zsh"
+source "${TEST_DIR}/hardening_protocol.zsh"
+source "${TEST_DIR}/hardening_input.zsh"
 
+print -r -- "1..${TESTS}"
 if (( FAILURES > 0 )); then
   print -u2 -r -- "${FAILURES} test(s) failed"
   exit 1
