@@ -2,6 +2,10 @@
 
 typeset -ga AGENT_MESSAGES=()
 typeset -ga AGENT_ACCOUNTING_MESSAGES=() AGENT_ACCOUNTING_BYTES=() AGENT_ACCOUNTING_REASONING_BYTES=()
+typeset -gi AGENT_ACCOUNTING_CACHE_BYTES=0
+# Exact record comparisons keep accounting correct after arbitrary edits. Bound
+# their retained copies: large responses and long histories remain uncached.
+typeset -gi AGENT_ACCOUNTING_MAX_RECORD_BYTES=4096 AGENT_ACCOUNTING_MAX_CACHE_BYTES=1048576 AGENT_ACCOUNTING_MAX_RECORDS=1024
 typeset -g ZCODER_STREAM="${ZCODER_STREAM:-true}"
 typeset -ga AGENT_CONTEXT_COMPONENT_LABELS=() AGENT_CONTEXT_COMPONENT_VALUES=()
 typeset -g AGENT_CONTEXT_TOOLS=''
@@ -359,8 +363,32 @@ agent_parse_finish() {
   return 0
 }
 
+agent_accounting_reset() {
+  AGENT_ACCOUNTING_MESSAGES=(); AGENT_ACCOUNTING_BYTES=(); AGENT_ACCOUNTING_REASONING_BYTES=()
+  AGENT_ACCOUNTING_CACHE_BYTES=0
+}
+
+_agent_accounting_cache_record() {
+  local -i index=$1 bytes=$3 reasoning_bytes=$4
+  (( ${#AGENT_ACCOUNTING_MESSAGES} )) || AGENT_ACCOUNTING_CACHE_BYTES=0
+  (( index <= AGENT_ACCOUNTING_MAX_RECORDS )) || return 0
+  if [[ -n "${AGENT_ACCOUNTING_MESSAGES[index]:-}" ]]; then
+    (( AGENT_ACCOUNTING_CACHE_BYTES -= AGENT_ACCOUNTING_BYTES[index] ))
+    AGENT_ACCOUNTING_MESSAGES[index]=''
+    AGENT_ACCOUNTING_BYTES[index]=0; AGENT_ACCOUNTING_REASONING_BYTES[index]=0
+  fi
+  (( bytes <= AGENT_ACCOUNTING_MAX_RECORD_BYTES &&
+      AGENT_ACCOUNTING_CACHE_BYTES + bytes <= AGENT_ACCOUNTING_MAX_CACHE_BYTES )) || return 0
+  AGENT_ACCOUNTING_MESSAGES[index]="$2"
+  AGENT_ACCOUNTING_BYTES[index]=$bytes
+  AGENT_ACCOUNTING_REASONING_BYTES[index]=$reasoning_bytes
+  (( AGENT_ACCOUNTING_CACHE_BYTES += bytes ))
+  return 0
+}
+
 agent_reset() {
   AGENT_MESSAGES=()
+  agent_accounting_reset
   AGENT_LAST_RESPONSE=""
   TOOL_PATCH_RETRY_REQUIRED=0
   (( $+functions[skills_reset_activations] )) && skills_reset_activations
@@ -497,14 +525,15 @@ agent_add_assistant_message() {
   fi
   [[ "$tool_calls" != "[]" ]] && message+=",\"tool_calls\":${tool_calls}"
   AGENT_MESSAGES+=("${message}}")
-  # Creation already owns the escaped reasoning; retain lengths without a
-  # second parse. Inspector caches compare complete records before reuse.
-  local -i index=${#AGENT_MESSAGES}
-  AGENT_ACCOUNTING_MESSAGES[index]="${AGENT_MESSAGES[index]}"
-  _http_byte_length "${AGENT_MESSAGES[index]}"; AGENT_ACCOUNTING_BYTES[index]=$REPLY
-  AGENT_ACCOUNTING_REASONING_BYTES[index]=0
-  if [[ -n "$thinking" ]]; then
-    _http_byte_length "$thinking_json"; AGENT_ACCOUNTING_REASONING_BYTES[index]=$REPLY
+  # Creation already owns escaped reasoning. Seed only bounded records;
+  # retaining a second copy of a large response would outweigh this shortcut.
+  local -i index=${#AGENT_MESSAGES} message_bytes reasoning_bytes=0
+  _http_byte_length "${AGENT_MESSAGES[index]}"; message_bytes=$REPLY
+  if (( message_bytes <= AGENT_ACCOUNTING_MAX_RECORD_BYTES && index <= AGENT_ACCOUNTING_MAX_RECORDS )); then
+    if [[ -n "$thinking" ]]; then
+      _http_byte_length "$thinking_json"; reasoning_bytes=$REPLY
+    fi
+    _agent_accounting_cache_record "$index" "${AGENT_MESSAGES[index]}" "$message_bytes" "$reasoning_bytes"
   fi
   agent_context_refresh_estimate
 }
@@ -651,7 +680,7 @@ agent_context_bill() {
   local JSON_RESPONSE_CONTENT='' JSON_RESPONSE_THINKING='' JSON_RESPONSE_ERROR='' JSON_RESPONSE_TOOL_CALLS=''
   local -a JSON_CHARS=() JSON_TOOL_NAMES=() JSON_TOOL_ARGS=()
   local -i JSON_POS=1 JSON_LEN=0 JSON_TOKEN_START=1 JSON_RESPONSE_DONE=-1 JSON_RESPONSE_PROMPT_TOKENS=0 JSON_RESPONSE_OUTPUT_TOKENS=0
-  local -i index=0 reasoning_bytes=0
+  local -i index=0 reasoning_bytes=0 message_bytes=0 removed=0
 
   if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
     agent_routing_system_prompt; base="$REPLY"
@@ -694,17 +723,19 @@ agent_context_bill() {
   agent_context_component_tokens "$tools"; tool_schema_tokens=$REPLY
   for message in "${AGENT_MESSAGES[@]}"; do
     (( index++ ))
-    if [[ "${AGENT_ACCOUNTING_MESSAGES[index]:-}" != "$message" ]]; then
-      AGENT_ACCOUNTING_MESSAGES[index]="$message"
-      _http_byte_length "$message"; AGENT_ACCOUNTING_BYTES[index]=$REPLY
-      AGENT_ACCOUNTING_REASONING_BYTES[index]=0
+    if [[ "${AGENT_ACCOUNTING_MESSAGES[index]:-}" == "$message" ]]; then
+      (( message_bytes = AGENT_ACCOUNTING_BYTES[index], reasoning_bytes = AGENT_ACCOUNTING_REASONING_BYTES[index] ))
+    else
+      _http_byte_length "$message"; message_bytes=$REPLY
+      reasoning_bytes=0
       if [[ "$message" == '{"role":"assistant",'* && "$message" == *',"thinking":'* ]] &&
           json_parse_ollama_response '{"message":'"$message"'}' && [[ -n "$JSON_RESPONSE_THINKING" ]]; then
         json_quote "$JSON_RESPONSE_THINKING"
-        _http_byte_length "$REPLY"; AGENT_ACCOUNTING_REASONING_BYTES[index]=$REPLY
+        _http_byte_length "$REPLY"; reasoning_bytes=$REPLY
       fi
+      _agent_accounting_cache_record "$index" "$message" "$message_bytes" "$reasoning_bytes"
     fi
-    agent_context_component_byte_tokens "${AGENT_ACCOUNTING_BYTES[index]}"
+    agent_context_component_byte_tokens "$message_bytes"
     message_tokens=$REPLY
     case "$message" in
       '{"role":"tool","tool_name":"read_skill_resource",'*) (( skill_resource_tokens += message_tokens )) ;;
@@ -712,7 +743,6 @@ agent_context_bill() {
       '{"role":"tool",'*) (( tool_result_tokens += REPLY )) ;;
       '{"role":"assistant",'*)
         # Split the existing estimate rather than counting thinking twice.
-        reasoning_bytes=${AGENT_ACCOUNTING_REASONING_BYTES[index]:-0}
         if (( reasoning_bytes > 0 )); then
           agent_context_component_byte_tokens "$reasoning_bytes"
           (( reasoning_tokens += REPLY, message_tokens -= REPLY ))
@@ -722,6 +752,9 @@ agent_context_bill() {
     esac
   done
   if (( ${#AGENT_ACCOUNTING_MESSAGES} > index )); then
+    for (( removed=index+1; removed<=${#AGENT_ACCOUNTING_MESSAGES}; removed++ )); do
+      (( AGENT_ACCOUNTING_CACHE_BYTES -= ${AGENT_ACCOUNTING_BYTES[removed]:-0} ))
+    done
     AGENT_ACCOUNTING_MESSAGES[index+1,-1]=()
     AGENT_ACCOUNTING_BYTES[index+1,-1]=()
     AGENT_ACCOUNTING_REASONING_BYTES[index+1,-1]=()

@@ -3175,6 +3175,7 @@ source "${TEST_DIR}/hardening_state.zsh"
 source "${TEST_DIR}/hardening_json_tools.zsh"
 source "${TEST_DIR}/hardening_protocol.zsh"
 source "${TEST_DIR}/hardening_input.zsh"
+source "${TEST_DIR}/memory_accounting.zsh"
 
 print -r -- "1..${TESTS}"
 if (( FAILURES > 0 )); then

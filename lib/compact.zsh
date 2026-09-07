@@ -445,6 +445,7 @@ agent_compaction_replace_history() {
 
   AGENT_COMPACTION_SUMMARY="$summary"
   AGENT_MESSAGES=("${recent_messages[@]}")
+  agent_accounting_reset
 }
 
 agent_compact_history() {
