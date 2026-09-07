@@ -151,11 +151,7 @@ input_queue_drain() {
         agent_emit user "$text"
       fi
       state_save_session || { INPUT_QUEUE_ERROR='could not persist consumed input'; return 1; }
-      # state_save_session predates checked writers. Verify this record and
-      # its visibility marker before acknowledging durable consumption.
-      printf -v seq '%06d' "$message_index"
-      if [[ "${mapfile[$queue_dir:h/agent_messages/$seq]:-}" != "${AGENT_MESSAGES[message_index]}" ||
-            "${mapfile[$queue_dir:h/agent_message_count]:-}" != ${#AGENT_MESSAGES} ]]; then
+      if ! state_saved_message_matches "$CURRENT_SESSION_ID" "$message_index" "${AGENT_MESSAGES[message_index]}" "${#AGENT_MESSAGES}"; then
         INPUT_QUEUE_ERROR='queued input was not saved; delivery remains pending'; return 1
       fi
       _input_queue_write "$queue_dir/consumed/$id" consumed || { INPUT_QUEUE_ERROR='could not save input receipt'; return 1; }

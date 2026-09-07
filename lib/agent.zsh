@@ -1,6 +1,7 @@
 # Ollama conversation state and iterative tool-call loop.
 
 typeset -ga AGENT_MESSAGES=()
+typeset -ga AGENT_ACCOUNTING_MESSAGES=() AGENT_ACCOUNTING_BYTES=() AGENT_ACCOUNTING_REASONING_BYTES=()
 typeset -g ZCODER_STREAM="${ZCODER_STREAM:-true}"
 typeset -ga AGENT_CONTEXT_COMPONENT_LABELS=() AGENT_CONTEXT_COMPONENT_VALUES=()
 typeset -g AGENT_CONTEXT_TOOLS=''
@@ -471,7 +472,8 @@ agent_add_context_message() {
 agent_history_payload_json() {
   local message=""
   local -a transport_messages=()
-  for message in "${AGENT_MESSAGES[@]}"; do
+  local -i start=${1:-1}
+  for message in "${(@)AGENT_MESSAGES[start,-1]}"; do
     # Queue receipts are local persistence metadata, not model API fields.
     if [[ "$message" == *',"input_id":"'*'"}' ]]; then
       message="${message%,\"input_id\":*}}"
@@ -495,6 +497,15 @@ agent_add_assistant_message() {
   fi
   [[ "$tool_calls" != "[]" ]] && message+=",\"tool_calls\":${tool_calls}"
   AGENT_MESSAGES+=("${message}}")
+  # Creation already owns the escaped reasoning; retain lengths without a
+  # second parse. Inspector caches compare complete records before reuse.
+  local -i index=${#AGENT_MESSAGES}
+  AGENT_ACCOUNTING_MESSAGES[index]="${AGENT_MESSAGES[index]}"
+  _http_byte_length "${AGENT_MESSAGES[index]}"; AGENT_ACCOUNTING_BYTES[index]=$REPLY
+  AGENT_ACCOUNTING_REASONING_BYTES[index]=0
+  if [[ -n "$thinking" ]]; then
+    _http_byte_length "$thinking_json"; AGENT_ACCOUNTING_REASONING_BYTES[index]=$REPLY
+  fi
   agent_context_refresh_estimate
 }
 
@@ -640,6 +651,7 @@ agent_context_bill() {
   local JSON_RESPONSE_CONTENT='' JSON_RESPONSE_THINKING='' JSON_RESPONSE_ERROR='' JSON_RESPONSE_TOOL_CALLS=''
   local -a JSON_CHARS=() JSON_TOOL_NAMES=() JSON_TOOL_ARGS=()
   local -i JSON_POS=1 JSON_LEN=0 JSON_TOKEN_START=1 JSON_RESPONSE_DONE=-1 JSON_RESPONSE_PROMPT_TOKENS=0 JSON_RESPONSE_OUTPUT_TOKENS=0
+  local -i index=0 reasoning_bytes=0
 
   if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
     agent_routing_system_prompt; base="$REPLY"
@@ -669,8 +681,9 @@ agent_context_bill() {
   if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
     agent_route_schema_json; tools="$REPLY"
   else
-    agent_tools_schema_json || return $?
-    tools="$REPLY"
+    # Inspection is observational: use the catalog from payload preparation,
+    # never start MCP discovery or another UI input loop here.
+    tools="${AGENT_CONTEXT_TOOLS:-[]}"
   fi
 
   agent_context_component_tokens "$base"; base_tokens=$REPLY
@@ -680,7 +693,18 @@ agent_context_bill() {
   agent_context_component_tokens "$compacted"; compacted_tokens=$REPLY
   agent_context_component_tokens "$tools"; tool_schema_tokens=$REPLY
   for message in "${AGENT_MESSAGES[@]}"; do
-    agent_context_component_tokens "$message"
+    (( index++ ))
+    if [[ "${AGENT_ACCOUNTING_MESSAGES[index]:-}" != "$message" ]]; then
+      AGENT_ACCOUNTING_MESSAGES[index]="$message"
+      _http_byte_length "$message"; AGENT_ACCOUNTING_BYTES[index]=$REPLY
+      AGENT_ACCOUNTING_REASONING_BYTES[index]=0
+      if [[ "$message" == '{"role":"assistant",'* && "$message" == *',"thinking":'* ]] &&
+          json_parse_ollama_response '{"message":'"$message"'}' && [[ -n "$JSON_RESPONSE_THINKING" ]]; then
+        json_quote "$JSON_RESPONSE_THINKING"
+        _http_byte_length "$REPLY"; AGENT_ACCOUNTING_REASONING_BYTES[index]=$REPLY
+      fi
+    fi
+    agent_context_component_byte_tokens "${AGENT_ACCOUNTING_BYTES[index]}"
     message_tokens=$REPLY
     case "$message" in
       '{"role":"tool","tool_name":"read_skill_resource",'*) (( skill_resource_tokens += message_tokens )) ;;
@@ -688,15 +712,20 @@ agent_context_bill() {
       '{"role":"tool",'*) (( tool_result_tokens += REPLY )) ;;
       '{"role":"assistant",'*)
         # Split the existing estimate rather than counting thinking twice.
-        if json_parse_ollama_response '{"message":'"$message"'}' && [[ -n "$JSON_RESPONSE_THINKING" ]]; then
-          json_quote "$JSON_RESPONSE_THINKING"
-          agent_context_component_tokens "$REPLY"
+        reasoning_bytes=${AGENT_ACCOUNTING_REASONING_BYTES[index]:-0}
+        if (( reasoning_bytes > 0 )); then
+          agent_context_component_byte_tokens "$reasoning_bytes"
           (( reasoning_tokens += REPLY, message_tokens -= REPLY ))
         fi
         (( assistant_tokens += message_tokens )) ;;
       *) (( user_tokens += REPLY )) ;;
     esac
   done
+  if (( ${#AGENT_ACCOUNTING_MESSAGES} > index )); then
+    AGENT_ACCOUNTING_MESSAGES[index+1,-1]=()
+    AGENT_ACCOUNTING_BYTES[index+1,-1]=()
+    AGENT_ACCOUNTING_REASONING_BYTES[index+1,-1]=()
+  fi
   AGENT_CONTEXT_COMPONENT_LABELS=("Base guidance" "Project instructions" "Skills" "MCP guidance" "Checkpoint" "Tool schemas" "User/context" "Assistant" "Tool results" "Reasoning" "Skill resources")
   AGENT_CONTEXT_COMPONENT_VALUES=("$base_tokens" "$instruction_tokens" "$skill_tokens" "$mcp_tokens" "$compacted_tokens" "$tool_schema_tokens" "$user_tokens" "$assistant_tokens" "$tool_result_tokens" "$reasoning_tokens" "$skill_resource_tokens")
   REPLY="Estimated context bill: base=${base_tokens}; project=${instruction_tokens}; skills=${skill_tokens}; mcp=${mcp_tokens}; checkpoint=${compacted_tokens}; tool schemas=${tool_schema_tokens}; user/context=${user_tokens}; assistant=${assistant_tokens}; tool results=${tool_result_tokens}; reasoning=${reasoning_tokens}; skill resources=${skill_resource_tokens}."
@@ -1426,7 +1455,7 @@ _agent_run_turn_body() {
     lfm_command_plan=0
     lfm_tool_refusal=0
     lfm_path_conclusion=0
-    if (( ${#call_names} == 0 && AGENT_INCOMPLETE_RETRY_LIMIT > 0 && ! lfm_plan_only )); then
+    if (( ${#call_names} == 0 && (AGENT_REQUIRE_FINISH_TOOL || (AGENT_INCOMPLETE_RETRY_LIMIT > 0 && ! lfm_plan_only)) )); then
       agent_content_is_lfm_intermediate_plan "$content" && lfm_command_plan=1
       agent_content_is_lfm_false_tool_refusal "$content" && lfm_tool_refusal=1
       agent_content_is_lfm_false_path_conclusion "$content" && lfm_path_conclusion=1

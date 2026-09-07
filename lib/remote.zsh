@@ -761,6 +761,7 @@ remote_client_submit_input() {
 
 _remote_server_input_request() {
   local fd="$1" action="$2" session='' turn='' id='' mode='' text='' session_dir='' field=''
+  local -a reply=()
   json_parse_flat_object "$REMOTE_REQUEST_BODY" || { _remote_http_error "$fd" 400 'invalid input request'; return; }
   for field in session_id turn_id message_id mode text; do
     if (( ${+JSON_OBJECT[$field]} )) && [[ "${JSON_OBJECT_TYPES[$field]}" != string ]]; then
@@ -774,7 +775,10 @@ _remote_server_input_request() {
   text="${JSON_OBJECT[text]:-}"
   session_dir="$ZCODER_SESSIONS_DIR/${session}.session"
   if ! _state_valid_id "$session" || [[ ! -d "$session_dir" ]] ||
-      ! _state_scope_matches "${mapfile[$session_dir/workspace]:-}" "${mapfile[$session_dir/profile]:-}"; then
+      ! state_snapshot_values "$session_dir" workspace profile; then
+    _remote_http_error "$fd" 404 'unknown session'; return
+  fi
+  if ! _state_scope_matches "${reply[1]}" "${reply[2]}"; then
     _remote_http_error "$fd" 404 'unknown session'; return
   fi
   if [[ "$session" != "$REMOTE_SESSION_ID" || ( ! -f "$REMOTE_RUNTIME_DIR/active.pid" && ! -f "$REMOTE_RUNTIME_DIR/pending_prompt" ) ]]; then
@@ -1001,6 +1005,7 @@ _remote_server_refresh_sessions() {
 _remote_server_session_summary() {
   local after="$1" id="" session_dir="" title_json="" id_json="" model_json="" current=0
   local -i index agent_count=0 ui_count=0 empty=0
+  local -a reply=()
   [[ "$after" == <0-> ]] || after=0
   _remote_server_refresh_sessions
   index=$(( after + 1 ))
@@ -1010,23 +1015,31 @@ _remote_server_session_summary() {
   fi
   id="${SESSION_IDS[index]}"
   session_dir="$ZCODER_SESSIONS_DIR/${id}.session"
+  state_snapshot_values "$session_dir" agent_message_count ui_event_count title model || return 2
   [[ "$id" == "$REMOTE_SESSION_ID" ]] && current=1
-  _state_nonnegative "${mapfile[$session_dir/agent_message_count]:-0}"; agent_count=$REPLY
-  _state_nonnegative "${mapfile[$session_dir/ui_event_count]:-0}"; ui_count=$REPLY
+  _state_nonnegative "${reply[1]:-0}"; agent_count=$REPLY
+  _state_nonnegative "${reply[2]:-0}"; ui_count=$REPLY
   (( agent_count == 0 && ui_count == 0 )) && empty=1
   json_quote "$id"; id_json="$REPLY"
-  json_quote "${SESSION_TITLES[index]:-Untitled}"; title_json="$REPLY"
-  json_quote "${SESSION_MODELS[index]:-unknown}"; model_json="$REPLY"
+  json_quote "${reply[3]:-Untitled}"; title_json="$REPLY"
+  json_quote "${reply[4]:-unknown}"; model_json="$REPLY"
   REPLY="{\"event\":\"session\",\"seq\":${index},\"id\":${id_json},\"title\":${title_json},\"model\":${model_json},\"current\":${current},\"empty\":${empty}}"
 }
 
 _remote_server_session_event() {
-  local id="$1" after="$2" session_dir="" ui_dir="" seq=""
-  local role_json="" content_json="" thinking_json="" time_json="" reasoning_open="0" metadata_json=""
-  local -i index count
+  local id="$1" after="$2"
   _state_valid_id "$id" || return 2
   [[ "$after" == <0-> ]] || return 2
-  session_dir="$ZCODER_SESSIONS_DIR/${id}.session"
+  state_with_snapshot "$ZCODER_SESSIONS_DIR/${id}.session" _remote_server_session_event_snapshot "$after"
+}
+
+# state_with_snapshot owns the read lease and dynamically scoped session_dir
+# through the final record read, including refs into earlier generations.
+_remote_server_session_event_snapshot() {
+  local after="$1" ui_dir="" seq=""
+  local role_json="" content_json="" thinking_json="" time_json="" reasoning_open="0" metadata_json=""
+  local -i index count
+  local -a reply=()
   [[ -d "$session_dir" ]] || return 2
   _state_scope_matches "${mapfile[$session_dir/workspace]}" "${mapfile[$session_dir/profile]}" || return 2
   _state_nonnegative "${mapfile[$session_dir/ui_event_count]:-0}"; count=$REPLY
@@ -1036,7 +1049,9 @@ _remote_server_session_event() {
     return 1
   fi
   printf -v seq '%06d' "$index"
-  ui_dir="$session_dir/ui_events"
+  state_record_paths "$session_dir" ui_events "$count" || return 2
+  ui_dir="${reply[index]:h}"
+  seq="${reply[index]:t}"
   [[ -f "$ui_dir/$seq.role" ]] || return 2
   json_quote "${mapfile[$ui_dir/$seq.role]:-system}"; role_json="$REPLY"
   json_quote "${mapfile[$ui_dir/$seq.content]}"; content_json="$REPLY"
@@ -1050,10 +1065,12 @@ _remote_server_session_event() {
 
 _remote_server_select_session() {
   local id="$1" session_dir=""
+  local -a reply=()
   _state_valid_id "$id" || return 1
   session_dir="$ZCODER_SESSIONS_DIR/${id}.session"
   [[ -d "$session_dir" ]] || return 1
-  _state_scope_matches "${mapfile[$session_dir/workspace]}" "${mapfile[$session_dir/profile]}" || return 1
+  state_snapshot_values "$session_dir" workspace profile || return 2
+  _state_scope_matches "${reply[1]}" "${reply[2]}" || return 1
   REMOTE_SESSION_ID="$id"
   mapfile[$REMOTE_RUNTIME_DIR/selected_session]="$id"
 }
@@ -1255,7 +1272,7 @@ _remote_server_progress_pending_turn() {
 }
 
 _remote_server_cancel_turn() {
-  local pid="${mapfile[$REMOTE_RUNTIME_DIR/active.pid]:-}" session_dir="" goal_status=""
+  local pid="${mapfile[$REMOTE_RUNTIME_DIR/active.pid]:-}"
   local CURRENT_SESSION_ID="$REMOTE_SESSION_ID" INPUT_QUEUE_TURN_ID="$REMOTE_TURN_ID"
   input_queue_close true || true
   if [[ -f "$REMOTE_RUNTIME_DIR/pending_prompt" ]]; then
@@ -1270,15 +1287,10 @@ _remote_server_cancel_turn() {
     wait "$pid" 2>/dev/null || true
   fi
   input_queue_close true || true
-  session_dir="$ZCODER_SESSIONS_DIR/${REMOTE_SESSION_ID}.session"
-  if _state_valid_id "$REMOTE_SESSION_ID" && [[ -d "$session_dir" ]]; then
-    goal_status="${mapfile[$session_dir/goal_status]:-none}"
-    if [[ "$goal_status" == active || "$goal_status" == verifying ]]; then
-      mapfile[$session_dir/goal_status]="paused"
-      mapfile[$session_dir/goal_block_reason]="remote goal execution stopped by user"
-      mapfile[$session_dir/goal_updated_at]="$EPOCHSECONDS"
-    fi
-  fi
+  # The stopped worker's latest generation is authoritative. Publish the goal
+  # update through a detached loader/save so listener state stays untouched.
+  state_pause_saved_goal "$REMOTE_SESSION_ID" 'remote goal execution stopped by user' ||
+    remote_server_emit_message error 'Remote work stopped, but the paused goal could not be saved.'
   zf_rm -f "$REMOTE_RUNTIME_DIR/active.pid" "$REMOTE_RUNTIME_DIR/pending_approval" 2>/dev/null
   if [[ ! -f "$REMOTE_RUNTIME_DIR/worker.done" ]]; then
     remote_server_emit_status "Stopped"

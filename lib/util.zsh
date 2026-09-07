@@ -1,6 +1,6 @@
 # Small native Zsh helpers shared by the TUI and tools.
 
-typeset -ga ZCODER_WRAPPED=()
+typeset -ga ZCODER_WRAPPED=() ZCODER_WRAPPED_LENGTHS=()
 typeset -g ZCODER_DEBUG_LOG="${ZCODER_DEBUG_LOG:-}"
 typeset -gi ZCODER_DEBUG_ACTIVE=0
 typeset -gi ZCODER_DEBUG_MAX_CHARS="${ZCODER_DEBUG_MAX_CHARS:-16000}"
@@ -115,7 +115,7 @@ zcoder_fd_safe() {
 zcoder_write_text_file() {
   emulate -L zsh
   local path="$1" content="${2:-}" options="create,excl,nofollow,cloexec" fd=""
-  local -i write_status=0
+  local -i write_status=0 close_status=0
   [[ -h "$path" && ! -e "$path" ]] && return 1
   [[ -e "$path" && ! -f "$path" ]] && return 1
   [[ -e "$path" ]] && options="truncate,nofollow,cloexec"
@@ -123,7 +123,8 @@ zcoder_write_text_file() {
   {
     [[ -z "$content" ]] || zcoder_syswrite_all "$fd" "$content" || write_status=$?
   } always {
-    exec {fd}>&-
+    exec {fd}>&- || close_status=$?
+    (( write_status )) || write_status=$close_status
   }
   return "$write_status"
 }
@@ -171,42 +172,78 @@ zcoder_debug_close() {
   ZCODER_DEBUG_ACTIVE=0
 }
 
-# Wrap using a character array and index arithmetic: re-slicing the remaining
-# text each round makes wrapping quadratic in Zsh, which stalls redraws of
-# transcripts containing long lines.
-zcoder_wrap() {
-  local width="${2:-1}" probe="" prefix=""
-  local -a chars=()
-  local -i cut pos=1 total
-  ZCODER_WRAPPED=()
-  (( width < 1 )) && width=1
-  [[ -z "$1" ]] && { ZCODER_WRAPPED+=(""); return 0; }
-
-  chars=("${(@s::)1}")
-  total=${#chars}
-  while (( total - pos + 1 > width )); do
-    probe="${(j::)chars[pos,pos+width-1]}"
-    prefix="${probe%[[:space:]]*}"
-    if [[ "${chars[pos+width]}" == [[:space:]] ]]; then
-      ZCODER_WRAPPED+=("$probe")
-      (( pos += width + 1 ))
-      while (( pos <= total )) && [[ "${chars[pos]}" == [[:space:]] ]]; do (( pos++ )); done
-    elif [[ -n "$prefix" && "$prefix" != "$probe" ]]; then
-      cut=${#prefix}
-      ZCODER_WRAPPED+=("$prefix")
-      (( pos += cut ))
-      while (( pos <= total )) && [[ "${chars[pos]}" == [[:space:]] ]]; do (( pos++ )); done
-    else
-      ZCODER_WRAPPED+=("$probe")
-      (( pos += width ))
-    fi
+# Clip to terminal cells without separating a base from its combining marks.
+# REPLY retains original text; callers which require padding add it separately.
+zcoder_clip() {
+  local value="$1" ch=""
+  local -i width=${2:-0} cells=0 size=0
+  REPLY=""
+  (( width >= 0 )) || return 0
+  if [[ "$value" != *[^\ -~]* ]]; then REPLY="${value[1,width]}"; return 0; fi
+  if (( ${(m)#value} <= width )); then REPLY="$value"; return 0; fi
+  for ch in "${(@s::)value}"; do
+    size=${(m)#ch}
+    (( cells + size <= width )) || break
+    REPLY+="$ch"
+    (( cells += size ))
   done
-  ZCODER_WRAPPED+=("${(j::)chars[pos,total]}")
+  return 0
+}
+
+# Shared hard/word wrapper. Output lengths count original characters, while
+# limits count display cells. Printable ASCII keeps the arithmetic fast path.
+# A glyph wider than the entire window is represented by '?' to make progress
+# without overflowing curses; its original character still counts as consumed.
+zcoder_hard_wrap() { _zcoder_wrap_cells "$1" "${2:-1}" 0; }
+zcoder_wrap() { _zcoder_wrap_cells "$1" "${2:-1}" 1; }
+
+_zcoder_wrap_cells() {
+  local text="$1" probe="" prefix="" ch=""
+  local -i width=${2:-1} word_wrap=${3:-0} pos=1 total end cells size consumed ascii=0 cut
+  local -a chars=()
+  ZCODER_WRAPPED=(); ZCODER_WRAPPED_LENGTHS=()
+  (( width < 1 )) && width=1
+  [[ -z "$text" ]] && { ZCODER_WRAPPED=(""); ZCODER_WRAPPED_LENGTHS=(0); return 0; }
+  [[ "$text" != *[^\ -~]* ]] && ascii=1
+  chars=("${(@s::)text}"); total=${#chars}
+  while (( pos <= total )); do
+    if (( ascii )); then
+      end=$(( pos + width )); (( end > total + 1 )) && end=$(( total + 1 ))
+      probe="${(j::)chars[pos,end-1]}"
+    else
+      end=$pos; cells=0; probe=""
+      while (( end <= total )); do
+        ch="${chars[end]}"; size=${(m)#ch}
+        if (( cells + size > width )); then
+          if (( end == pos )); then probe='?'; (( end++ )); fi
+          break
+        fi
+        probe+="$ch"; (( cells += size, end++ ))
+      done
+    fi
+    if (( word_wrap && end <= total )); then
+      prefix="${probe%[[:space:]]*}"
+      if [[ "${chars[end]}" == [[:space:]] ]]; then
+        while (( end <= total )) && [[ "${chars[end]}" == [[:space:]] ]]; do (( end++ )); done
+      elif [[ -n "$prefix" && "$prefix" != "$probe" ]]; then
+        cut=${#prefix}; probe="$prefix"; end=$(( pos + cut ))
+        while (( end <= total )) && [[ "${chars[end]}" == [[:space:]] ]]; do (( end++ )); done
+      fi
+    fi
+    consumed=$(( end - pos ))
+    ZCODER_WRAPPED+=("$probe"); ZCODER_WRAPPED_LENGTHS+=("$consumed")
+    pos=$end
+  done
+  return 0
 }
 
 zcoder_pad() {
-  local value="$1" width="${2:-0}"
-  REPLY="${(r:$width:)value}"
+  local value="$1"
+  local -i width=${2:-0} padding=0
+  zcoder_clip "$value" "$width"
+  padding=$(( width - ${(m)#REPLY} ))
+  (( padding > 0 )) && REPLY+="${(pl:padding:: :)}"
+  return 0
 }
 
 zcoder_time() {

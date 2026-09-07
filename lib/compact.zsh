@@ -369,7 +369,8 @@ agent_build_compaction_payload() {
   json_quote "$ZCODER_MODEL"; model_json="$REPLY"
   messages+="{\"role\":\"system\",\"content\":${system_json}}"
   if (( start <= ${#AGENT_MESSAGES} )); then
-    history="${(j:,:)AGENT_MESSAGES[start,-1]}"
+    agent_history_payload_json "$start"
+    history="$REPLY"
     [[ -n "$history" ]] && messages+=",${history}"
   fi
   messages+=",{\"role\":\"user\",\"content\":${user_json}}]"
