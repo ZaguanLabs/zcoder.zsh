@@ -13,6 +13,8 @@ commands_init() {
   emulate -L zsh
   COMMAND_LABELS=(); COMMAND_TEXTS=(); COMMAND_ACTIONS=(); COMMAND_KEYWORDS=(); COMMAND_MATCHES=()
   _commands_add "Inspect context" /context run all 'tokens budget usage'
+  _commands_add "Inspect queued messages" /queue run all 'steer follow-up pending input'
+  _commands_add "Resume queued messages" '/queue resume' run all 'steer follow-up pending input'
   _commands_add "Inspect terminal" /terminal run all 'diagnostics capabilities synchronized output paste'
   _commands_add "Switch Ollama model" /model run local 'picker local'
   _commands_add "Change Ollama host" '/host ' draft local 'server connection'

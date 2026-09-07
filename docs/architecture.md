@@ -493,7 +493,14 @@ second local copy of remote state. A new client launch requests a fresh job,
 while reusing an already-empty selected job to avoid accumulating duplicate
 blank sessions.
 
-The server accepts one active turn at a time. See [Remote-agent server](remote.md)
+The server accepts one active turn at a time. The session owner can receive
+steering at response/tool-batch boundaries and run queued follow-ups before
+ending that run. `lib/input_queue.zsh` provides a shared private file queue for
+the TUI, HTTP broker, and ACP broker, protected by `zsystem flock`. Brokers only
+publish input; the owner records user messages and durable consumption receipts.
+See [queued-input storage and recovery](queued-input.md#implementation).
+
+See [Remote-agent server](remote.md)
 for operation and security constraints.
 
 [Documentation index](README.md) · [Development](development.md) · [Project README](../README.md)

@@ -174,6 +174,7 @@ remote_client_handshake() {
   command_policy="${JSON_OBJECT[command_policy]:-ask}"
   sessions="${JSON_OBJECT[sessions]:-false}"
   goals="${JSON_OBJECT[goals]:-false}"
+  REMOTE_INPUT_SUPPORTED="${JSON_OBJECT[input_queue]:-false}"
   [[ "$protocol" == 1 ]] || { REMOTE_ERROR="unsupported remote protocol: ${protocol:-missing}"; return 1; }
   REMOTE_SERVER_NAME="$server_name"
   ZCODER_WORKSPACE="$workspace"
@@ -545,6 +546,7 @@ remote_client_cancel_turn() {
 }
 
 remote_client_user_turn() {
+  local REMOTE_INPUT_TURN_ID=''
   local -i interactive=0
   REMOTE_REQUEST_CANCELLED=0
   remote_client_idle_cancel
@@ -596,6 +598,10 @@ _remote_client_user_turn() {
     return 1
   done
   REMOTE_CLIENT_EVENT_CURSOR=0
+  if [[ "$REMOTE_INPUT_SUPPORTED" == true ]]; then
+    json_parse_flat_object "$HTTP_BODY" || { REMOTE_ERROR='invalid turn receipt'; return 1; }
+    REMOTE_INPUT_TURN_ID="${JSON_OBJECT[turn_id]:-}"
+  fi
   while true; do
     # Drain input even when events arrive continuously. The idle/none branch
     # retains its short blocking poll; active traffic adds no input delay.
@@ -717,6 +723,71 @@ _remote_client_user_turn() {
         ;;
     esac
   done
+}
+
+remote_client_input_request() {
+  # This can run inside an event-poll UI wait. Preserve its transport/parser
+  # scratch state, and keep its asynchronous worker ownership separate.
+  local action="$1" turn="$2" id="$3" mode="$4" text="$5" payload='' endpoint="/v1/input/$1"
+  local HTTP_BODY='' HTTP_ERROR='' JSON_SOURCE='' JSON_TOKEN_TYPE='' JSON_TOKEN_VALUE='' JSON_ERROR=''
+  local -a JSON_CHARS=()
+  local -A JSON_OBJECT=() JSON_OBJECT_TYPES=()
+  local -i JSON_POS=1 JSON_LEN=0 JSON_TOKEN_START=1 REMOTE_REQUEST_CANCELLED=0
+  [[ "$REMOTE_INPUT_SUPPORTED" == true ]] || { REMOTE_ERROR='This server does not support queued input.'; return 1; }
+  json_quote "$CURRENT_SESSION_ID"; payload='{"session_id":'"$REPLY"
+  json_quote "$turn"; payload+=',"turn_id":'"$REPLY"
+  json_quote "$id"; payload+=',"message_id":'"$REPLY"
+  json_quote "$mode"; payload+=',"mode":'"$REPLY"
+  json_quote "$text"; payload+=',"text":'"$REPLY"'}'
+  [[ "$action" == submit ]] && endpoint=/v1/input
+  remote_client_request POST "$endpoint" "$payload" || return $?
+  json_parse_flat_object "$HTTP_BODY" || { REMOTE_ERROR='invalid input queue response'; return 1; }
+  if [[ "$action" == list ]]; then
+    [[ "${JSON_OBJECT_TYPES[turn_id]:-}" == string && "${JSON_OBJECT_TYPES[pending]:-}" == string ]] || {
+      REMOTE_ERROR='invalid input queue listing'; return 1
+    }
+  else
+    [[ "${JSON_OBJECT[message_id]:-}" == "$id" &&
+       ( "${JSON_OBJECT[state]:-}" == accepted || "${JSON_OBJECT[state]:-}" == consumed || "${JSON_OBJECT[state]:-}" == discarded ) ]] || {
+      REMOTE_ERROR='input queue receipt does not match the submitted message'; return 1
+    }
+  fi
+  REPLY="$HTTP_BODY"
+}
+
+remote_client_submit_input() {
+  remote_client_input_request submit "$REMOTE_INPUT_TURN_ID" "$1" "$2" "$3"
+}
+
+_remote_server_input_request() {
+  local fd="$1" action="$2" session='' turn='' id='' mode='' text='' session_dir='' field=''
+  json_parse_flat_object "$REMOTE_REQUEST_BODY" || { _remote_http_error "$fd" 400 'invalid input request'; return; }
+  for field in session_id turn_id message_id mode text; do
+    if (( ${+JSON_OBJECT[$field]} )) && [[ "${JSON_OBJECT_TYPES[$field]}" != string ]]; then
+      _remote_http_error "$fd" 400 "$field must be a string"; return
+    fi
+  done
+  session="${JSON_OBJECT[session_id]:-}"
+  turn="${JSON_OBJECT[turn_id]:-}"
+  id="${JSON_OBJECT[message_id]:-}"
+  mode="${JSON_OBJECT[mode]:-steer}"
+  text="${JSON_OBJECT[text]:-}"
+  session_dir="$ZCODER_SESSIONS_DIR/${session}.session"
+  if ! _state_valid_id "$session" || [[ ! -d "$session_dir" ]] ||
+      ! _state_scope_matches "${mapfile[$session_dir/workspace]:-}" "${mapfile[$session_dir/profile]:-}"; then
+    _remote_http_error "$fd" 404 'unknown session'; return
+  fi
+  if [[ "$session" != "$REMOTE_SESSION_ID" || ( ! -f "$REMOTE_RUNTIME_DIR/active.pid" && ! -f "$REMOTE_RUNTIME_DIR/pending_prompt" ) ]]; then
+    # A server restart must not reopen admission for an abandoned worker.
+    # Existing IDs can still retrieve their original receipt below.
+    local CURRENT_SESSION_ID="$session" INPUT_QUEUE_TURN_ID="${mapfile[$session_dir/input_queue/active]:-}"
+    input_queue_close true || true
+  fi
+  if input_queue_request "$action" "$session" "$turn" "$id" "$mode" "$text"; then
+    _remote_http_send "$fd" 200 "$REPLY"
+  else
+    _remote_http_error "$fd" 409 "${INPUT_QUEUE_ERROR:-input queue operation failed}"
+  fi
 }
 
 _remote_safe_name() {
@@ -1088,10 +1159,13 @@ _remote_http_read_request() {
 
 _remote_server_reap_worker() {
   local pid="${mapfile[$REMOTE_RUNTIME_DIR/active.pid]:-}"
+  local CURRENT_SESSION_ID="$REMOTE_SESSION_ID" INPUT_QUEUE_TURN_ID="$REMOTE_TURN_ID"
   if [[ -f "$REMOTE_RUNTIME_DIR/worker.done" && "$pid" == <1-> ]]; then
     wait "$pid" 2>/dev/null || true
+    input_queue_close true || true
     zf_rm -f "$REMOTE_RUNTIME_DIR/active.pid" "$REMOTE_RUNTIME_DIR/worker.done" 2>/dev/null
   elif [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+    input_queue_close true || true
     zf_rm -f "$REMOTE_RUNTIME_DIR/active.pid" 2>/dev/null
   fi
 }
@@ -1119,7 +1193,9 @@ _remote_server_turn_worker() {
   if [[ "$ZCODER_PROFILE" == coding && "$saved_policy" == allow ]]; then
     ZCODER_COMMAND_POLICY="allow"
   fi
-  if [[ "$prompt" == /goal || "$prompt" == /goal\ * ]]; then
+  if [[ "$prompt" == '/queue resume' ]]; then
+    input_queue_command resume || exit_code=$?
+  elif [[ "$prompt" == /goal || "$prompt" == /goal\ * ]]; then
     ui_append_message user "$prompt"
     goal_handle_command "$prompt" || exit_code=$?
   else
@@ -1136,8 +1212,9 @@ _remote_server_turn_worker() {
 
 _remote_server_start_turn() {
   local prompt="$1" connection_fd="${2:-}" structured_events="${3:-0}" pid=""
-  REMOTE_TURN_ID="${EPOCHSECONDS}_${RANDOM}"
+  REMOTE_TURN_ID="${4:-${EPOCHSECONDS}_${RANDOM}}"
   _remote_server_clear_turn_runtime
+  input_queue_open "$REMOTE_SESSION_ID" "$REMOTE_TURN_ID" || return 1
   (_remote_server_turn_worker "$prompt" "$REMOTE_SESSION_ID" "$connection_fd" "$structured_events") &
   pid=$!
   mapfile[$REMOTE_RUNTIME_DIR/active.pid]="$pid" || { kill -TERM "$pid" 2>/dev/null; return 1; }
@@ -1148,6 +1225,7 @@ _remote_server_queue_turn() {
   local prompt="$1" structured_events="${2:-0}"
   REMOTE_TURN_ID="${EPOCHSECONDS}_${RANDOM}"
   _remote_server_clear_turn_runtime
+  input_queue_open "$REMOTE_SESSION_ID" "$REMOTE_TURN_ID" || return 1
   mapfile[$REMOTE_RUNTIME_DIR/pending_prompt]="$prompt" || return 1
   mapfile[$REMOTE_RUNTIME_DIR/pending_structured_events]="$structured_events" || return 1
   REPLY="$REMOTE_TURN_ID"
@@ -1161,12 +1239,14 @@ _remote_server_progress_pending_turn() {
     prompt="${mapfile[$REMOTE_RUNTIME_DIR/pending_prompt]}"
     structured_events="${mapfile[$REMOTE_RUNTIME_DIR/pending_structured_events]:-0}"
     zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" "$REMOTE_RUNTIME_DIR/pending_structured_events" 2>/dev/null
-    _remote_server_start_turn "$prompt" "$connection_fd" "$structured_events" || {
+    _remote_server_start_turn "$prompt" "$connection_fd" "$structured_events" "$REMOTE_TURN_ID" || {
       remote_server_emit_message error "Could not start the prepared remote turn."
       _remote_server_publish_json '{"event":"complete","exit_code":1}'
       return 1
     }
   elif [[ "$REMOTE_MODEL_STATUS" == error ]]; then
+    local CURRENT_SESSION_ID="$REMOTE_SESSION_ID" INPUT_QUEUE_TURN_ID="$REMOTE_TURN_ID"
+    input_queue_close true || true
     zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" "$REMOTE_RUNTIME_DIR/pending_structured_events" 2>/dev/null
     remote_server_emit_message error "Remote model preparation failed: ${REMOTE_MODEL_ERROR:-unknown error}"
     _remote_server_publish_json '{"event":"complete","exit_code":1}'
@@ -1176,6 +1256,8 @@ _remote_server_progress_pending_turn() {
 
 _remote_server_cancel_turn() {
   local pid="${mapfile[$REMOTE_RUNTIME_DIR/active.pid]:-}" session_dir="" goal_status=""
+  local CURRENT_SESSION_ID="$REMOTE_SESSION_ID" INPUT_QUEUE_TURN_ID="$REMOTE_TURN_ID"
+  input_queue_close true || true
   if [[ -f "$REMOTE_RUNTIME_DIR/pending_prompt" ]]; then
     zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" "$REMOTE_RUNTIME_DIR/pending_structured_events" 2>/dev/null
     remote_server_emit_status "Stopped"
@@ -1187,6 +1269,7 @@ _remote_server_cancel_turn() {
     kill -TERM "$pid" 2>/dev/null
     wait "$pid" 2>/dev/null || true
   fi
+  input_queue_close true || true
   session_dir="$ZCODER_SESSIONS_DIR/${REMOTE_SESSION_ID}.session"
   if _state_valid_id "$REMOTE_SESSION_ID" && [[ -d "$session_dir" ]]; then
     goal_status="${mapfile[$session_dir/goal_status]:-none}"
@@ -1224,7 +1307,7 @@ _remote_server_hello_json() {
   json_quote "$REMOTE_MODEL_STATUS"; model_status_json="$REPLY"
   json_quote "$REMOTE_MODEL_ERROR"; model_error_json="$REPLY"
   json_quote "$harnesses"; harnesses_json="$REPLY"
-  REPLY="{\"protocol\":1,\"server_name\":${name_json},\"workspace\":${workspace_json},\"model\":${model_json},\"profile\":${profile_json},\"command_policy\":${policy_json},\"model_status\":${model_status_json},\"model_error\":${model_error_json},\"harnesses\":${harnesses_json},\"sessions\":true,\"goals\":true}"
+  REPLY="{\"protocol\":1,\"server_name\":${name_json},\"workspace\":${workspace_json},\"model\":${model_json},\"profile\":${profile_json},\"command_policy\":${policy_json},\"model_status\":${model_status_json},\"model_error\":${model_error_json},\"harnesses\":${harnesses_json},\"sessions\":true,\"goals\":true,\"input_queue\":true}"
 }
 
 _remote_server_handle_connection() {
@@ -1242,6 +1325,9 @@ _remote_server_handle_connection() {
   _remote_server_reap_worker
   target="$REMOTE_REQUEST_TARGET"
   case "$REMOTE_REQUEST_METHOD:$target" in
+    POST:/v1/input) _remote_server_input_request "$fd" submit ;;
+    POST:/v1/input/status|POST:/v1/input/list|POST:/v1/input/drop)
+      _remote_server_input_request "$fd" "${target:t}" ;;
     GET:/v1/hello)
       _remote_server_model_ensure 1 "$fd" || true
       _remote_server_hello_json

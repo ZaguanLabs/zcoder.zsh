@@ -6,6 +6,11 @@ workspace, conversation, project instructions, Skills, MCP processes, and tool
 execution. The client sends prompts, renders events, handles approvals, and can
 cancel the active turn.
 
+Servers from 0.12.0 also support [steering and queued follow-ups](queued-input.md)
+through optional protocol-1 input endpoints. Updated TUIs use Enter to steer and
+Ctrl+G to queue a follow-up. Older clients and servers retain their existing
+turn/event behavior.
+
 This is different from `--host`, which points a local zcoder process at a remote
 Ollama server while keeping tools and workspace access local.
 

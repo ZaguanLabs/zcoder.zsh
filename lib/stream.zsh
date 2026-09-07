@@ -6,6 +6,7 @@ typeset -g AGENT_STREAM_BUFFER="" AGENT_STREAM_CONTENT="" AGENT_STREAM_THINKING=
 typeset -g AGENT_STREAM_ERROR="" AGENT_STREAM_BASE=""
 typeset -gi AGENT_STREAM_DONE=0 AGENT_STREAM_EOF=0 AGENT_STREAM_RECORDS=0
 typeset -gi AGENT_STREAM_PROMPT_TOKENS=0 AGENT_STREAM_OUTPUT_TOKENS=0 AGENT_STREAM_PREVIEW=0
+typeset -gi AGENT_STREAM_CONTEXT_BASE=0 AGENT_STREAM_CONTEXT_BYTES=0
 
 http_stream_reset() {
   HTTP_STREAM_WIRE=""; HTTP_STREAM_STATE=headers; HTTP_STREAM_OUTPUT=""
@@ -149,6 +150,8 @@ agent_stream_reset() {
   AGENT_STREAM_DONE=0; AGENT_STREAM_EOF=0; AGENT_STREAM_RECORDS=0
   AGENT_STREAM_PROMPT_TOKENS=0; AGENT_STREAM_OUTPUT_TOKENS=0
   AGENT_STREAM_PREVIEW=0
+  AGENT_STREAM_CONTEXT_BASE=${AGENT_ESTIMATED_TOKENS:-0}
+  AGENT_STREAM_CONTEXT_BYTES=0
 }
 
 agent_stream_record() {
@@ -169,6 +172,13 @@ agent_stream_record() {
   AGENT_STREAM_THINKING+="$JSON_RESPONSE_THINKING"
   calls="${JSON_RESPONSE_TOOL_CALLS[2,-2]}"
   [[ -n "$calls" ]] && AGENT_STREAM_CALLS+="${AGENT_STREAM_CALLS:+,}${calls}"
+  if (( ${UI_ACTIVE:-0} && $+functions[agent_context_component_byte_tokens] )); then
+    # Count only new bytes; never serialize the growing conversation per token.
+    _http_byte_length "${JSON_RESPONSE_CONTENT}${JSON_RESPONSE_THINKING}${calls}"
+    (( AGENT_STREAM_CONTEXT_BYTES += REPLY ))
+    agent_context_component_byte_tokens "$AGENT_STREAM_CONTEXT_BYTES"
+    AGENT_ESTIMATED_TOKENS=$(( AGENT_STREAM_CONTEXT_BASE + REPLY ))
+  fi
   (( AGENT_STREAM_RECORDS++ ))
   if (( JSON_RESPONSE_DONE == 1 )); then
     AGENT_STREAM_DONE=1
@@ -255,6 +265,7 @@ agent_stream_commit() {
 
 agent_stream_interrupt() {
   (( AGENT_STREAM_PREVIEW > 0 && AGENT_STREAM_PREVIEW == UI_STREAM_INDEX )) || return 0
+  AGENT_ESTIMATED_TOKENS=$AGENT_STREAM_CONTEXT_BASE
   agent_stream_commit "${UI_CONTENTS[AGENT_STREAM_PREVIEW]}"$'\n\n'"[${1:-Interrupted response; partial text only.}]" "${UI_THINKINGS[AGENT_STREAM_PREVIEW]}"
   ui_draw_chat
 }
@@ -268,6 +279,7 @@ agent_stream_chat() {
   ui_wait_for_generation
   wait_status=$?
   if (( wait_status != 0 )) || [[ -n "$AGENT_STREAM_ERROR" ]]; then
+    AGENT_ESTIMATED_TOKENS=$AGENT_STREAM_CONTEXT_BASE
     saved_error="$AGENT_STREAM_ERROR"
     http_async_cancel "${saved_error:-Escape pressed}"
     (( wait_status == 130 )) && AGENT_CANCELLED=1
@@ -279,6 +291,7 @@ agent_stream_chat() {
   http_async_collect
   request_status=$?
   if (( request_status != 0 )); then
+    AGENT_ESTIMATED_TOKENS=$AGENT_STREAM_CONTEXT_BASE
     (( AGENT_STREAM_RECORDS > 0 )) && HTTP_ERROR="Interrupted Ollama stream: ${HTTP_ERROR}"
     agent_stream_interrupt
     return "$request_status"

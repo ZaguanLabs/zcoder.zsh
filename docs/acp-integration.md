@@ -105,6 +105,13 @@ zcoder returns these JSON-RPC errors:
 | session/load | client → agent | sessionId, absolute cwd | null |
 | session/prompt | client → agent | sessionId, prompt | stopReason object |
 | session/cancel | client → agent notification | sessionId | none |
+| _zcoder/input | client → agent, optional extension | sessionId; action-specific fields | queued-input receipt or listing |
+
+The optional method is advertised as
+`agentCapabilities._meta["zcoder/inputQueue"]`. See the
+[queued-input contract](queued-input.md#acp-extension) for exact parameters,
+receipt states, cancellation, and remote forwarding. It does not change the
+single active `session/prompt` rule.
 
 ### Session creation and loading
 

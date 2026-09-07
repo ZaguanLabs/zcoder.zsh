@@ -3,6 +3,7 @@
 typeset -ga AGENT_MESSAGES=()
 typeset -g ZCODER_STREAM="${ZCODER_STREAM:-true}"
 typeset -ga AGENT_CONTEXT_COMPONENT_LABELS=() AGENT_CONTEXT_COMPONENT_VALUES=()
+typeset -g AGENT_CONTEXT_TOOLS=''
 typeset -g AGENT_LAST_RESPONSE=""
 typeset -gi AGENT_CANCELLED=0
 typeset -g AGENT_SYSTEM_PROMPT="${AGENT_SYSTEM_PROMPT:-}"
@@ -277,25 +278,9 @@ agent_patch_failure_limit() {
 agent_format_tool_ui_result() {
   local tool_name="$1" args_json="$2" result="$3"
   local -i succeeded="${4:-0}"
-  local path="" workspace_root="" resolved_path="" start="" end="" content="" label=""
-  local mcp_server="" mcp_tool="" mcp_target="" exposed_mcp_name=""
+  local path="" start="" end="" content="" label=""
   if [[ "$tool_name" == mcp__* ]]; then
-    mcp_server="${MCP_TOOL_SERVER[$tool_name]:-}"
-    mcp_tool="${MCP_TOOL_ORIGINAL[$tool_name]:-}"
-    if [[ -n "$mcp_server" ]]; then
-      mcp_target="$mcp_server"
-      [[ -n "$mcp_tool" ]] && mcp_target+=".$mcp_tool"
-    else
-      exposed_mcp_name="${tool_name#mcp__}"
-      if [[ "$exposed_mcp_name" == *__* ]]; then
-        mcp_target="${exposed_mcp_name%%__*}.${exposed_mcp_name#*__}"
-      else
-        mcp_target="$exposed_mcp_name"
-      fi
-    fi
-    # MCP catalog data is supplied by an external process. Make control bytes
-    # visible before the label reaches curses or a plain terminal.
-    REPLY="Calling ${(V)mcp_target}"
+    transcript_tool_label "$tool_name"
     return 0
   fi
   if ! json_parse_flat_object "$args_json"; then
@@ -303,16 +288,7 @@ agent_format_tool_ui_result() {
     REPLY="$label"$'\n'"$result"
     return 0
   fi
-  path="${JSON_OBJECT[path]:-?}"
-  if [[ "$path" == /* ]]; then
-    workspace_root="${ZCODER_WORKSPACE:A}"
-    resolved_path="${path:A}"
-    if [[ "$resolved_path" == "$workspace_root" ]]; then
-      path="."
-    elif [[ "$resolved_path" == "$workspace_root"/* ]]; then
-      path="${resolved_path#$workspace_root/}"
-    fi
-  fi
+  zcoder_display_path "${JSON_OBJECT[path]:-?}"; path="$REPLY"
   path="${path//$'\n'/ }"
   (( ${#path} > 180 )) && path="${path[1,177]}..."
   case "$tool_name" in
@@ -474,6 +450,7 @@ agent_add_message() {
     AGENT_MESSAGES+=("{\"role\":${role_json},\"content\":${content_json}}")
   fi
   [[ "$role" == user ]] && AGENT_USER_MESSAGES+=("$content")
+  agent_context_refresh_estimate
 }
 
 # Ollama model templates commonly require the system message to be the first
@@ -484,6 +461,7 @@ agent_add_context_message() {
   local content="$1" content_json=""
   json_quote "$content"; content_json="$REPLY"
   AGENT_MESSAGES+=("{\"role\":\"user\",\"content\":${content_json}}")
+  agent_context_refresh_estimate
 }
 
 # Sessions written by older releases may contain mid-conversation system
@@ -494,6 +472,10 @@ agent_history_payload_json() {
   local message=""
   local -a transport_messages=()
   for message in "${AGENT_MESSAGES[@]}"; do
+    # Queue receipts are local persistence metadata, not model API fields.
+    if [[ "$message" == *',"input_id":"'*'"}' ]]; then
+      message="${message%,\"input_id\":*}}"
+    fi
     if [[ "$message" == '{"role":"system",'* ]]; then
       message='{"role":"user",'"${message#\{\"role\":\"system\",}"
     fi
@@ -513,6 +495,7 @@ agent_add_assistant_message() {
   fi
   [[ "$tool_calls" != "[]" ]] && message+=",\"tool_calls\":${tool_calls}"
   AGENT_MESSAGES+=("${message}}")
+  agent_context_refresh_estimate
 }
 
 agent_resolve_system_prompt() {
@@ -588,8 +571,13 @@ agent_build_payload() {
   [[ "${1:-false}" == true ]] && stream=true
   # MCP discovery must precede prompt assembly. Besides producing Ollama's
   # schemas, it gives small models an exact short-name -> function-name map.
-  agent_tools_schema_json || return $?
-  tools="$REPLY"
+  if (( $# >= 2 )); then
+    tools="$2"
+  else
+    agent_tools_schema_json || return $?
+    tools="$REPLY"
+    AGENT_CONTEXT_TOOLS="$tools"
+  fi
   agent_resolve_system_prompt
   prompt="$REPLY"
   json_quote "$ZCODER_MODEL"; model_json="$REPLY"
@@ -616,11 +604,23 @@ agent_build_payload() {
   REPLY="{\"model\":${model_json},\"messages\":${messages},\"tools\":${tools},\"stream\":${stream},\"think\":${think},\"options\":{${options}\"num_predict\":${ZCODER_MAX_OUTPUT_TOKENS}}}"
 }
 
+agent_context_refresh_estimate() {
+  # Message/skill changes must reach the status counter before the next
+  # request. Reuse the last tool catalog: accounting must never connect MCP
+  # servers or enter an input loop. The next real request refreshes schemas.
+  [[ -n "$AGENT_CONTEXT_TOOLS" ]] || return 0
+  local REPLY=''
+  agent_build_payload false "$AGENT_CONTEXT_TOOLS" || return $?
+  agent_estimate_payload_tokens "$REPLY"
+}
+
 agent_context_component_tokens() {
-  local value="$1"
-  local -i bytes estimate
-  _http_byte_length "$value"
-  bytes=$REPLY
+  _http_byte_length "$1"
+  agent_context_component_byte_tokens "$REPLY"
+}
+
+agent_context_component_byte_tokens() {
+  local -i bytes=$1 estimate
   if (( AGENT_LAST_PROMPT_TOKENS > 0 && AGENT_LAST_PAYLOAD_BYTES > 0 )); then
     estimate=$(( (bytes * AGENT_LAST_PROMPT_TOKENS * 110 + AGENT_LAST_PAYLOAD_BYTES * 100 - 1) / (AGENT_LAST_PAYLOAD_BYTES * 100) ))
   else
@@ -634,7 +634,12 @@ agent_context_component_tokens() {
 agent_context_bill() {
   local base="" instructions="" skills="" mcp="" compacted="" tools="" message=""
   local -i base_tokens=0 instruction_tokens=0 skill_tokens=0 mcp_tokens=0
-  local -i compacted_tokens=0 tool_schema_tokens=0 user_tokens=0 assistant_tokens=0 tool_result_tokens=0
+  local -i compacted_tokens=0 tool_schema_tokens=0 user_tokens=0 assistant_tokens=0 tool_result_tokens=0 reasoning_tokens=0 skill_resource_tokens=0 message_tokens=0
+  # Inspector parsing must not overwrite a response still owned by the turn.
+  local JSON_SOURCE='' JSON_TOKEN_TYPE='' JSON_TOKEN_VALUE='' JSON_ERROR=''
+  local JSON_RESPONSE_CONTENT='' JSON_RESPONSE_THINKING='' JSON_RESPONSE_ERROR='' JSON_RESPONSE_TOOL_CALLS=''
+  local -a JSON_CHARS=() JSON_TOOL_NAMES=() JSON_TOOL_ARGS=()
+  local -i JSON_POS=1 JSON_LEN=0 JSON_TOKEN_START=1 JSON_RESPONSE_DONE=-1 JSON_RESPONSE_PROMPT_TOKENS=0 JSON_RESPONSE_OUTPUT_TOKENS=0
 
   if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
     agent_routing_system_prompt; base="$REPLY"
@@ -676,15 +681,25 @@ agent_context_bill() {
   agent_context_component_tokens "$tools"; tool_schema_tokens=$REPLY
   for message in "${AGENT_MESSAGES[@]}"; do
     agent_context_component_tokens "$message"
+    message_tokens=$REPLY
     case "$message" in
+      '{"role":"tool","tool_name":"read_skill_resource",'*) (( skill_resource_tokens += message_tokens )) ;;
+      '{"role":"tool","tool_name":"activate_skill",'*) (( skill_tokens += message_tokens )) ;;
       '{"role":"tool",'*) (( tool_result_tokens += REPLY )) ;;
-      '{"role":"assistant",'*) (( assistant_tokens += REPLY )) ;;
+      '{"role":"assistant",'*)
+        # Split the existing estimate rather than counting thinking twice.
+        if json_parse_ollama_response '{"message":'"$message"'}' && [[ -n "$JSON_RESPONSE_THINKING" ]]; then
+          json_quote "$JSON_RESPONSE_THINKING"
+          agent_context_component_tokens "$REPLY"
+          (( reasoning_tokens += REPLY, message_tokens -= REPLY ))
+        fi
+        (( assistant_tokens += message_tokens )) ;;
       *) (( user_tokens += REPLY )) ;;
     esac
   done
-  AGENT_CONTEXT_COMPONENT_LABELS=("Base guidance" "Project instructions" "Skills" "MCP guidance" "Checkpoint" "Tool schemas" "User/context" "Assistant" "Tool results")
-  AGENT_CONTEXT_COMPONENT_VALUES=("$base_tokens" "$instruction_tokens" "$skill_tokens" "$mcp_tokens" "$compacted_tokens" "$tool_schema_tokens" "$user_tokens" "$assistant_tokens" "$tool_result_tokens")
-  REPLY="Estimated context bill: base=${base_tokens}; project=${instruction_tokens}; skills=${skill_tokens}; mcp=${mcp_tokens}; checkpoint=${compacted_tokens}; tool schemas=${tool_schema_tokens}; user/context=${user_tokens}; assistant=${assistant_tokens}; tool results=${tool_result_tokens}."
+  AGENT_CONTEXT_COMPONENT_LABELS=("Base guidance" "Project instructions" "Skills" "MCP guidance" "Checkpoint" "Tool schemas" "User/context" "Assistant" "Tool results" "Reasoning" "Skill resources")
+  AGENT_CONTEXT_COMPONENT_VALUES=("$base_tokens" "$instruction_tokens" "$skill_tokens" "$mcp_tokens" "$compacted_tokens" "$tool_schema_tokens" "$user_tokens" "$assistant_tokens" "$tool_result_tokens" "$reasoning_tokens" "$skill_resource_tokens")
+  REPLY="Estimated context bill: base=${base_tokens}; project=${instruction_tokens}; skills=${skill_tokens}; mcp=${mcp_tokens}; checkpoint=${compacted_tokens}; tool schemas=${tool_schema_tokens}; user/context=${user_tokens}; assistant=${assistant_tokens}; tool results=${tool_result_tokens}; reasoning=${reasoning_tokens}; skill resources=${skill_resource_tokens}."
 }
 
 # Build a disposable request whose prefix matches a normal agent request while
@@ -1162,6 +1177,37 @@ agent_relay_turn() {
 }
 
 _agent_run_turn() {
+  # Local sessions and both headless brokers use the same persisted inbox.
+  # Fixtures/one-shot callers without a saved session retain their old path.
+  if (( ! $+functions[input_queue_open] || ! ${STATE_ENABLED:-0} )) || [[ ! -d "$ZCODER_SESSIONS_DIR/${CURRENT_SESSION_ID}.session" ]]; then
+    _agent_run_turn_body "$@"
+    return $?
+  fi
+  local INPUT_QUEUE_TURN_ID="${REMOTE_TURN_ID:-${ACP_INPUT_TURN_ID:-${EPOCHSECONDS}_${sysparams[pid]}_$RANDOM}}"
+  local -i turn_result=0 close_result=0
+  local queue_mode=all
+  (( ${INPUT_QUEUE_RESUME:-0} )) && queue_mode=recovery
+  input_queue_open "$CURRENT_SESSION_ID" "$INPUT_QUEUE_TURN_ID" || return 1
+  {
+    [[ "${2:-}" == queue_resume ]] && { input_queue_drain "$queue_mode" || return 1; }
+    _agent_run_turn_body "$@"
+    turn_result=$?
+    while (( turn_result == 0 )); do
+      input_queue_close
+      close_result=$?
+      (( close_result == 0 )) && break
+      (( close_result == 1 )) || return 1
+      input_queue_drain "$queue_mode" || return 1
+      _agent_run_turn_body '' queue_resume
+      turn_result=$?
+    done
+    return "$turn_result"
+  } always {
+    input_queue_close true
+  }
+}
+
+_agent_run_turn_body() {
   local user_content="$1" payload="" response="" content="" thinking="" calls_json="[]"
   local turn_origin="${2:-user}" display_content="${3:-$1}"
   local display_role="$turn_origin"
@@ -1175,7 +1221,7 @@ _agent_run_turn() {
 
   [[ "$turn_origin" == goal || "$turn_origin" == goal_resume ]] && goal_turn=1
   (( goal_turn )) && AGENT_REQUIRE_FINISH_TOOL=1
-  [[ "$ZCODER_TOOL_EXPOSURE" == staged && "$turn_origin" == user && goal_turn -eq 0 ]] && AGENT_TOOL_PHASE="routing"
+  [[ "$ZCODER_TOOL_EXPOSURE" == staged && ( "$turn_origin" == user || "$turn_origin" == queue_resume ) && goal_turn -eq 0 ]] && AGENT_TOOL_PHASE="routing"
 
   (( AGENT_WARMUP_ACTIVE )) && agent_warmup_cancel "${turn_origin} prompt submitted"
   agent_patch_failure_limit
@@ -1189,7 +1235,9 @@ _agent_run_turn() {
     skills_activate_explicit_from_text "$user_content"
     zcoder_debug explicit_skills "active=${(j:,:)SKILL_ACTIVE_NAMES}"
   fi
-  if [[ "$turn_origin" == relay || "$turn_origin" == goal_resume ]]; then
+  if [[ "$turn_origin" == queue_resume ]]; then
+    : # The queue owner already recorded this user's exact input.
+  elif [[ "$turn_origin" == relay || "$turn_origin" == goal_resume ]]; then
     agent_add_context_message "$user_content"
   else
     agent_add_message user "$user_content"
@@ -1197,13 +1245,17 @@ _agent_run_turn() {
   zcoder_debug "${turn_origin}_turn_start" "content=${(qqq)user_content}"
   if (( $+functions[ui_append_message] && ${UI_ACTIVE:-0} )); then
     [[ "$turn_origin" == goal ]] && display_role="user"
-    [[ "$turn_origin" == goal_resume ]] || ui_append_message "$display_role" "$display_content"
+    [[ "$turn_origin" == goal_resume || "$turn_origin" == queue_resume ]] || ui_append_message "$display_role" "$display_content"
     [[ "$turn_origin" == user || "$turn_origin" == goal ]] && (( $+functions[state_note_user] )) && state_note_user "$user_content"
     (( $+functions[state_save_and_refresh] )) && state_save_and_refresh
     ui_refresh_all
   fi
 
   while true; do
+    if (( step > 0 && $+functions[input_queue_drain] )); then
+      input_queue_drain steer
+      [[ -z "$INPUT_QUEUE_ERROR" ]] || { agent_emit error "$INPUT_QUEUE_ERROR"; return 1; }
+    fi
     (( step++ ))
     zcoder_debug model_turn_start "step=$step retries=$incomplete_retries messages=${#AGENT_MESSAGES} estimated_tokens=${AGENT_ESTIMATED_TOKENS:-0}"
     agent_set_status "Thinking ${step}"
@@ -1349,6 +1401,17 @@ _agent_run_turn() {
 
     agent_add_assistant_message "$content" "$thinking" "$calls_json"
 
+    # Before accepting a final answer/finish, give accepted steering another
+    # model request. Close finish's tool record before appending a user item.
+    if (( ${#call_names} == 0 )) || { (( ${#call_names} == 1 )) && [[ "${call_names[1]}" == finish ]]; }; then
+      if (( $+functions[input_queue_has_steer] )) && input_queue_has_steer; then
+        [[ -n "$content" || -n "$thinking" ]] && agent_emit assistant "$content" "$thinking"
+        (( ${#call_names} )) && agent_add_message tool 'Completion deferred: new user input is pending.' finish
+        input_queue_drain steer || return 1
+        continue
+      fi
+    fi
+
     if (( goal_turn )) && goal_budget_exhausted && ! { (( ${#call_names} == 1 )) && [[ "${call_names[1]}" == finish ]]; }; then
       GOAL_STATUS="budget_limited"
       GOAL_BLOCK_REASON="goal token budget of ${GOAL_TOKEN_BUDGET} was reached"
@@ -1430,6 +1493,12 @@ _agent_run_turn() {
           agent_emit system "◇ Verifying candidate completion (${GOAL_ATTEMPTS})."
           goal_verify_candidate "$AGENT_FINISH_RESPONSE"
           request_status=$?
+          if (( request_status != 130 && $+functions[input_queue_has_steer] )) && input_queue_has_steer; then
+            agent_add_message tool 'Completion deferred: new user input arrived during verification.' finish
+            GOAL_STATUS=active
+            input_queue_drain steer || return 1
+            continue
+          fi
           if (( request_status == 0 )); then
             agent_add_message tool "finish accepted by independent goal verifier: ${GOAL_VERIFIER_REASON}" finish
             agent_add_message assistant "$AGENT_FINISH_RESPONSE"

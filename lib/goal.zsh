@@ -207,6 +207,7 @@ goal_verify_candidate() {
   local candidate="$1" payload="" response="" content="" thinking="" calls_json="[]" tool_name="" tool_args="" result="" notice=""
   local -a verifier_history=("${AGENT_MESSAGES[@]}") call_names=() call_args=()
   local -a AGENT_MESSAGES=("${verifier_history[@]}")
+  local AGENT_CONTEXT_TOOLS=''
   local AGENT_SYSTEM_PROMPT=""
   local -i GOAL_VERIFIER_ACTIVE=1 step=0 request_status=0
 

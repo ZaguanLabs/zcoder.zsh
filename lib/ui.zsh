@@ -285,17 +285,28 @@ _ui_paint_header() {
   badge="${UI_STATUS_DISPLAY[1,badge_limit]}"
   (( ${#UI_STATUS_DISPLAY} > badge_limit )) && badge="${badge[1,-2]}…"
   badge="[ ${badge} ]"
-  local -i badge_x=$(( SCREEN_W - ${#badge} - 2 )) identity_limit=$(( badge_x - 3 ))
+  local -i badge_x=$(( SCREEN_W - ${#badge} - 2 ))
+  local -i identity_limit=$(( badge_x - 3 ))
+  local -i section=1
+  local -a identities=("⚡ ${ZCODER_NAME} v${ZCODER_VERSION} │ " "$ZCODER_MODEL" " @ ${host} │ ${workspace}")
+  local -a identity_attrs=('bold cyan/black' 'bold yellow/black' 'dim white/black')
   zcurses clear top_win
-  zcurses attr top_win bold cyan/black
+  zcurses attr top_win -dim bold cyan/black
   zcurses border top_win
   zcurses move top_win 1 2
-  identity="${ZCODER_NAME} v${ZCODER_VERSION} │ ${ZCODER_MODEL} @ ${host} │ ${workspace}"
-  zcoder_terminal_safe "$identity"; identity="${REPLY//$'\n'/ }"
-  (( identity_limit > 0 )) && zcurses string top_win "${identity[1,identity_limit]}"
+  for identity in "${identities[@]}"; do
+    (( identity_limit > 0 )) || break
+    zcoder_terminal_safe "$identity"; identity="${REPLY//$'\n'/ }"
+    identity="${identity[1,identity_limit]}"
+    # Count terminal columns, including the two-column lightning symbol.
+    while (( ${(m)#identity} > identity_limit )); do identity="${identity[1,-2]}"; done
+    zcurses attr top_win -bold -dim $=identity_attrs[section]
+    zcurses string top_win "$identity"
+    (( identity_limit -= ${(m)#identity}, section++ ))
+  done
   if (( badge_x >= 2 )); then
     zcurses move top_win 1 $badge_x
-    zcurses attr top_win $=UI_STATUS_ATTR
+    zcurses attr top_win -bold -dim $=UI_STATUS_ATTR
     zcurses string top_win "$badge"
   fi
   (( defer_refresh )) || terminal_refresh top_win
@@ -924,7 +935,10 @@ _ui_paint_input() {
   local visible="" marker="" title=" Prompt (Enter sends · Shift-Enter newline) "
   ui_input_width
   input_layout "$REPLY" "$max_rows"
-  (( UI_ACTIVITY_DEPTH > 0 )) && title=" Draft (send after activity completes) "
+  if (( UI_ACTIVITY_DEPTH > 0 )); then
+    title=" Draft (send after activity finishes) "
+    [[ -n "${INPUT_QUEUE_TURN_ID:-}${REMOTE_INPUT_TURN_ID:-}" ]] && title=" Prompt (Enter: steer · Ctrl+G: follow-up) "
+  fi
   total=${#INPUT_VISUAL_LINES}
   zcurses clear input_win
   [[ "$UI_FOCUS" == input ]] && zcurses attr input_win bold green/black || zcurses attr input_win dim white/black
@@ -1047,6 +1061,11 @@ ui_activity_input() {
   if input_decode_terminal_event "$ch" "$key"; then
     if [[ "$INPUT_EVENT_ACTION" == newline ]]; then input_insert $'\n'; ui_input_changed
     elif [[ "$INPUT_EVENT_ACTION" == paste && -n "$INPUT_EVENT_TEXT" ]]; then input_insert "$INPUT_EVENT_TEXT"; ui_input_changed
+    fi
+  elif [[ "$UI_FOCUS" == input && -n "${INPUT_QUEUE_TURN_ID:-}${REMOTE_INPUT_TURN_ID:-}" &&
+          ( "$ch" == $'\r' || "$ch" == $'\n' || "$key" == ENTER || "$key" == PADENTER || "$ch" == $'\x07' ) ]] && (( $+functions[input_queue_ui_submit] )); then
+    if [[ "$ch" == $'\x07' ]]; then input_queue_ui_submit follow_up || return $?
+    else input_queue_ui_submit steer || return $?
     fi
   elif [[ "$ch" == $'\t' || "$key" == TAB ]]; then
     [[ "$UI_FOCUS" == input ]] && UI_FOCUS=chat || UI_FOCUS=input

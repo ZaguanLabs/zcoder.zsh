@@ -60,9 +60,10 @@ fixture_barrier() {
     else
       zcoder_syswrite_all "$peer" $'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n'
       if [[ "$phase" == first ]]; then
-        # Split the UTF-8 character across HTTP chunks and socket writes.
+        # Split both UTF-8 bytes and a JSON Unicode escape across HTTP chunks.
         fixture_chunk "$peer" $'{"message":{"content":"Hello \xe4'
-        fixture_chunk "$peer" $'\xb8\x96界","thinking":"Inspect first"},"done":false}\n'
+        fixture_chunk "$peer" $'\xb8\x96界 \\u00'
+        fixture_chunk "$peer" '26","thinking":"Inspect first"},"done":false}'$'\n'
         fixture_chunk "$peer" '{"message":{"tool_calls":[{"function":{"name":"run_command","arguments":{"command":'"${command_json}"'}}}]},"done":false}'$'\n'
         fixture_barrier "${fixture_base}.release" || exit 1
         fixture_chunk "$peer" '{"done":true,"prompt_eval_count":40,"eval_count":20}'$'\n'

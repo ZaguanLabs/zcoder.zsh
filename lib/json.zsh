@@ -184,13 +184,16 @@ _json_scan_string_slow() {
       t) value+=$'\t' ;;
       u)
         hex="${(j::)JSON_CHARS[JSON_POS,JSON_POS+3]}"
-        [[ "$hex" == [[:xdigit:]]## ]] || { JSON_ERROR="invalid JSON unicode escape"; return 1; }
+        # JSON requires exactly four ASCII hex digits. Streaming callers use
+        # emulate -L zsh, so validation must not depend on EXTENDED_GLOB (or a
+        # pattern cached by an earlier decode with different options).
+        [[ ${#hex} -eq 4 && "$hex" != *[^0-9a-fA-F]* ]] || { JSON_ERROR="invalid JSON unicode escape"; return 1; }
         (( JSON_POS += 4 ))
         cp=$(( 16#$hex ))
         if (( cp >= 0xD800 && cp <= 0xDBFF )) && \
            [[ "${(j::)JSON_CHARS[JSON_POS,JSON_POS+1]}" == $'\\u' ]]; then
           low_hex="${(j::)JSON_CHARS[JSON_POS+2,JSON_POS+5]}"
-          if [[ "$low_hex" == [[:xdigit:]]## ]]; then
+          if [[ ${#low_hex} -eq 4 && "$low_hex" != *[^0-9a-fA-F]* ]]; then
             low_cp=$(( 16#$low_hex ))
             if (( low_cp >= 0xDC00 && low_cp <= 0xDFFF )); then
               cp=$(( 0x10000 + ((cp - 0xD800) << 10) + low_cp - 0xDC00 ))

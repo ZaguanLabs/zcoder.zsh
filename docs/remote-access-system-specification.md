@@ -2,8 +2,8 @@
 
 - Status: implementation-derived specification
 - Protocol: zcoder remote protocol 1
-- Source baseline: zcoder.zsh 0.9.3
-- Last reviewed: 2026-08-31
+- Source baseline: zcoder.zsh 0.12.0
+- Last updated: 2026-09-07
 
 This document specifies the remote-agent system implemented by zcoder.zsh in
 enough detail to build a different client, a different server, a protocol
@@ -390,6 +390,10 @@ combination falls through to 404.
 | GET | `/v1/model` | Poll an already-running model warm-up | 200 |
 | POST | `/v1/model/ensure` | Recheck configured-model residency and start warm-up if needed | 200 |
 | POST | `/v1/turn` | Start one agent turn or queue it behind warm-up | 202 |
+| POST | `/v1/input` | Accept steering or a follow-up for a matching run | 200 |
+| POST | `/v1/input/status` | Reconcile a submitted message ID | 200 |
+| POST | `/v1/input/list` | Inspect pending input and its accepting run ID | 200 |
+| POST | `/v1/input/drop` | Discard an unconsumed message | 200 |
 | GET | `/v1/events?after=N` | Return the first current-turn event with sequence greater than `N` | 200 |
 | GET | `/v1/sessions?after=N` | Return session-list item `N + 1` | 200 |
 | GET | `/v1/session?id=ID&after=N` | Return transcript item `N + 1` for one session | 200 |
@@ -399,7 +403,14 @@ combination falls through to 404.
 | POST | `/v1/cancel` | Cancel a queued prompt or active worker | 200 |
 
 All routes share one named-server state. There is no client ID, connection
-session, cookie, or turn namespace in protocol 1.
+session, or cookie. Queue admission validates a run ID; events still share the
+named server's current run and cursor.
+
+The optional `input_queue` capability and input routes are specified in
+section 9.6 below. Their schemas, limits, receipt states, and closure rules
+are part of this protocol-1 contract. The
+[operator guide](queued-input.md) describes the corresponding TUI controls.
+The existing busy response for `POST /v1/turn` remains unchanged.
 
 ## 7. Handshake: `GET /v1/hello`
 
@@ -423,7 +434,8 @@ Example response:
   "model_status": "warming",
   "model_error": "",
   "harnesses": "claude,codex",
-  "sessions": true
+  "sessions": true,
+  "input_queue": true
 }
 ```
 
@@ -444,6 +456,7 @@ is non-normative.
 | `model_error` | string | Empty unless model preparation failed |
 | `harnesses` | string | Comma-separated installed server commands from `claude,codex,agy,opencode` |
 | `sessions` | boolean | `true` when session endpoints are supported |
+| `input_queue` | boolean | `true` when queued-input endpoints are supported; missing means unsupported |
 
 The client replaces its local workspace, model, profile, and command-policy
 display state with these values. Local CLI values do not override them.
@@ -459,6 +472,8 @@ uses these rules:
   unavailable;
 - `harnesses` is recognized only when its JSON type is string;
 - missing or non-true `sessions` disables remote session browsing and creation;
+- missing or non-true `input_queue` disables active-turn submissions; retain
+  the user's draft until a normal turn can start;
 - `protocol` is never optional.
 
 An alternative server intended for current clients should send every field in
@@ -597,10 +612,11 @@ the exact prompt in private runtime state and returns:
 {"turn_id":"1788012245_14723","model_status":"warming"}
 ```
 
-The current client does not use `turn_id` in later requests. It resets its
-event cursor to zero and polls the one global current-turn event stream.
-Alternative clients should retain `turn_id` for diagnostics but cannot pass it
-back to protocol-1 event, approval, or cancellation endpoints.
+Clients reset the event cursor to zero and poll the one global current-turn
+event stream. When `input_queue` is supported, retain the selected session ID
+and this `turn_id` to address subsequent `POST /v1/input` requests. The same
+ID survives the transition from warm-up to worker execution.
+Event, approval, and cancellation endpoints still do not accept a turn ID.
 
 ### 9.4 Turn initialization
 
@@ -632,13 +648,170 @@ A queued prompt advances only when event polling calls the server's pending
 turn progress function. Each `GET /v1/events` poll also polls the warm-up.
 
 - When warm-up becomes `ready`, the server removes `pending_prompt` and starts
-  exactly one turn worker with the stored text.
+  exactly one turn worker with the stored text and the original turn ID.
 - When warm-up becomes `error`, the server removes the pending prompt, emits a
   visible error event, and emits completion with exit code 1.
 - Cancellation removes the pending prompt and emits stopped/completion events.
 
 An alternative implementation may progress warm-up independently, but it must
 preserve exactly-once start behavior and the observable events.
+
+### 9.6 Steering and follow-ups: optional input queue
+
+Introduced in application version 0.12.0, this extension keeps remote protocol
+version 1. Enable it only when the handshake advertises `input_queue: true`.
+It does not permit concurrent `POST /v1/turn` requests. One server run may
+contain the initial task, steering, and subsequent queued tasks.
+
+All input endpoints require the usual bearer authentication and flat JSON
+bodies. IDs and text are strings. Session access is restricted to the named
+server's workspace/profile.
+
+#### Submit: `POST /v1/input`
+
+```json
+{
+  "session_id": "1788012200_12345",
+  "turn_id": "1788012245_14723",
+  "message_id": "web-message-1",
+  "mode": "steer",
+  "text": "Also inspect the retry path."
+}
+```
+
+| Field | Contract |
+| --- | --- |
+| `session_id` | Existing server-side session ID from the session API |
+| `turn_id` | Accepting run ID from the turn receipt or queue listing |
+| `message_id` | Client-generated ID, unique within the session: 1–64 characters from `A-Z a-z 0-9 _ -` |
+| `mode` | `steer` or `follow_up`; omitted or empty defaults to `steer` in this implementation |
+| `text` | 1–65,536 UTF-8 bytes; multiline text and trailing newlines are retained |
+
+A new submission must address the selected session's accepting run. Admission
+is available during warm-up and worker execution. A stale or closed run is
+rejected; the message is not silently retargeted to new work.
+
+Success is **HTTP 200**, including the first submission:
+
+```json
+{"message_id":"web-message-1","state":"accepted"}
+```
+
+`steer` joins history after a complete model response and every tool result
+from that response, before another model request. It does not interrupt token
+generation, preempt a running tool, or bypass approval. Pending steering can
+defer a candidate final answer. `follow_up` waits for task completion and then
+starts another task inside the same server run. Steering can therefore pass
+an earlier follow-up; FIFO order is preserved within each delivery mode.
+
+Limits are 100 unconsumed messages and 1,000 retained message records per
+session. Consuming or discarding frees a pending slot but does not free a
+retained-record slot. Start a new session at the retained-record limit.
+These limits are separate from the HTTP request-body limit in section 5.
+
+#### Receipts and safe retries: `POST /v1/input/status`
+
+Request:
+
+```json
+{"session_id":"1788012200_12345","message_id":"web-message-1"}
+```
+
+Response is HTTP 200 with the same receipt shape:
+
+```json
+{"message_id":"web-message-1","state":"consumed"}
+```
+
+| State | Meaning |
+| --- | --- |
+| `accepted` | Persisted but not yet acknowledged as added to saved conversation history |
+| `consumed` | Added to saved conversation history; this does not assert that the model has answered it |
+| `discarded` | Explicitly removed from pending work before consumption |
+
+The normal transitions are `accepted → consumed` or `accepted → discarded`.
+A crash between saving history and its receipt can leave a message showing
+`accepted` until explicit recovery recognizes its saved ID and repairs the
+receipt without appending the user message again.
+
+Repeat an uncertain submission with the **same session, message ID, turn ID,
+mode, and exact text**. An exact retry returns the current receipt, including
+after the run closes. Reusing an ID with different input returns 409.
+Do not allocate a new ID or replace the old turn ID merely because an HTTP
+response was lost. Status queries remain available after completion.
+
+#### Inspect: `POST /v1/input/list`
+
+Request:
+
+```json
+{"session_id":"1788012200_12345"}
+```
+
+Response:
+
+```json
+{"turn_id":"1788012245_14723","pending":"[web-message-1] steer: Also inspect the retry path.\n"}
+```
+
+`turn_id` is empty when the session has no accepting run. `pending` contains
+all unconsumed input for that session in arrival order, including input paused
+from older runs. An empty queue returns an empty string, not `null` or an array.
+
+**GUI limitation:** `pending` is display text, not structured queue data.
+Message text can itself contain newlines or look like a listing row. Do not
+parse it to reconstruct message objects, IDs, modes, or ownership. Maintain
+structured records for submissions made by your client and query their IDs
+through `/v1/input/status`. A reconnecting client without those records can
+display this listing and offer session-wide recovery, but this API does not
+provide a reliable structured inventory for per-message controls.
+
+#### Discard: `POST /v1/input/drop`
+
+Request:
+
+```json
+{"session_id":"1788012200_12345","message_id":"web-message-1"}
+```
+
+Success is HTTP 200 with `{"message_id":"web-message-1","state":"discarded"}`.
+Discard and consumption share a lock: only one can claim pending input.
+Unknown, already-consumed, or already-discarded IDs return 409. A retry of
+`drop` is therefore not itself idempotent; query status to reconcile an
+uncertain response. Discard does not undo history or tool effects.
+
+#### Cancellation, restart, and explicit recovery
+
+Cancellation closes admission and preserves unconsumed input in the saved
+session. Errors and worker/server restarts also leave it available. Pending
+records are not automatically attached to an unrelated new turn.
+
+To resume, wait until the server is idle, select the original session with
+`POST /v1/session/select`, then send:
+
+```json
+{"prompt":"/queue resume"}
+```
+
+through `POST /v1/turn`. Store its new run ID, reset the event cursor once,
+and use the ordinary event loop. This recovers pending records from earlier
+runs in arrival order. There is no separate resume endpoint. Consumption
+acknowledges saved history, not successful model generation; already-consumed
+messages do not become pending again after cancellation.
+
+#### Errors
+
+| Status | Input-endpoint meaning |
+| --- | --- |
+| 400 | Malformed flat JSON or a supplied field with a non-string type |
+| 401 | Authentication failure |
+| 404 | Missing, invalid, or inaccessible session; unsupported endpoint on an older server |
+| 409 | Invalid message ID, text length, or mode; stale/closed run; conflicting ID reuse; unknown receipt; unavailable queue; queue limit; discard lost to consumption |
+| 413 | Request exceeds the shared HTTP framing/body limits |
+
+Errors use `{"error":"…"}`. A 409 is not a universal retry signal: retain the
+draft, inspect the error, and reconcile a known message ID when appropriate.
+A dropped connection or timeout leaves submission outcome uncertain.
 
 ## 10. Turn events: `GET /v1/events?after=N`
 
@@ -678,7 +851,7 @@ Fields:
 | --- | --- | --- |
 | `seq` | number | Monotonically increasing current-turn event sequence |
 | `event` | string | `message` |
-| `role` | string | Normally `assistant`, `tool`, `system`, or `error` |
+| `role` | string | `user` for consumed queued input; also `assistant`, `tool`, `system`, or `error` |
 | `content` | string | Visible message text; may be empty when reasoning is present |
 | `thinking` | string | Model reasoning text, possibly empty |
 
@@ -686,6 +859,13 @@ The server worker appends visible messages to persistent session storage before
 or while publishing them to the transient stream. Reconnecting later restores
 the transcript through the session API, not by replaying every old turn's
 transient event files.
+
+Queued input uses this existing event shape with `role: "user"` and the exact
+submitted text in `content`. It does **not** include `message_id` or a receipt
+state. Treat it as a server-authored transcript entry, not a new submission to
+send back to the server. Use status queries to reconcile pending cards by ID;
+matching text is ambiguous when two submissions contain identical text.
+The event may arrive before its consumed receipt is published.
 
 ### 10.3 Status event
 
@@ -728,6 +908,11 @@ include:
 
 The current client refreshes its session list after completion when session
 support is enabled.
+
+With queued input, one completion closes the entire run after its follow-ups
+finish, or when it fails/is cancelled. Individual assistant answers do not
+close the event loop. Input submissions neither reset the cursor nor start a
+second event stream. Receipt changes have no new event type.
 
 ### 10.6 Event publication requirement
 
@@ -853,10 +1038,12 @@ If neither an active worker nor a queued prompt exists, the server returns 409:
 {"error":"no remote turn is running"}
 ```
 
-The current client deliberately ignores transport errors from its cancel
-request and changes its local status to stopped. A more robust client should
-report whether cancellation was acknowledged while avoiding a second unsafe
-action.
+The current client distinguishes acknowledged cancellation from an
+unconfirmed stop. A web client should also report that remote work may still be
+running when cancellation cannot be confirmed.
+
+Cancellation preserves unconsumed input-queue records. Use the input status
+and listing endpoints to reconcile them; see section 9.6 for explicit recovery.
 
 Cancellation is cooperative at the server-worker boundary but forceful from
 the agent's perspective. It cannot roll back workspace changes already made,
@@ -1025,6 +1212,7 @@ start
   ├─ GET /v1/hello
   ├─ require protocol == 1
   ├─ adopt server workspace/model/profile/policy
+  ├─ remember whether input_queue == true
   ├─ if sessions supported: enumerate, reuse blank or create new
   └─ display ready/warming/error state
 
@@ -1033,6 +1221,7 @@ submit prompt
   ├─ POST /v1/model/ensure
   ├─ while warming: GET /v1/model
   ├─ on ready: POST /v1/turn
+  ├─ retain session ID and returned turn_id
   ├─ reset event cursor to 0
   └─ loop GET /v1/events?after=cursor
        ├─ none: wait and repeat
@@ -1046,6 +1235,30 @@ For an interactive client, cancellation must remain responsive during model
 warm-up and event polling. For a one-shot client, events should be rendered to
 stdout/stderr with terminal control bytes made visible, and command approval
 should fail closed when no safe interactive input channel exists.
+
+### 14.1 Web GUI behavior during an active run
+
+1. Keep the composer available when queue support is advertised. Offer
+   explicit steering and follow-up actions; ordinary `/v1/turn` remains busy.
+2. Allocate and retain a unique message ID and the complete request before
+   posting `/v1/input`. Keep an uncertain submission separate from accepted
+   input. Clear the draft only after validating a matching success receipt.
+3. Continue the existing event loop and approval flow while input is pending.
+   Do not reset the cursor or infer completion from an assistant message.
+4. Show a pending card for an accepted receipt. Poll known message IDs to
+   distinguish consumption from discard. Render `role: "user"` events as
+   transcript entries; receipt state controls pending UI, not transcript text
+   matching.
+5. On reconnect, restore the session and client-held IDs, query their receipts,
+   and inspect `/v1/input/list`. Obtain the current accepting turn ID from that
+   listing for new submissions. Retain the original turn ID for exact retries.
+6. After cancellation or failure, offer explicit resume or discard controls.
+   Do not automatically start paused input or replay an uncertain submission
+   with a new ID.
+
+Store IDs per server and session. The shared-token API does not identify which
+browser created a message. Without retained client records, show the server's
+pending listing as text and offer session-wide recovery as described in 9.6.
 
 ## 15. Complete server flow
 
@@ -1265,7 +1478,12 @@ Protocol 1 is intentionally single-flight and server-global.
 - Event cursors are client-local, but event storage is global.
 - Starting a new turn clears the previous turn's transient events.
 
-Mutation requests have no idempotency key:
+The input extension adds session-scoped idempotency for `POST /v1/input`
+through `message_id` and validates its target run. Any holder of the shared
+token may inspect, submit, or discard accessible queued input; IDs do not
+provide per-client authorization.
+
+The older mutation routes still have no idempotency key:
 
 - If a `POST /v1/turn` response is lost after the worker starts, a blind retry
   normally receives 409. The client can poll events, but cannot prove from the
@@ -1274,6 +1492,7 @@ Mutation requests have no idempotency key:
   session.
 - Retrying an already-consumed approval normally receives 409.
 - Retrying cancellation after successful cancellation normally receives 409.
+- Retrying an already-discarded input `drop` receives 409; reconcile its receipt.
 
 A semantic replacement should add authenticated client identities, turn IDs on
 all turn-scoped requests, idempotency keys for mutations, and an event-stream
@@ -1293,6 +1512,10 @@ while projecting the legacy global view.
 | Model `warming` | Poll and hold prompt |
 | Model `error` | Do not submit prompt |
 | Turn 409 | Report that another remote turn is running |
+| Input receipt accepted | Keep pending UI; continue the same event loop |
+| Input timeout or lost response | Preserve the exact request and ID; query status or retry identically |
+| Input 409 | Show the specific conflict; reconcile known IDs without silently retargeting |
+| Input consumed/discarded | Update pending UI by ID; neither state by itself means the run is complete |
 | Event `none` | Wait briefly and poll again |
 | Malformed event | Stop current client loop with an error |
 | Unknown event type | Stop current client loop with an error |
@@ -1403,7 +1626,7 @@ loopback `http://localhost:<port>` endpoint to it.
 | Authentication | One shared bearer token | Per-client short-lived credentials |
 | API state | One global active turn | Turn-scoped resources |
 | Events | Short poll, one flat event | Streaming or bounded batch with resumable cursor |
-| Mutation retry | No idempotency | Required idempotency key |
+| Mutation retry | Input submission has session-scoped IDs; other mutations lack idempotency | Required idempotency key across mutations |
 | Session cursor | Mutable list index | Stable snapshot/opaque cursor |
 | Approval | One global pending ID | Turn + command + client-bound approval capability |
 | Listener | Serial accepts | Bounded concurrent connections |
@@ -1526,6 +1749,30 @@ use the hardened model.
 - Slow connections are bounded.
 - Poll floods and authentication failures are rate-limited in hardened mode.
 
+### 21.9 Queued-input and web-client tests
+
+- Missing queue capability keeps active-turn input as an unsent draft.
+- Submission requires the selected session and matching accepting run ID.
+- Warm-up and worker execution retain the same run ID.
+- Accepted input does not alter an in-flight model request.
+- All tool results precede consumed steering in model history.
+- Follow-ups wait for the active task; their answers share the run's event cursor.
+- Exact submission retries return the same receipt, including after completion.
+- Reusing an ID with different input receives 409.
+- Receipt limits, UTF-8 byte limits, malformed fields, and inaccessible sessions
+  produce the documented error classes.
+- A mismatched or malformed receipt does not clear the user's draft.
+- Identical message text with distinct IDs stays distinct in pending UI.
+- A consumed user event does not trigger another submission or reset the cursor.
+- Listings containing multiline text are displayed without parsing artificial rows.
+- Discard racing with consumption never claims to undo a consumed message.
+- Uncertain discard is reconciled through status, including a discarded receipt.
+- Cancellation/restart retains pending input and closes stale admission.
+- Explicit resume recovers earlier pending records without duplicating messages
+  saved before an interrupted receipt write.
+- Reconnect restores pending state using server/session-scoped client IDs;
+  lost client records do not imply a structured server queue inventory exists.
+
 ## 22. End-to-end acceptance scenarios
 
 An implementation is functionally complete when all of these scenarios work.
@@ -1636,8 +1883,10 @@ The current behavior described here is implemented across:
 | `lib/agent.zsh` | Local/remote turn dispatch, emitted messages/statuses, normal agent loop |
 | `lib/tools.zsh` | Workspace path checks, command safety, command approval policy |
 | `lib/state.zsh` | Durable scoped sessions and visible transcript records |
+| `lib/input_queue.zsh` | Queue admission, receipts, ordering, discard, persistence, and recovery |
 | `zcoder.zsh` | CLI modes, startup authority, TUI integration, lifecycle cleanup |
 | `tests/run.zsh` | Unit and integration contract coverage |
+| `tests/input_queue.zsh` | Queued-input delivery, API receipts, remote forwarding, restart recovery, and live UI/ACP checks |
 
 When exact wire compatibility matters, treat `lib/remote.zsh` in the target
 release as the final executable authority. Protocol 1 has been extended with

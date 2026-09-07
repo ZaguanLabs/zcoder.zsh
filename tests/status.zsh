@@ -15,6 +15,44 @@ assert_eq Ready "$UI_STATUS_DISPLAY" "narrow headers preserve the foreground sta
 ui_invalidate header; MOCK_ZCURSES_CALLS=(); ui_draw_header
 assert_contains "${(F)MOCK_ZCURSES_CALLS}" '[ Ready ]' "a 60-column terminal still paints its status badge"
 
+status_header_identity_test() {
+  local ZCODER_NAME=zcoder.zsh ZCODER_VERSION=0.11.3
+  local ZCODER_MODEL=kat-coder-2.5-dev-mtp-q4-128k OLLAMA_HOST=192.168.1.48:11434
+  local ZCODER_WORKSPACE=/workspace/zcoder.zsh REMOTE_MODE=local
+  local -i SCREEN_W=60
+  local call='' header_text=''
+  for SCREEN_W in 60 80 160; do
+    ui_invalidate header; MOCK_ZCURSES_CALLS=(); ui_draw_header
+    assert_contains "${(F)MOCK_ZCURSES_CALLS}" 'zcoder.zsh v0.11.3' "the ${SCREEN_W}-column header retains the application name and version"
+    assert_contains "${(F)MOCK_ZCURSES_CALLS}" '[ Ready' "the ${SCREEN_W}-column header retains its status beside the identity"
+  done
+  for call in "${MOCK_ZCURSES_CALLS[@]}"; do
+    [[ "$call" == 'string top_win '* ]] && header_text+="${call#string top_win }"
+  done
+  assert_contains "$header_text" "$ZCODER_MODEL @ $OLLAMA_HOST │ zcoder.zsh" "a wide local header includes model, host, and workspace"
+  assert_contains "${(F)MOCK_ZCURSES_CALLS}" $'attr top_win -bold -dim bold cyan/black\nstring top_win ⚡ zcoder.zsh v0.11.3' "header branding restores the lightning icon and cyan name/version"
+  assert_contains "${(F)MOCK_ZCURSES_CALLS}" $'attr top_win -bold -dim bold yellow/black\nstring top_win '"$ZCODER_MODEL" "the model name retains its distinct yellow styling"
+  assert_contains "${(F)MOCK_ZCURSES_CALLS}" $'attr top_win -bold -dim dim white/black\nstring top_win  @ '"$OLLAMA_HOST" "host and workspace retain subdued white styling"
+  REMOTE_MODE=client
+  local REMOTE_SERVER_NAME=remote-fixture REMOTE_ENDPOINT=192.168.1.48:7337
+  ui_invalidate header; MOCK_ZCURSES_CALLS=(); ui_draw_header
+  assert_contains "${(F)MOCK_ZCURSES_CALLS}" 'zcoder.zsh v0.11.3' "remote headers retain the application name and version"
+  assert_contains "${(F)MOCK_ZCURSES_CALLS}" 'remote-fixture@192.168.1.48:7337' "remote headers identify the connected server"
+  SCREEN_W=40; ZCODER_MODEL='模型模型模型模型模型模型'
+  ui_invalidate header; MOCK_ZCURSES_CALLS=(); ui_draw_header
+  local -i identity_cells=0 badge_column=0
+  for call in "${MOCK_ZCURSES_CALLS[@]}"; do
+    if [[ "$call" == 'string top_win '* && "$call" != 'string top_win [ '* ]]; then
+      header_text="${call#string top_win }"
+      (( identity_cells += ${(m)#header_text} ))
+    elif [[ "$call" == 'move top_win 1 '* ]]; then badge_column="${call##* }"
+    fi
+  done
+  assert_success "wide header glyphs remain separated from the status on narrow terminals" $(( identity_cells + 2 < badge_column ? 0 : 1 ))
+}
+status_header_identity_test
+unfunction status_header_identity_test
+
 ui_append_message error $'Connection lost\nFull diagnostic remains in transcript.'
 ui_set_status Error
 ui_set_status Ready
@@ -78,6 +116,7 @@ TERM=xterm-256color zpty -b status-ui status_pty_run
 assert_success "status fixture starts with real curses" $?
 status_pty_wait "$status_pty_base.animated" 1
 assert_success "the existing activity loop animates while awaiting input" $?
+assert_contains "$status_pty_output" 'zcoder vtest' "real curses displays the application name and version in the header"
 assert_eq '1:1' "${mapfile[$status_pty_base.underlay]:-}" "animation never repaints unchanged transcript or editor windows"
 zpty -w -n status-ui draft
 status_pty_wait "$status_pty_base.draft" draft

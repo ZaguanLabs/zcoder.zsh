@@ -22,6 +22,7 @@ source "${PROJECT_DIR}/lib/compact.zsh"
 source "${PROJECT_DIR}/lib/goal.zsh"
 source "${PROJECT_DIR}/lib/agent.zsh"
 source "${PROJECT_DIR}/lib/state.zsh"
+source "${PROJECT_DIR}/lib/input_queue.zsh"
 source "${PROJECT_DIR}/lib/harnesses.zsh"
 source "${PROJECT_DIR}/lib/delegate.zsh"
 source "${PROJECT_DIR}/lib/remote.zsh"
@@ -1273,6 +1274,8 @@ _remote_server_start_turn() {
 }
 _remote_server_clear_turn_runtime
 REMOTE_MODEL_STATUS="warming"
+saved_queue_test_session="$REMOTE_SESSION_ID"
+REMOTE_SESSION_ID=7777777777_888
 _remote_server_queue_turn "queued while warming"
 assert_success "remote prompts can be queued during a warm-up race" $?
 [[ -f "$remote_runtime/pending_prompt" ]]
@@ -1295,6 +1298,7 @@ assert_success "cancelling a queued prompt clears its pending marker" $?
 _remote_server_next_event 1
 assert_success "queued-prompt cancellation publishes completion" $?
 assert_contains "$REPLY" '"exit_code":130' "queued-prompt cancellation reports the stopped exit code"
+REMOTE_SESSION_ID="$saved_queue_test_session"
 
 functions[ollama_get_running_context]="$saved_remote_context_lookup"
 functions[_remote_server_model_start_warmup]="$saved_remote_warmup_start"
@@ -1974,7 +1978,7 @@ assert_contains "$REPLY" "estimated next prompt:" "context status reports the cu
 assert_contains "$REPLY" "last Ollama prompt: unknown" "context status distinguishes reset usage from a measured prompt"
 assert_contains "$REPLY" "Estimated context bill:" "context status attributes model-visible components"
 assert_eq "${#AGENT_CONTEXT_COMPONENT_LABELS}" "${#AGENT_CONTEXT_COMPONENT_VALUES}" "context component labels align with their estimates"
-assert_eq "9" "${#AGENT_CONTEXT_COMPONENT_VALUES}" "context accounting exposes all nine bill components to the inspector"
+assert_eq "11" "${#AGENT_CONTEXT_COMPONENT_VALUES}" "context accounting exposes reasoning and skill resources alongside the original components"
 assert_contains "$REPLY" "checkpoint=${AGENT_CONTEXT_COMPONENT_VALUES[5]}" "inspector checkpoint accounting matches the context bill"
 
 functions[_test_valid_compaction_chat]="${functions[agent_ollama_chat]}"
@@ -3161,6 +3165,9 @@ source "${TEST_DIR}/remote_browse.zsh"
 source "${TEST_DIR}/models_wait.zsh"
 source "${TEST_DIR}/context_wait.zsh"
 source "${TEST_DIR}/tui_integration.zsh"
+source "${TEST_DIR}/tool_labels.zsh"
+source "${TEST_DIR}/context_accounting.zsh"
+source "${TEST_DIR}/input_queue.zsh"
 
 if (( FAILURES > 0 )); then
   print -u2 -r -- "${FAILURES} test(s) failed"

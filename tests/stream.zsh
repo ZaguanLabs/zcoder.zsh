@@ -35,6 +35,20 @@ for stream_wire in \
   assert_failure "invalid streaming HTTP framing fails closed" $?
 done
 
+# Use a fresh shell: an earlier non-streaming decode can cache the Unicode
+# validation pattern with EXTENDED_GLOB enabled and hide option dependencies.
+stream_unicode_result="$(zsh -fc '
+  setopt extendedglob
+  source "$1/lib/json.zsh"
+  source "$1/lib/stream.zsh"
+  agent_stream_reset
+  agent_stream_record "$2" || { print -r -- "$AGENT_STREAM_ERROR"; exit 1; }
+  json_parse_flat_object "${JSON_TOOL_ARGS[1]}" || exit 1
+  print -rl -- "$AGENT_STREAM_CONTENT" "$AGENT_STREAM_THINKING" "${JSON_OBJECT[path]}" "$AGENT_STREAM_DONE"
+' zcoder-stream-unicode "$PROJECT_DIR" '{"message":{"content":"Streaming \u0026 Async \u003cok\u003e","thinking":"\u4e16\u754c \ud83d\ude00","tool_calls":[{"function":{"name":"read_file","arguments":{"path":"src/a\u0026b.zsh"}}}]},"done":true}')"
+assert_success "the first Unicode escapes in a fresh process decode through streaming" $?
+assert_eq $'Streaming & Async <ok>\n世界 😀\nsrc/a&b.zsh\n1' "$stream_unicode_result" "streaming decodes escaped content, reasoning, surrogate pairs, and tool paths"
+
 agent_stream_reset
 agent_stream_record '{"message":{"thinking":"Check ","content":"Hello "},"done":false}'
 agent_stream_record '{"message":{"thinking":"carefully","content":"世界","tool_calls":[{"function":{"index":0,"name":"read_file","arguments":{"path":"one.zsh"}}}]},"done":false}'
@@ -56,6 +70,15 @@ for stream_record in '{broken' '{"done":false} trailing' '{"message":{"content":
   agent_stream_reset
   agent_stream_record "$stream_record"
   assert_failure "invalid or failed Ollama stream records are rejected" $?
+done
+
+for stream_record in \
+  '{"message":{"content":"\u00xz"},"done":true}' \
+  '{"message":{"content":"\u026"},"done":true}' \
+  '{"message":{"content":"\ud83d\uZZZZ"},"done":true}'; do
+  agent_stream_reset
+  agent_stream_record "$stream_record"
+  assert_failure "malformed Unicode escapes still fail closed in streaming" $?
 done
 
 # Persisted in-flight previews must restore as explicitly interrupted text.
@@ -171,8 +194,8 @@ stream_pty_run() {
 }
 TERM=xterm-256color zpty -b stream-ui stream_pty_run
 assert_success "native HTTP streaming fixture starts in a real terminal" $?
-stream_pty_wait "$stream_pty_base.preview" 'Hello 世界'
-assert_success "streamed text reaches the UI before the response finishes, across UTF-8 byte splits" $?
+stream_pty_wait "$stream_pty_base.preview" 'Hello 世界 &'
+assert_success "streamed text reaches the UI before completion across split UTF-8 bytes and Unicode escapes" $?
 assert_eq 1 "${mapfile[$stream_pty_base.history_count]:-}" "partial assistant text is not committed to model history"
 assert_eq 0 "${mapfile[$stream_pty_base.tool_count]:-}" "streamed tool calls are not dispatched before done"
 assert_contains "${mapfile[$stream_pty_base.request_first]:-}" '"stream":true' "ordinary interactive turns request streaming"

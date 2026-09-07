@@ -13,6 +13,11 @@ This is a protocol adapter, not a second agent implementation. Local ACP turns
 enter the same agent loop as the terminal interface. Remote ACP turns cross the
 existing authenticated zcoder HTTP API and run in the server's agent loop.
 
+The optional [queued-input extension](queued-input.md#acp-extension) lets clients
+send steering or follow-ups while a prompt runs. It uses `_zcoder/input`;
+standard `session/prompt` remains single-flight. The extension is also available
+over `--connect` when the remote server advertises queue support.
+
 ## Direct local use
 
 Start the stdio agent with:

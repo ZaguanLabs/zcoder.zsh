@@ -8,6 +8,7 @@ typeset -gi ACP_REQUEST_SEQUENCE=0 ACP_TOOL_SEQUENCE=0 ACP_MESSAGE_SEQUENCE=0
 typeset -g ACP_MESSAGE_ID_RAW="" ACP_MESSAGE_ID="" ACP_MESSAGE_METHOD=""
 typeset -g ACP_MESSAGE_PARAMS="{}" ACP_MESSAGE_RESULT="" ACP_MESSAGE_ERROR=""
 typeset -g ACP_SESSION_ID="" ACP_PROMPT_ID_RAW="" ACP_CURRENT_TOOL_CALL_ID=""
+typeset -g ACP_INPUT_TURN_ID=''
 typeset -gA ACP_SESSION_CWD=() ACP_SESSION_MCP=() ACP_SESSION_COMMAND_ALLOW=()
 
 _acp_valid_json() {
@@ -178,7 +179,9 @@ _acp_initialize() {
   [[ "$JSON_TOKEN_TYPE" == number && "$JSON_TOKEN_VALUE" == <1-> ]] || { _acp_error "$id_raw" -32602 "protocolVersion must be an integer"; return 1; }
   requested=$JSON_TOKEN_VALUE
   ACP_INITIALIZED=1
-  _acp_result "$id_raw" "{\"protocolVersion\":${ACP_PROTOCOL_VERSION},\"agentCapabilities\":{\"loadSession\":true,\"promptCapabilities\":{\"embeddedContext\":true}},\"agentInfo\":{\"name\":\"zcoder.zsh\",\"title\":\"zcoder.zsh\",\"version\":\"${ZCODER_VERSION}\"},\"authMethods\":[]}"
+  local queue_capability=true
+  [[ "${REMOTE_MODE:-local}" == client ]] && queue_capability="${REMOTE_INPUT_SUPPORTED:-false}"
+  _acp_result "$id_raw" "{\"protocolVersion\":${ACP_PROTOCOL_VERSION},\"agentCapabilities\":{\"loadSession\":true,\"promptCapabilities\":{\"embeddedContext\":true},\"_meta\":{\"zcoder/inputQueue\":${queue_capability}}},\"agentInfo\":{\"name\":\"zcoder.zsh\",\"title\":\"zcoder.zsh\",\"version\":\"${ZCODER_VERSION}\"},\"authMethods\":[]}"
   (( requested == ACP_PROTOCOL_VERSION )) || print -u2 -r -- "ACP: client requested protocol v${requested}; offered v${ACP_PROTOCOL_VERSION}"
 }
 
@@ -321,6 +324,7 @@ _acp_prompt_text() {
 acp_worker_emit() {
   local role="$1" content="$2" thinking="${3:-}"
   case "$role" in
+    user) _acp_content_update user_message_chunk "$content" ;;
     assistant)
       _acp_content_update agent_thought_chunk "$thinking"
       _acp_content_update agent_message_chunk "$content"
@@ -432,7 +436,11 @@ acp_worker_main() {
     state_note_user "$prompt"
   fi
   _acp_content_update user_message_chunk "$prompt"
-  agent_user_turn "$prompt"
+  if [[ "$prompt" == '/queue resume' && "${REMOTE_MODE:-local}" != client ]]; then
+    input_queue_command resume
+  else
+    agent_user_turn "$prompt"
+  fi
   prompt_status=$?
   if [[ "${REMOTE_MODE:-local}" != client ]]; then
     state_save_session || true
@@ -479,6 +487,12 @@ _acp_start_prompt() {
   ACP_SESSION_ID="$session_id"
   ACP_PROMPT_ID_RAW="$id_raw"
   ACP_PROMPT_CANCELLED=0
+  ACP_INPUT_TURN_ID="${EPOCHSECONDS}_${sysparams[pid]}_$RANDOM"
+  if [[ "${REMOTE_MODE:-local}" != client ]]; then
+    input_queue_open "$session_id" "$ACP_INPUT_TURN_ID" || {
+      _acp_error "$id_raw" -32603 'could not open input queue'; return 1
+    }
+  fi
   coproc { acp_worker_main "$session_id" "$prompt" "$cwd" "$mcp_servers"; }
   ACP_WORKER_PID=$!
   exec {ACP_WORKER_FD}<&p
@@ -491,6 +505,7 @@ _acp_finish_prompt() {
   exec {ACP_WORKER_FD}<&- 2>/dev/null
   wait "$ACP_WORKER_PID" 2>/dev/null
   prompt_status=$?
+  _acp_close_input_queue
   if (( ACP_PROMPT_CANCELLED || prompt_status == 130 || prompt_status == 143 )); then
     _acp_result "$ACP_PROMPT_ID_RAW" '{"stopReason":"cancelled"}'
   elif (( prompt_status == 0 )); then
@@ -512,10 +527,61 @@ _acp_cancel_prompt() {
   session_id="$REPLY"
   [[ "$session_id" == "$ACP_SESSION_ID" ]] || return 0
   ACP_PROMPT_CANCELLED=1
+  _acp_close_input_queue
   if [[ "${REMOTE_MODE:-local}" == client ]]; then
     remote_client_request POST /v1/cancel '{}' >/dev/null 2>&1 || true
   fi
   kill -TERM "$ACP_WORKER_PID" 2>/dev/null || true
+}
+
+_acp_close_input_queue() {
+  [[ "${REMOTE_MODE:-local}" == client ]] && return 0
+  local CURRENT_SESSION_ID="$ACP_SESSION_ID" INPUT_QUEUE_TURN_ID="$ACP_INPUT_TURN_ID"
+  input_queue_close true || true
+}
+
+_acp_input_request() {
+  local id_raw="$1" params="$2" session='' action='' turn='' id='' mode='' text='' field=''
+  (( ACP_INITIALIZED )) || { _acp_error "$id_raw" -32002 'connection is not initialized'; return 1; }
+  json_parse_flat_object "$params" || { _acp_error "$id_raw" -32602 'input parameters must be a flat object'; return 1; }
+  for field in sessionId action turnId messageId mode text; do
+    if (( ${+JSON_OBJECT[$field]} )) && [[ "${JSON_OBJECT_TYPES[$field]}" != string ]]; then
+      _acp_error "$id_raw" -32602 "$field must be a string"; return 1
+    fi
+  done
+  session="${JSON_OBJECT[sessionId]:-}"
+  action="${JSON_OBJECT[action]:-submit}"
+  turn="${JSON_OBJECT[turnId]:-}"
+  id="${JSON_OBJECT[messageId]:-}"
+  mode="${JSON_OBJECT[mode]:-steer}"
+  text="${JSON_OBJECT[text]:-}"
+  [[ -n "$session" && -n "${ACP_SESSION_CWD[$session]:-}" ]] || {
+    _acp_error "$id_raw" -32602 'unknown session'; return 1
+  }
+  if [[ "$action" == submit ]] && { (( ! ACP_WORKER_RUNNING )) || [[ "$session" != "$ACP_SESSION_ID" ]]; }; then
+    # An exact retry can retrieve its receipt after the original prompt ends.
+    if [[ "${REMOTE_MODE:-local}" == client ]]; then
+      local CURRENT_SESSION_ID="$session"
+      remote_client_input_request status '' "$id" '' '' || {
+        _acp_error "$id_raw" -32000 'no matching active prompt'; return 1
+      }
+    else
+      input_queue_status "$session" "$id" || {
+        _acp_error "$id_raw" -32000 'no matching active prompt'; return 1
+      }
+    fi
+  fi
+  if [[ "${REMOTE_MODE:-local}" == client ]]; then
+    local CURRENT_SESSION_ID="$session"
+    remote_client_input_request "$action" "$turn" "$id" "$mode" "$text" || {
+      _acp_error "$id_raw" -32000 "$REMOTE_ERROR"; return 1
+    }
+  else
+    input_queue_request "$action" "$session" "$turn" "$id" "$mode" "$text" || {
+      _acp_error "$id_raw" -32000 "${INPUT_QUEUE_ERROR:-input queue operation failed}"; return 1
+    }
+  fi
+  _acp_result "$id_raw" "$REPLY"
 }
 
 _acp_handle_line() {
@@ -552,6 +618,7 @@ _acp_handle_line() {
     session/load) _acp_load_session "$id_raw" "$params" ;;
     session/prompt) _acp_start_prompt "$id_raw" "$params" ;;
     session/cancel) _acp_cancel_prompt "$params" ;;
+    _zcoder/input) _acp_input_request "$id_raw" "$params" ;;
     *) [[ -n "$id_raw" ]] && _acp_error "$id_raw" -32601 "Method not found: $method" ;;
   esac
 }
@@ -559,6 +626,7 @@ _acp_handle_line() {
 acp_shutdown() {
   if (( ACP_WORKER_RUNNING )); then
     ACP_PROMPT_CANCELLED=1
+    _acp_close_input_queue
     kill -TERM "$ACP_WORKER_PID" 2>/dev/null || true
     exec {ACP_WORKER_FD}<&- 2>/dev/null
     wait "$ACP_WORKER_PID" 2>/dev/null || true

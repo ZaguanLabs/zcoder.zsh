@@ -55,6 +55,56 @@ ui_append_message() {
   return 0
 }
 
+transcript_tool_label() {
+  emulate -L zsh
+  local name="$1" server='' tool='' target=''
+  case "$name" in
+    read_file) REPLY=Read ;;
+    read_file_range) REPLY='Read File Range' ;;
+    write_file) REPLY='Write File' ;;
+    replace_text) REPLY='Replace Text' ;;
+    list_files) REPLY='List Files' ;;
+    search) REPLY=Search ;;
+    run_command) REPLY='Run Command' ;;
+    apply_patch) REPLY='Apply Patch' ;;
+    activate_skill) REPLY=Skill ;;
+    read_skill_resource) REPLY='Skill Resource' ;;
+    finish) REPLY=Finish ;;
+    mcp__*)
+      (( ${+MCP_TOOL_SERVER} )) && server="${MCP_TOOL_SERVER[$name]:-}"
+      (( ${+MCP_TOOL_ORIGINAL} )) && tool="${MCP_TOOL_ORIGINAL[$name]:-}"
+      if [[ -n "$server" ]]; then
+        target="${server}${tool:+.${tool}}"
+      else
+        target="${name#mcp__}"
+        [[ "$target" == *__* ]] && target="${target%%__*}.${target#*__}"
+      fi
+      REPLY="Calling ${(V)target}"
+      ;;
+    *) REPLY="$name" ;;
+  esac
+}
+
+transcript_tool_summary() {
+  emulate -L zsh
+  local name="$1" args="$2" target='' label=''
+  local -A JSON_OBJECT=()
+  transcript_tool_label "$name"; label="$REPLY"
+  json_parse_flat_object "$args" || { REPLY="$label"; return 1; }
+  if [[ -n "${JSON_OBJECT[path]:-}" ]]; then
+    zcoder_display_path "${JSON_OBJECT[path]}"; target="$REPLY"
+  else
+    target="${JSON_OBJECT[command]:-${JSON_OBJECT[query]:-${JSON_OBJECT[name]:-}}}"
+  fi
+  case "$name" in
+    read_file_range) target="${target:-?}:${JSON_OBJECT[start_line]:-?}-${JSON_OBJECT[end_line]:-?}" ;;
+    read_skill_resource) target="${JSON_OBJECT[name]:-?}:${target:-?}" ;;
+  esac
+  target="${target//$'\n'/ }"
+  (( ${#target} > 120 )) && target="${target[1,117]}..."
+  REPLY="${label}${target:+(${target})}"
+}
+
 # Called by the local UI and by the remote worker. No terminal dependency.
 # An optional transport ID identifies updates independently of row positions.
 transcript_tool_event() {
@@ -62,8 +112,6 @@ transcript_tool_event() {
   setopt extendedglob
   local phase="$1" name="$2" args="${3:-}" result="${4:-}" succeeded="${5:-0}" id="${6:-}"
   local -i index=$UI_CURRENT_TOOL
-  local -A JSON_OBJECT=()
-  local target=""
   if [[ "$phase" == begin ]]; then
     if [[ -n "$id" ]] && (( ${UI_IDS[(Ie)$id]} )); then return 0; fi
     ui_append_message tool "$name"
@@ -72,12 +120,8 @@ transcript_tool_event() {
     [[ -n "$id" ]] && UI_IDS[index]="$id"
     UI_BLOCK_OPEN[index]=0
     UI_TOOL_NAMES[index]="$name"
-    if json_parse_flat_object "$args"; then
-      target="${JSON_OBJECT[path]:-${JSON_OBJECT[command]:-${JSON_OBJECT[query]:-${JSON_OBJECT[name]:-}}}}"
-      target="${target//$'\n'/ }"
-      (( ${#target} > 120 )) && target="${target[1,117]}..."
-    fi
-    UI_TOOL_SUMMARIES[index]="${name}${target:+ (${target})}"
+    transcript_tool_summary "$name" "$args" || true
+    UI_TOOL_SUMMARIES[index]="$REPLY"
     UI_TOOL_ARGS[index]="$args"
     UI_TOOL_STATES[index]=pending
     return 0
@@ -156,6 +200,9 @@ transcript_restore_metadata() {
   UI_TOOL_ARGS[index]="${JSON_OBJECT[args]:-}"
   UI_TOOL_RESULTS[index]="${JSON_OBJECT[result]:-}"
   UI_TOOL_STATES[index]="${JSON_OBJECT[state]}"
+  if transcript_tool_summary "${UI_TOOL_NAMES[index]}" "${UI_TOOL_ARGS[index]}"; then
+    UI_TOOL_SUMMARIES[index]="$REPLY"
+  fi
   if (( interrupted )) && [[ "${UI_TOOL_STATES[index]}" == pending || "${UI_TOOL_STATES[index]}" == running ]]; then
     UI_TOOL_STATES[index]=interrupted
     transcript_changed "$index"

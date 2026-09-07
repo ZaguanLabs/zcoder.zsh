@@ -177,9 +177,15 @@ normalization and goal verification must finish before their answers are shown.
 
 While waiting for Ollama, a local shell command, search, patch, MCP connection or tool call,
 external delegate, or remote events, you can edit
-and paste into the prompt. It is labelled **Draft** during activity. Enter leaves
-it unsent; send it after the current activity finishes. Escape stops the active
-response or local tool process while preserving your draft.
+and paste into the prompt. During an active conversation turn, **Enter** queues
+steering for the next response/tool-batch boundary; **Ctrl+G** queues a follow-up
+for after the task finishes. Acceptance clears the editor. Escape stops the active
+response or local tool process while preserving your unsent draft and pending
+messages. Standalone activity without a conversation turn retains draft-only input.
+
+Use `/queue` to inspect pending messages, `/queue resume` to recover them after
+cancellation or restart, and `/queue drop ID` to discard one. See
+[Steering and queued follow-ups](queued-input.md) for delivery rules and APIs.
 
 Tab switches between the draft and transcript during activity. Transcript
 selection, folding, reasoning inspection, and scrolling work with their usual

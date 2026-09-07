@@ -308,6 +308,8 @@ skills_activate() {
   SKILL_ACTIVE_NAMES+=("$name")
   zcoder_debug skill_activated "name=${(qqq)name} source=${(qqq)source_file} body_chars=${#SKILL_PARSED_BODY}"
   _tool_succeed "Activated skill: $name. Its instructions are now in context."
+  (( $+functions[agent_context_refresh_estimate] )) && agent_context_refresh_estimate
+  return 0
 }
 
 skills_activate_explicit_from_text() {

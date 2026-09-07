@@ -83,6 +83,23 @@ zcoder_terminal_safe() {
   REPLY="${(F)${(@V)lines}}"
 }
 
+# Display only: execution and approval continue to use the original argument.
+zcoder_display_path() {
+  local requested="$1" workspace_root='' resolved='' prefix=''
+  REPLY="$requested"
+  [[ "$requested" == /* && -n "${ZCODER_WORKSPACE:-}" ]] || return 0
+  if [[ "${REMOTE_MODE:-local}" == client ]]; then
+    # Remote paths must not be resolved through the client's filesystem.
+    workspace_root="${ZCODER_WORKSPACE:a}"; resolved="${requested:a}"
+  else
+    workspace_root="${ZCODER_WORKSPACE:A}"; resolved="${requested:A}"
+  fi
+  prefix="${workspace_root%/}/"
+  if [[ "$resolved" == "$workspace_root" ]]; then REPLY='.'
+  elif [[ "$resolved" == "$prefix"* ]]; then REPLY="${resolved#"$prefix"}"
+  fi
+}
+
 zcoder_fd_safe() {
   emulate -L zsh
   local fd="$1" value="${2:-}"

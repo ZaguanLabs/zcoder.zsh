@@ -10,6 +10,7 @@ zcoder.zsh. If you are new to the project, begin with
 | --- | --- |
 | [Getting started](getting-started.md) | Requirements, installation, first run, one-shot use, and essential options |
 | [Interface and sessions](interface.md) | TUI layout, keyboard controls, slash commands, saved jobs, consultants, and external workers |
+| [Steering and queued follow-ups](queued-input.md) | Active-turn input, recovery, HTTP endpoints, and ACP extension |
 | [Remote-agent server](remote.md) | Running zcoder beside a remote model and workspace |
 | [Safety and permissions](safety.md) | Workspace boundaries, command approval, trust boundaries, and sysadmin safeguards |
 
@@ -34,6 +35,7 @@ zcoder.zsh. If you are new to the project, begin with
 
 ## Releases
 
+- [v0.12.0 — Steering and queued follow-ups](releases/v0.12.0.md)
 - [v0.11.2 — Antigravity model refresh](releases/v0.11.2.md)
 - [v0.11.1 — Post-compaction history fix](releases/v0.11.1.md)
 - [v0.11.0 — ACP integration and model-neutral compaction](releases/v0.11.0.md)

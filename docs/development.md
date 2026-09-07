@@ -30,6 +30,7 @@ then runs the shell-level suite. The suite covers:
 - authenticated remote events and approvals
 - same-host relay framing, discovery, delivery, and origin isolation
 - input handling and curses rendering
+- queued-input ordering, stable IDs, interrupted consumption recovery, and HTTP/ACP admission
 
 Run syntax checks alone with:
 
@@ -50,6 +51,11 @@ transcript check counts layout and curses operations: idle refreshes and draft
 editing must not re-render history, while stream updates lay out only the
 changed entry. These are deterministic regression checks, not terminal-emulator
 latency benchmarks or measurements of live Ollama inference.
+
+`tests/input_queue.zsh` exercises the real agent loop with controlled responses:
+all tool results must precede steering, and follow-ups must wait for completion.
+Its PTY fixture checks Enter, Ctrl+G, Unicode/multiline paste, draft preservation,
+and cancellation using the actual editor and queue.
 
 ## Real-model evaluation
 
