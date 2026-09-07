@@ -35,6 +35,7 @@ zcoder.zsh. If you are new to the project, begin with
 
 ## Releases
 
+- [v0.12.1 — Steering, queued follow-ups, and a clearer conversation](releases/v0.12.1.md)
 - [v0.12.0 — Steering and queued follow-ups](releases/v0.12.0.md)
 - [v0.11.2 — Antigravity model refresh](releases/v0.11.2.md)
 - [v0.11.1 — Post-compaction history fix](releases/v0.11.1.md)
