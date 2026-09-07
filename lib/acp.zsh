@@ -10,6 +10,44 @@ typeset -g ACP_MESSAGE_PARAMS="{}" ACP_MESSAGE_RESULT="" ACP_MESSAGE_ERROR=""
 typeset -g ACP_SESSION_ID="" ACP_PROMPT_ID_RAW="" ACP_CURRENT_TOOL_CALL_ID=""
 typeset -g ACP_INPUT_TURN_ID=''
 typeset -gA ACP_SESSION_CWD=() ACP_SESSION_MCP=() ACP_SESSION_COMMAND_ALLOW=()
+typeset -g ACP_PERMISSION_ID="" ACP_PERMISSION_SESSION=""
+typeset -gi ACP_PERMISSION_ALWAYS=0 ACP_WORKER_PROTOCOL_ERROR=0
+typeset -g ACP_INPUT_BUFFER="" ACP_OUTPUT_BUFFER=""
+
+_acp_clear_permission() {
+  ACP_PERMISSION_ID=""; ACP_PERMISSION_SESSION=""; ACP_PERMISSION_ALWAYS=0
+}
+
+# Only requests actually emitted by the current worker authorize responses.
+# Keep the offered options alongside the ID so unrelated/stale replies cannot
+# change the policy restored for subsequent prompts.
+_acp_forward_worker_line() {
+  local line="$1" params="" option="" options="" session="" option_id=""
+  if (( ! ACP_PROMPT_CANCELLED )) && [[ "$line" == *'session/request_permission'* ]] && _acp_parse_message "$line" &&
+      [[ "$ACP_MESSAGE_METHOD" == session/request_permission ]]; then
+    _acp_clear_permission
+    params="$ACP_MESSAGE_PARAMS"
+    if [[ -n "$ACP_MESSAGE_ID" ]] && _mcp_raw_member "$params" sessionId &&
+        _acp_raw_string "$REPLY" && [[ "$REPLY" == "$ACP_SESSION_ID" ]]; then
+      session="$REPLY"
+      ACP_PERMISSION_ID="$ACP_MESSAGE_ID"; ACP_PERMISSION_SESSION="$session"
+      if _mcp_raw_member "$params" options; then
+        options="$REPLY"
+        if _mcp_raw_array_items "$options"; then
+          for option in "${MCP_RAW_ITEMS[@]}"; do
+            _mcp_raw_member "$option" optionId && _acp_raw_string "$REPLY" || continue
+            option_id="$REPLY"
+            [[ "$option_id" == allow-always ]] || continue
+            if _mcp_raw_member "$option" kind && _acp_raw_string "$REPLY" && [[ "$REPLY" == allow_always ]]; then
+              ACP_PERMISSION_ALWAYS=1
+            fi
+          done
+        fi
+      fi
+    fi
+  fi
+  _acp_send "$line"
+}
 
 _acp_valid_json() {
   json_begin "$1" || return 1
@@ -406,7 +444,9 @@ acp_worker_request_permission() {
     option_id="$REPLY"
     case "$option_id" in
       allow-once) REPLY=y; return 0 ;;
-      allow-always) REPLY=a; return 0 ;;
+      allow-always)
+        [[ "$permission_kind" == command && "$ZCODER_PROFILE" == coding ]] || break
+        REPLY=a; return 0 ;;
     esac
     break
   done
@@ -451,6 +491,7 @@ acp_worker_main() {
 
 _acp_start_prompt() {
   local id_raw="$1" params="$2" session_id="" prompt="" cwd="" mcp_servers='[]'
+  local -a reply=()
   (( ACP_INITIALIZED )) || { _acp_error "$id_raw" -32002 "connection is not initialized"; return 1; }
   (( ! ACP_WORKER_RUNNING )) || { _acp_error "$id_raw" -32000 "another prompt is already running"; return 1; }
   _acp_session_id_param "$params" || { _acp_error "$id_raw" -32602 "$REPLY"; return 1; }
@@ -466,7 +507,7 @@ _acp_start_prompt() {
   fi
   [[ -n "$cwd" ]] || {
     local session_dir="$ZCODER_SESSIONS_DIR/${session_id}.session"
-    [[ -d "$session_dir" ]] && cwd="${mapfile[$session_dir/workspace]:-}"
+    state_snapshot_values "$session_dir" workspace && cwd="${reply[1]}"
   }
   if [[ "${REMOTE_MODE:-local}" == client ]]; then
     [[ -n "$cwd" ]] || { _acp_error "$id_raw" -32602 "unknown session"; return 1; }
@@ -487,6 +528,8 @@ _acp_start_prompt() {
   ACP_SESSION_ID="$session_id"
   ACP_PROMPT_ID_RAW="$id_raw"
   ACP_PROMPT_CANCELLED=0
+  _acp_clear_permission
+  ACP_OUTPUT_BUFFER=""; ACP_WORKER_PROTOCOL_ERROR=0
   ACP_INPUT_TURN_ID="${EPOCHSECONDS}_${sysparams[pid]}_$RANDOM"
   if [[ "${REMOTE_MODE:-local}" != client ]]; then
     input_queue_open "$session_id" "$ACP_INPUT_TURN_ID" || {
@@ -508,7 +551,7 @@ _acp_finish_prompt() {
   _acp_close_input_queue
   if (( ACP_PROMPT_CANCELLED || prompt_status == 130 || prompt_status == 143 )); then
     _acp_result "$ACP_PROMPT_ID_RAW" '{"stopReason":"cancelled"}'
-  elif (( prompt_status == 0 )); then
+  elif (( prompt_status == 0 && ! ACP_WORKER_PROTOCOL_ERROR )); then
     _acp_result "$ACP_PROMPT_ID_RAW" '{"stopReason":"end_turn"}'
   else
     _acp_error "$ACP_PROMPT_ID_RAW" -32603 "zcoder prompt failed"
@@ -518,6 +561,8 @@ _acp_finish_prompt() {
   ACP_WORKER_FD=-1
   ACP_PROMPT_ID_RAW=""
   ACP_PROMPT_CANCELLED=0
+  _acp_clear_permission
+  ACP_OUTPUT_BUFFER=""
 }
 
 _acp_cancel_prompt() {
@@ -527,6 +572,7 @@ _acp_cancel_prompt() {
   session_id="$REPLY"
   [[ "$session_id" == "$ACP_SESSION_ID" ]] || return 0
   ACP_PROMPT_CANCELLED=1
+  _acp_clear_permission
   _acp_close_input_queue
   if [[ "${REMOTE_MODE:-local}" == client ]]; then
     remote_client_request POST /v1/cancel '{}' >/dev/null 2>&1 || true
@@ -586,7 +632,8 @@ _acp_input_request() {
 
 _acp_handle_line() {
   local line="$1" id_raw="" method="" params="{}" raw="" option_id=""
-  if (( ${#line} > 1048576 )); then
+  _mcp_byte_length "$line"
+  if (( REPLY > 1048576 )); then
     _acp_error null -32700 "ACP message exceeds 1 MiB"
     return 1
   fi
@@ -599,8 +646,9 @@ _acp_handle_line() {
   # permission requests. Preserve the complete response for strict ID matching
   # and nested outcome parsing in that worker.
   if [[ -z "$method" ]]; then
-    if (( ACP_WORKER_RUNNING )); then
-      if [[ -n "$ACP_MESSAGE_RESULT" ]] && _mcp_raw_member "$ACP_MESSAGE_RESULT" outcome; then
+    if (( ACP_WORKER_RUNNING && ! ACP_PROMPT_CANCELLED )) && [[ -n "$ACP_PERMISSION_ID" && "$ACP_MESSAGE_ID" == "$ACP_PERMISSION_ID" &&
+        "$ACP_PERMISSION_SESSION" == "$ACP_SESSION_ID" ]]; then
+      if (( ACP_PERMISSION_ALWAYS )) && [[ -z "$ACP_MESSAGE_ERROR" && -n "$ACP_MESSAGE_RESULT" ]] && _mcp_raw_member "$ACP_MESSAGE_RESULT" outcome; then
         raw="$REPLY"
         if _mcp_raw_member "$raw" outcome && _acp_raw_string "$REPLY" && [[ "$REPLY" == selected ]] &&
             _mcp_raw_member "$raw" optionId && _acp_raw_string "$REPLY"; then
@@ -608,6 +656,7 @@ _acp_handle_line() {
           [[ "$option_id" == allow-always && "$ZCODER_PROFILE" == coding ]] && ACP_SESSION_COMMAND_ALLOW[$ACP_SESSION_ID]=1
         fi
       fi
+      _acp_clear_permission
       print -p -r -- "$line"
     fi
     return 0
@@ -634,40 +683,91 @@ acp_shutdown() {
   ACP_WORKER_RUNNING=0
   ACP_WORKER_PID=0
   ACP_WORKER_FD=-1
+  _acp_clear_permission
+  ACP_OUTPUT_BUFFER=""
 }
 
 acp_main() {
   emulate -L zsh
   setopt extendedglob no_monitor no_notify
-  local line=""
+  local line="" chunk=""
   local -a ready=()
-  local -i stdin_ready=0 worker_ready=0
+  local -i stdin_ready=0 worker_ready=0 input_eof=0 worker_eof=0 read_status=0 count=0 poll_ticks=10
+  ACP_INPUT_BUFFER=""; ACP_OUTPUT_BUFFER=""
 
   while true; do
-    if (( ! ACP_WORKER_RUNNING )); then
-      IFS= read -r line || break
+    # Drain bounded batches from both channels before polling. Readiness means
+    # some bytes, never necessarily a whole JSON line; partial UTF-8 and JSON
+    # stay buffered while cancellation and worker output continue to flow.
+    count=0
+    while [[ "$ACP_INPUT_BUFFER" == *$'\n'* ]] && (( count++ < 32 )); do
+      line="${ACP_INPUT_BUFFER%%$'\n'*}"
+      ACP_INPUT_BUFFER="${ACP_INPUT_BUFFER#*$'\n'}"
       _acp_handle_line "$line"
-      continue
+    done
+    count=0
+    while (( ACP_WORKER_RUNNING )) && [[ "$ACP_OUTPUT_BUFFER" == *$'\n'* ]] && (( count++ < 32 )); do
+      line="${ACP_OUTPUT_BUFFER%%$'\n'*}"
+      ACP_OUTPUT_BUFFER="${ACP_OUTPUT_BUFFER#*$'\n'}"
+      _mcp_byte_length "$line"
+      if (( REPLY > 67108864 )); then
+        _acp_error "$ACP_PROMPT_ID_RAW" -32603 'ACP worker message exceeds 64 MiB'
+        acp_shutdown
+        break
+      fi
+      _acp_forward_worker_line "$line"
+    done
+    if (( input_eof )) && [[ "$ACP_INPUT_BUFFER" != *$'\n'* ]]; then
+      [[ -n "$ACP_INPUT_BUFFER" ]] && _acp_error null -32700 'Incomplete ACP message'
+      acp_shutdown
+      break
+    fi
+    if (( worker_eof && ACP_WORKER_RUNNING )) && [[ "$ACP_OUTPUT_BUFFER" != *$'\n'* ]]; then
+      [[ -n "$ACP_OUTPUT_BUFFER" ]] && ACP_WORKER_PROTOCOL_ERROR=1
+      _acp_finish_prompt
+      worker_eof=0
     fi
 
+    poll_ticks=10
+    [[ "$ACP_INPUT_BUFFER" == *$'\n'* || "$ACP_OUTPUT_BUFFER" == *$'\n'* ]] && poll_ticks=0
     reply=()
-    zselect -t 10 -r 0 -r "$ACP_WORKER_FD" 2>/dev/null || continue
+    if (( ACP_WORKER_RUNNING )); then
+      zselect -t "$poll_ticks" -r 0 -r "$ACP_WORKER_FD" 2>/dev/null || continue
+    else
+      zselect -t "$poll_ticks" -r 0 2>/dev/null || continue
+    fi
     ready=("${reply[@]}")
     stdin_ready=$(( ${ready[(I)0]} > 0 ))
     worker_ready=$(( ${ready[(I)$ACP_WORKER_FD]} > 0 ))
     if (( stdin_ready )); then
-      if IFS= read -r line; then
-        _acp_handle_line "$line"
-      else
-        acp_shutdown
-        break
+      chunk=""
+      sysread -i 0 -s 32768 -t 0 chunk 2>/dev/null
+      read_status=$?
+      if (( read_status == 0 )); then
+        ACP_INPUT_BUFFER+="$chunk"
+        _mcp_byte_length "$ACP_INPUT_BUFFER"
+        if (( REPLY > 1048576 )) && [[ "$ACP_INPUT_BUFFER" != *$'\n'* ]]; then
+          _acp_error null -32700 'ACP message exceeds 1 MiB'
+          acp_shutdown
+          break
+        fi
+      elif (( read_status != 4 )); then
+        input_eof=1
       fi
     fi
     if (( worker_ready && ACP_WORKER_RUNNING )); then
-      if IFS= read -r -u "$ACP_WORKER_FD" line; then
-        _acp_send "$line"
-      else
-        _acp_finish_prompt
+      chunk=""
+      sysread -i "$ACP_WORKER_FD" -s 32768 -t 0 chunk 2>/dev/null
+      read_status=$?
+      if (( read_status == 0 )); then
+        ACP_OUTPUT_BUFFER+="$chunk"
+        _mcp_byte_length "$ACP_OUTPUT_BUFFER"
+        if (( REPLY > 67108864 )) && [[ "$ACP_OUTPUT_BUFFER" != *$'\n'* ]]; then
+          _acp_error "$ACP_PROMPT_ID_RAW" -32603 'ACP worker message exceeds 64 MiB'
+          acp_shutdown
+        fi
+      elif (( read_status != 4 )); then
+        worker_eof=1
       fi
     fi
   done

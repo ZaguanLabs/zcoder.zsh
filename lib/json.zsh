@@ -22,32 +22,20 @@ typeset -ga JSON_MODEL_NAMES=()
 typeset -gi JSON_RUNNING_MODEL_CONTEXT=0
 typeset -gA JSON_OBJECT=()
 
-_json_quote_slow() {
-  local input="$1" output='"' ch="" escaped=""
-  local -i i code
-
-  for (( i=1; i<=${#input}; i++ )); do
-    ch="${input[i]}"
-    case "$ch" in
-      '"') output+='\"' ;;
-      $'\\') output+='\\' ;;
-      $'\b') output+='\b' ;;
-      $'\f') output+='\f' ;;
-      $'\n') output+='\n' ;;
-      $'\r') output+='\r' ;;
-      $'\t') output+='\t' ;;
-      *)
-        printf -v code '%d' "'$ch"
-        if (( code < 32 )); then
-          printf -v escaped '\\u%04x' "$code"
-          output+="$escaped"
-        else
-          output+="$ch"
-        fi
-        ;;
-    esac
+# Escape the remaining JSON controls with at most 32 native split/join passes.
+# Dynamic delimiters preserve empty fields; no scalar character indexing or
+# per-match string replacement is needed even for control-heavy Unicode text.
+_json_quote_controls() {
+  local output="$1" ch="" encoded="" escaped=""
+  local -i code
+  for (( code=0; code<32; code++ )); do
+    printf -v encoded '\\x%02x' "$code"
+    printf -v ch '%b' "$encoded"
+    [[ "$output" == *"$ch"* ]] || continue
+    printf -v escaped '\\u%04x' "$code"
+    output="${(pj:$escaped:)${(@ps:$ch:)output}}"
   done
-  REPLY="${output}\""
+  REPLY="$output"
 }
 
 json_quote() {
@@ -62,17 +50,17 @@ json_quote() {
   output="$input"
   [[ "$output" == *'\'* ]] && output="${(pj:\\\\:)${(@ps:\\:)output}}"
   [[ "$output" == *'"'* ]] && output="${(pj:\\\":)${(@ps:\":)output}}"
-  output="${output//$'\b'/\\b}"
-  output="${output//$'\f'/\\f}"
-  output="${output//$'\r'/\\r}"
+  [[ "$output" == *$'\b'* ]] && output="${(pj:\\b:)${(@ps:\b:)output}}"
+  [[ "$output" == *$'\f'* ]] && output="${(pj:\\f:)${(@ps:\f:)output}}"
+  [[ "$output" == *$'\r'* ]] && output="${(pj:\\r:)${(@ps:\r:)output}}"
   [[ "$output" == *$'\n'* ]] && output="${(pj:\\n:)${(@ps:\n:)output}}"
   [[ "$output" == *$'\t'* ]] && output="${(pj:\\t:)${(@ps:\t:)output}}"
 
-  # The escapes above cover every common control character; anything still
-  # unescaped needs the character-by-character \u encoder.
-  if [[ "$output" == *[[:cntrl:]]* ]]; then
-    _json_quote_slow "$input"
-    return
+  # JSON forbids only U+0000 through U+001F, not DEL or other characters
+  # that a locale may classify as controls.
+  if [[ "$output" == *[$'\0'-$'\37']* ]]; then
+    _json_quote_controls "$output"
+    output="$REPLY"
   fi
   REPLY="\"${output}\""
 }
@@ -113,6 +101,7 @@ _json_scan_string() {
   backslash=${JSON_CHARS[(ib:JSON_POS:)$backslash_char]}
   if (( quote < backslash )); then
     (( quote > JSON_POS )) && JSON_TOKEN_VALUE="${(j::)JSON_CHARS[JSON_POS,quote-1]}" || JSON_TOKEN_VALUE=""
+    [[ "$JSON_TOKEN_VALUE" != *[$'\0'-$'\37']* ]] || { JSON_ERROR="unescaped JSON control character"; return 1; }
     JSON_TOKEN_TYPE="string"
     JSON_POS=$(( quote + 1 ))
     return 0
@@ -129,6 +118,7 @@ _json_scan_string() {
     fi
   done
   raw="${(j::)JSON_CHARS[JSON_POS,quote-1]}"
+  [[ "$raw" != *[$'\0'-$'\37']* ]] || { JSON_ERROR="unescaped JSON control character"; return 1; }
   if [[ "$raw" == *'\u'* ]]; then
     _json_scan_string_slow
     return
@@ -157,14 +147,18 @@ _json_scan_string() {
 }
 
 _json_scan_string_slow() {
-  local ch="" esc="" hex="" low_hex="" encoded="" decoded="" value=""
+  local ch="" esc="" hex="" low_hex="" encoded="" decoded="" value="" run=""
   local -i cp low_cp boundary
   while (( JSON_POS <= JSON_LEN )); do
     # Copy the run up to the next quote or escape in one slice instead of
     # appending character by character.
     boundary=${JSON_CHARS[(ib:JSON_POS:)[\"\\\\]]}
     (( boundary <= JSON_LEN )) || break
-    (( boundary > JSON_POS )) && value+="${(j::)JSON_CHARS[JSON_POS,boundary-1]}"
+    if (( boundary > JSON_POS )); then
+      run="${(j::)JSON_CHARS[JSON_POS,boundary-1]}"
+      [[ "$run" != *[$'\0'-$'\37']* ]] || { JSON_ERROR="unescaped JSON control character"; return 1; }
+      value+="$run"
+    fi
     ch="${JSON_CHARS[boundary]}"
     JSON_POS=$(( boundary + 1 ))
     if [[ "$ch" == '"' ]]; then
@@ -233,11 +227,13 @@ _json_scan_string_slow() {
 }
 
 json_next() {
-  local ch="" value=""
+  local ch="" value="" previous="$JSON_TOKEN_TYPE" whitespace=$' \t\r\n'
   local -i boundary
+  local MATCH MBEGIN MEND
+  local -a match mbegin mend
 
   # First non-whitespace character at or after JSON_POS, located in C.
-  JSON_POS=${JSON_CHARS[(ib:JSON_POS:)[^[:space:]]]}
+  JSON_POS=${JSON_CHARS[(ib:JSON_POS:)[^${whitespace}]]}
   JSON_TOKEN_START=$JSON_POS
   if (( JSON_POS > JSON_LEN )); then
     JSON_TOKEN_TYPE="eof"
@@ -246,6 +242,10 @@ json_next() {
   fi
 
   ch="${JSON_CHARS[JSON_POS]}"
+  if [[ "$previous" == ',' && ( "$ch" == '}' || "$ch" == ']' ) ]]; then
+    JSON_ERROR="trailing comma in JSON container"
+    return 1
+  fi
   case "$ch" in
     '{'|'}'|'['|']'|':'|',')
       JSON_TOKEN_TYPE="$ch"
@@ -259,6 +259,10 @@ json_next() {
     -|[0-9])
       boundary=${JSON_CHARS[(ib:JSON_POS:)[^0-9eE+.-]]}
       value="${(j::)JSON_CHARS[JSON_POS,boundary-1]}"
+      [[ "$value" =~ '^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$' ]] || {
+        JSON_ERROR="invalid JSON number"
+        return 1
+      }
       JSON_POS=$boundary
       JSON_TOKEN_TYPE="number"
       JSON_TOKEN_VALUE="$value"
@@ -504,6 +508,13 @@ _json_parse_response_message() {
 }
 
 json_parse_ollama_response() {
+  _json_parse_ollama_response "$@" && return 0
+  # A rejected document cannot leave executable partial tool arguments behind.
+  JSON_TOOL_NAMES=(); JSON_TOOL_ARGS=(); JSON_RESPONSE_TOOL_CALLS='[]'
+  return 1
+}
+
+_json_parse_ollama_response() {
   local key=""
   JSON_RESPONSE_CONTENT=""
   JSON_RESPONSE_THINKING=""
@@ -610,7 +621,8 @@ json_parse_models() {
       return 1
     fi
   done
-  return 0
+  json_next || return 1
+  [[ "$JSON_TOKEN_TYPE" == eof ]] || { JSON_ERROR="trailing content after JSON object"; return 1; }
 }
 
 _json_model_names_match() {
@@ -685,7 +697,8 @@ json_parse_running_model_context() {
       return 1
     fi
   done
-  return 0
+  json_next || return 1
+  [[ "$JSON_TOKEN_TYPE" == eof ]] || { JSON_ERROR="trailing content after JSON object"; return 1; }
 }
 
 # Tool schemas in this project use flat argument objects. Values are decoded to
@@ -720,4 +733,6 @@ json_parse_flat_object() {
       return 1
     fi
   done
+  json_next || return 1
+  [[ "$JSON_TOKEN_TYPE" == eof ]] || { JSON_ERROR="trailing content after JSON object"; return 1; }
 }

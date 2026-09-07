@@ -63,22 +63,43 @@ _http_byte_length() {
 
 _http_dechunk() {
   setopt localoptions extendedglob nomultibyte
-  local wire="$1" output="" size_line="" hex="" data=""
+  local wire="$1" output="" size_line="" hex="" data="" trailers=""
   local -i size
   while [[ -n "$wire" ]]; do
     [[ "$wire" == *$'\r\n'* ]] || { HTTP_ERROR="incomplete chunk header"; return 1; }
     size_line="${wire%%$'\r\n'*}"
     wire="${wire[$(( ${#size_line} + 3 )),-1]}"
     hex="${size_line%%;*}"
-    [[ "$hex" == [[:xdigit:]]## ]] || { HTTP_ERROR="invalid chunk size"; return 1; }
+    [[ "$hex" == [[:xdigit:]]## && ${#hex} -le 8 ]] || { HTTP_ERROR="invalid chunk size"; return 1; }
     size=$(( 16#$hex ))
-    (( size == 0 )) && break
+    (( size <= 67108864 && ${#output} + size <= 67108864 )) || { HTTP_ERROR="HTTP chunked body exceeds 64 MiB"; return 1; }
+    if (( size == 0 )); then
+      if [[ "$wire" == $'\r\n' ]]; then
+        REPLY="$output"; return 0
+      fi
+      [[ "$wire" == *$'\r\n\r\n'* ]] || { HTTP_ERROR="incomplete HTTP chunk trailers"; return 1; }
+      trailers="${wire%%$'\r\n\r\n'*}"
+      [[ -n "$trailers" && ${#trailers} -le 65536 && "$wire" == "$trailers"$'\r\n\r\n' ]] || {
+        HTTP_ERROR="invalid HTTP chunk trailers"; return 1
+      }
+      while [[ -n "$trailers" ]]; do
+        size_line="${trailers%%$'\r\n'*}"
+        [[ "$size_line" == [^:[:space:]]##:* && "$size_line" != *[$'\r\n']* ]] || {
+          HTTP_ERROR="invalid HTTP chunk trailer"; return 1
+        }
+        [[ "$trailers" == *$'\r\n'* ]] || break
+        trailers="${trailers#*$'\r\n'}"
+      done
+      REPLY="$output"; return 0
+    fi
     (( ${#wire} >= size + 2 )) || { HTTP_ERROR="incomplete HTTP chunk"; return 1; }
+    [[ "${wire[$(( size + 1 )),$(( size + 2 ))]}" == $'\r\n' ]] || { HTTP_ERROR="invalid HTTP chunk terminator"; return 1; }
     data="${wire[1,$size]}"
     output+="$data"
     wire="${wire[$(( size + 3 )),-1]}"
   done
-  REPLY="$output"
+  HTTP_ERROR="missing final HTTP chunk"
+  return 1
 }
 
 _http_close_active() {

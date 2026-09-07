@@ -18,6 +18,7 @@ typeset -g MCP_RESPONSE_RESULT=""
 typeset -g MCP_RESPONSE_ERROR=""
 typeset -g MCP_WIRE_ID=""
 typeset -g MCP_WIRE_METHOD=""
+typeset -g MCP_BROKER_BUFFER=""
 typeset -gi MCP_RAW_START=0 MCP_RAW_END=0
 typeset -ga MCP_RAW_ITEMS=()
 typeset -gi MCP_PCRE_JSON_STATE=-1
@@ -376,27 +377,38 @@ _mcp_response_parse() {
 # not run the full JSON decoder here: tools/list responses can contain very
 # large schemas and the parent is the process that actually consumes them.
 _mcp_wire_envelope() {
-  local line="$1"
-  local id_number_pattern='"id"[[:space:]]*:[[:space:]]*(-?[0-9]+)'
-  local method_pattern='"method"[[:space:]]*:[[:space:]]*"([^\"]+)"'
+  setopt localoptions extendedglob
+  local line="$1" raw=""
+  line="${line##[[:space:]]#}"
   MCP_WIRE_ID=""; MCP_WIRE_METHOD=""
-  [[ "$line" =~ "$id_number_pattern" ]] && MCP_WIRE_ID="${match[1]}"
-  [[ "$line" =~ "$method_pattern" ]] && MCP_WIRE_METHOD="${match[1]}"
+  # JSON member order is arbitrary; nested tool results may themselves contain
+  # id/method fields. Slice only top-level members without decoding the result.
+  if _mcp_raw_member "$line" id; then
+    raw="$REPLY"
+    if json_begin "$raw" && [[ "$JSON_TOKEN_TYPE" == number || "$JSON_TOKEN_TYPE" == string ]]; then
+      MCP_WIRE_ID="$raw"
+    fi
+  fi
+  if _mcp_raw_member "$line" method && json_begin "$REPLY" && [[ "$JSON_TOKEN_TYPE" == string ]]; then
+    MCP_WIRE_METHOD="$JSON_TOKEN_VALUE"
+  fi
+  return 0
 }
 
 _mcp_broker_exchange() {
-  local request="$1" expected_id="$2" timeout_seconds="$3" line="" error_json=""
-  local -F deadline=$(( EPOCHREALTIME + timeout_seconds ))
+  local request="$1" expected_id="$2" timeout_seconds="$3" line="" error_json="" chunk=""
+  local -i read_status=0 buffered_bytes=0 received=0
+  local -F deadline=$(( EPOCHREALTIME + timeout_seconds )) remaining=0
+  _mcp_byte_length "$MCP_BROKER_BUFFER"; buffered_bytes=$REPLY
   print -r -u "$MCP_BROKER_WRITE_FD" -- "$request" || { REPLY="server stdin closed"; return 1; }
   while (( EPOCHREALTIME < deadline )); do
-    if zselect -t 10 -r "$MCP_BROKER_READ_FD"; then
-      if ! IFS= read -r -u "$MCP_BROKER_READ_FD" line; then
-        REPLY="server stdout closed"
-        return 1
-      fi
+    if [[ "$MCP_BROKER_BUFFER" == *$'\n'* ]]; then
+      line="${MCP_BROKER_BUFFER%%$'\n'*}"
+      MCP_BROKER_BUFFER="${MCP_BROKER_BUFFER#*$'\n'}"
+      _mcp_byte_length "$line"; (( buffered_bytes -= REPLY + 1 ))
       [[ -n "$line" ]] || continue
       _mcp_wire_envelope "$line"
-      if [[ "$MCP_WIRE_ID" == "$expected_id" ]]; then
+      if [[ "$MCP_WIRE_ID" == "$expected_id" && -z "$MCP_WIRE_METHOD" ]]; then
         REPLY="$line"
         return 0
       fi
@@ -406,6 +418,21 @@ _mcp_broker_exchange() {
         error_json="{\"jsonrpc\":\"2.0\",\"id\":${response_id},\"error\":{\"code\":-32601,\"message\":${REPLY}}}"
         print -r -u "$MCP_BROKER_WRITE_FD" -- "$error_json" || true
       fi
+      continue
+    fi
+    remaining=$(( deadline - EPOCHREALTIME ))
+    (( remaining > 0 )) || break
+    (( remaining > 0.1 )) && remaining=0.1
+    chunk=""
+    sysread -i "$MCP_BROKER_READ_FD" -s 32768 -t "$remaining" -c received chunk 2>/dev/null
+    read_status=$?
+    if (( read_status == 0 )); then
+      MCP_BROKER_BUFFER+="$chunk"
+      (( buffered_bytes += received ))
+      (( buffered_bytes <= 67108864 )) || { REPLY="server response exceeds 64 MiB"; return 1; }
+    elif (( read_status != 4 )); then
+      REPLY="server stdout closed or failed before a complete response"
+      return 1
     fi
   done
   REPLY="request timed out after ${timeout_seconds}s"
@@ -422,6 +449,7 @@ _mcp_broker_main() {
   local -a command_args=()
   local -A command_env=()
   local -i seq=1 server_pid=0
+  local MCP_BROKER_BUFFER=""
   _mcp_parse_string_array "$args_json" || { mapfile[$runtime/start.error]="invalid args array"; return 1; }
   command_args=("${MCP_PARSED_ARRAY[@]}")
   json_parse_flat_object "$env_json" || { mapfile[$runtime/start.error]="invalid env object"; return 1; }
@@ -588,14 +616,14 @@ mcp_broker_request() {
   fi
   if [[ ! -e "$response_file" ]]; then
     MCP_ERROR="MCP broker stopped or timed out"
-    (( ${MCP_INTERACTIVE_TOOL:-0} || ${MCP_INTERACTIVE_CONNECT:-0} )) && _mcp_disconnect_request "$name" "$MCP_ERROR; outcome unknown"
+    _mcp_disconnect_request "$name" "$MCP_ERROR; outcome unknown"
     return 1
   fi
   envelope="${mapfile[$response_file]}"; zf_rm -f "$response_file" 2>/dev/null
   reply_status="${envelope%%$'\t'*}"; MCP_RESPONSE="${envelope#*$'\t'}"
   if [[ "$reply_status" != OK ]]; then
     MCP_ERROR="$MCP_RESPONSE"
-    (( ${MCP_INTERACTIVE_TOOL:-0} || ${MCP_INTERACTIVE_CONNECT:-0} )) && _mcp_disconnect_request "$name" "$MCP_ERROR; outcome unknown"
+    _mcp_disconnect_request "$name" "$MCP_ERROR; outcome unknown"
     return 1
   fi
   return 0

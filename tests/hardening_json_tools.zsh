@@ -1,0 +1,113 @@
+# Shared parser and workspace regressions; sourced by tests/run.zsh.
+() {
+  local malformed='' sample='' encoded='' ch='' escaped='' quoted='' wire=''
+  local -i code=0
+  for malformed in '{"x":01}' '{"x":-}' '{"x":1.}' '{"x":1e+}' \
+    '{"x":1,}' '{"x":true} false' '{"x":true} garbage' \
+    $'{\v"x":1}' $'{\f"x":1}'; do
+    json_parse_flat_object "$malformed"
+    assert_failure "flat JSON rejects ${(qqq)malformed}" $?
+  done
+  for sample in '{"x":0}' '{"x":-0}' '{"x":-10.25e+2}' \
+    $' \r\n\t{"x":1E-3}\t\n'; do
+    json_parse_flat_object "$sample"
+    assert_success "flat JSON accepts ${(qqq)sample}" $?
+  done
+  for malformed in '{"x":[1,]}' '{"x":{"y":1,}}'; do
+    json_begin "$malformed" && json_capture_value
+    assert_failure "nested JSON rejects trailing comma ${(qqq)malformed}" $?
+  done
+  json_parse_models '{"models":[]} true'
+  assert_failure 'model catalog parser requires EOF' $?
+  json_parse_running_model_context '{"models":[]} true' model
+  assert_failure 'running model parser requires EOF' $?
+  json_parse_ollama_response '{"message":{"tool_calls":[{"function":{"name":"read_file","arguments":{"path":"x",}}}]}}'
+  assert_failure 'Ollama rejects malformed nested tool arguments' $?
+
+  for (( code=0; code<32; code++ )); do
+    printf -v encoded '\\x%02x' "$code"
+    printf -v ch '%b' "$encoded"
+    sample="${ch}é${ch}"
+    json_quote "$sample"; quoted="$REPLY"
+    json_begin "$quoted"
+    assert_success "JSON encodes and decodes control $code" $?
+    assert_eq "$sample" "$JSON_TOKEN_VALUE" "JSON preserves control $code at both string boundaries"
+    json_begin "\"${sample}\""
+    assert_failure "JSON rejects literal control $code" $?
+  done
+  sample=$'é\177é'
+  json_quote "$sample"; quoted="$REPLY"
+  assert_eq "\"${sample}\"" "$quoted" 'DEL stays literal in valid JSON'
+  json_begin '"\ud800\u0041\udc00"'
+  assert_success 'strict JSON preserves surrogate recovery' $?
+  assert_eq $'�A�' "$JSON_TOKEN_VALUE" 'unpaired surrogates still become replacement characters'
+  json_begin $'"\\u0041\1"'
+  assert_failure 'slow Unicode scanner rejects literal controls' $?
+  json_begin $'"\\n\1"'
+  assert_failure 'simple escape scanner rejects literal controls' $?
+
+  local fixture="$TEST_TMP/hardening-json-tools"
+  local ZCODER_WORKSPACE="$fixture/workspace" ZCODER_COMMAND_POLICY=deny
+  local ZCODER_MAX_TOOL_OUTPUT=32768 UI_ACTIVE=0
+  local -x RIPGREP_CONFIG_PATH="$fixture/rgconfig"
+  local marker="$fixture/pre-executed" pre="$fixture/pre"
+  zf_mkdir -p -- "$fixture/workspace" "$fixture/outside"
+  mapfile[$fixture/workspace/input]='inside'
+  mapfile[$fixture/outside/secret]='OUTSIDE_REVIEW_SECRET'
+  zf_ln -s -- "$fixture/outside" "$fixture/workspace/link"
+  mapfile[$RIPGREP_CONFIG_PATH]='--follow'
+  tool_search OUTSIDE_REVIEW_SECRET . 10
+  assert_success 'search succeeds with inherited follow configuration disabled' $?
+  assert_not_contains "$TOOL_RESULT" 'OUTSIDE_REVIEW_SECRET' 'search does not traverse an outside symlink from rg config'
+  tool_list_files . 100
+  assert_success 'listing succeeds with inherited follow configuration disabled' $?
+  assert_not_contains "$TOOL_RESULT" 'secret' 'listing does not follow an outside symlink from rg config'
+  mapfile[$pre]=$'#!/bin/zsh\nprint -r -- executed > '"${(q)marker}"$'\nprint -r -- PRE_EXECUTED\n'
+  zf_chmod 700 "$pre"
+  mapfile[$RIPGREP_CONFIG_PATH]="--pre=$pre"
+  tool_search inside . 10
+  assert_success 'search ignores configured preprocessor under deny policy' $?
+  assert_contains "$TOOL_RESULT" inside 'search examines the original file content'
+  [[ ! -e "$marker" ]]
+  assert_success 'ripgrep preprocessor never executes' $?
+
+  mapfile[$fixture/workspace/range]=$'one\n'
+  tool_read_file_range range 2 2
+  assert_failure 'trailing newline does not invent a second line' $?
+  zcoder_write_text_file "$fixture/workspace/range" ''
+  tool_read_file_range range 1 1
+  assert_failure 'empty file has zero lines' $?
+  mapfile[$fixture/workspace/range]=$'\n\none\nlast'
+  tool_read_file_range range 1 9
+  assert_success 'range handles empty and unterminated lines' $?
+  assert_eq $'1: \n2: \n3: one\n4: last' "$TOOL_RESULT" 'range preserves exact line numbering and content'
+  tool_read_file_range range 999999999999999999999 999999999999999999999
+  assert_failure 'range rejects overflowing line numbers before arithmetic' $?
+
+  # Force a Unicode character and a selected line across a sysread block.
+  sample="${(l:32767::x:)}"$'é\nlast\n'
+  mapfile[$fixture/workspace/range]="$sample"
+  ZCODER_MAX_TOOL_OUTPUT=65536
+  tool_read_file_range range 1 1
+  assert_success 'range joins a Unicode character split across read blocks' $?
+  assert_eq "1: ${sample%%$'\n'*}" "$TOOL_RESULT" 'range preserves split UTF-8 bytes'
+  tool_read_file_range range 2 2
+  assert_eq '2: last' "$TOOL_RESULT" 'range skips a long preceding line across blocks'
+  local unit=$'abcdefghi\n'
+  sample="${(pl:100000::$unit:)}"
+  mapfile[$fixture/workspace/range]="$sample"
+  tool_read_file_range range 10000 10000
+  assert_eq '10000: abcdefghi' "$TOOL_RESULT" 'range skips preceding lines by complete chunks'
+  ZCODER_MAX_TOOL_OUTPUT=128
+  tool_read_file_range range 1 10000
+  assert_success 'large selected ranges preserve bounded head and tail' $?
+  (( ${#TOOL_RESULT} <= ZCODER_MAX_TOOL_OUTPUT ))
+  assert_success 'range result obeys configured character cap' $?
+  assert_contains "$TOOL_RESULT" '1: abcdefghi' 'bounded range keeps its beginning'
+  assert_contains "$TOOL_RESULT" '10000: abcdefghi' 'bounded range keeps its ending'
+  assert_contains "$TOOL_RESULT" 'characters omitted' 'bounded range explains omitted content'
+
+  ZCODER_WORKSPACE=/
+  _tool_resolve_existing "$fixture/workspace/input"
+  assert_success 'root workspace admits its descendants' $?
+}

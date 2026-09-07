@@ -47,7 +47,7 @@ tools_schema_json() {
   output+="${comma}"'
 {"type":"function","function":{"name":"list_files","description":"List files and directories below a workspace path while honoring .gitignore even outside a Git repository and excluding common dependency/build trees. Use a narrow path and modest max_entries only when project structure is unknown.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Narrow workspace-relative directory; defaults to ."},"max_entries":{"type":"integer","description":"Maximum entries; prefer a small limit; defaults to 100"}}}}},
 {"type":"function","function":{"name":"read_file","description":"Read a complete UTF-8 text file. Expensive for context: use only for clearly small files or when every line is required. Do not use when search, MCP navigation, or project instructions already supplied a relevant source range; use read_file_range.","parameters":{"type":"object","required":["path"],"properties":{"path":{"type":"string","description":"Workspace-relative path to a small file whose complete contents are needed"}}}}},
-{"type":"function","function":{"name":"read_file_range","description":"Read an inclusive line range. This is the preferred file-reading tool after search or MCP navigation locates the relevant section; normally request at most 200 lines.","parameters":{"type":"object","required":["path","start_line","end_line"],"properties":{"path":{"type":"string","description":"Workspace-relative file path"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1,"description":"Inclusive end line; normally no more than 200 lines after start_line"}}}}}'
+{"type":"function","function":{"name":"read_file_range","description":"Read an inclusive line range. This is the preferred file-reading tool after search or MCP navigation locates the relevant section; normally request at most 200 lines.","parameters":{"type":"object","required":["path","start_line","end_line"],"properties":{"path":{"type":"string","description":"Workspace-relative file path"},"start_line":{"type":"integer","maximum":999999999,"minimum":1},"end_line":{"type":"integer","maximum":999999999,"minimum":1,"description":"Inclusive end line; normally no more than 200 lines after start_line"}}}}}'
   if (( ! TOOL_PATCH_RETRY_REQUIRED )); then
     output+=',
 {"type":"function","function":{"name":"write_file","description":"Create a new workspace text file or deliberately replace a complete file. Never use this as a fallback after a focused apply_patch failure.","parameters":{"type":"object","required":["path","content"],"properties":{"path":{"type":"string"},"content":{"type":"string"}}}}}'
@@ -100,7 +100,7 @@ _tool_succeed() {
 
 _tool_is_inside_workspace() {
   local resolved="$1" root="${ZCODER_WORKSPACE:A}"
-  [[ "$resolved" == "$root" || "$resolved" == "$root"/* ]]
+  [[ "$resolved" == "$root" || "$resolved" == "${root%/}/"* ]]
 }
 
 _tool_resolve_existing() {
@@ -156,7 +156,7 @@ tool_list_files() {
   # --no-require-git is the crucial bit: ripgrep otherwise discovers ignore
   # files only inside a repository. Zsh turns the resulting file paths back
   # into the directory-and-file tree expected by the tool contract.
-  command rg --files --hidden --no-require-git --sort path \
+  command rg --no-config --no-follow --files --hidden --no-require-git --sort path \
     --glob '!.git/**' --glob '!.atlas/**' \
     --glob '!**/node_modules/**' --glob '!**/vendor/**' \
     --glob '!**/dist/**' --glob '!**/build/**' --glob '!**/target/**' \
@@ -211,25 +211,96 @@ tool_read_file() {
   _tool_succeed "$content"
 }
 
+# Keep range output bounded while preserving the first and last characters.
+# State is local to tool_read_file_range and shared through Zsh dynamic scope.
+_tool_range_append() {
+  local piece="$1"
+  (( range_chars += ${#piece} ))
+  if (( ${#range_head} < range_limit )); then
+    range_head+="${piece[1,$(( range_limit - ${#range_head} ))]}"
+  fi
+  range_tail+="$piece"
+  (( ${#range_tail} > range_limit )) && range_tail="${range_tail[-range_limit,-1]}"
+  return 0
+}
+
 tool_read_file_range() {
-  local requested="$1" start="$2" end="$3" resolved_path="" content="" output="" line=""
+  local requested="$1" start="$2" end="$3" resolved_path="" output="" line="" fd=""
+  local chunk="" pending="" range_head="" range_tail="" marker=""
   local -a lines=()
-  local -i i total
-  [[ "$start" == <1-> && "$end" == <1-> ]] || { _tool_fail "start_line and end_line must be positive integers"; return 1; }
+  local -i total=0 read_status=0 complete=0 first=0 last=0 i=0
+  local -i range_chars=0 range_limit=${ZCODER_MAX_TOOL_OUTPUT:-32768} head=0 tail=0 omitted=0
+  [[ "$start" == <1-> && "$end" == <1-> && ${#start} -le 9 && ${#end} -le 9 ]] || {
+    _tool_fail "start_line and end_line must be positive integers below 1000000000"; return 1
+  }
+  (( range_limit > 0 )) || range_limit=32768
   (( end >= start )) || { _tool_fail "end_line must be greater than or equal to start_line"; return 1; }
   _tool_resolve_existing "$requested" || return 1
   resolved_path="$REPLY"
   [[ -f "$resolved_path" ]] || { _tool_fail "not a regular file: $requested"; return 1; }
-  content="${mapfile[$resolved_path]}"
-  lines=("${(@f)content}")
-  total=${#lines}
+  sysopen -r -o nofollow,cloexec -u fd -- "$resolved_path" 2>/dev/null || {
+    _tool_fail "could not read file: $requested"; return 1
+  }
+  {
+    # Count preceding lines in native split operations, rather than a shell
+    # iteration per line. Read no more blocks after the requested final line.
+    # Only the unfinished selected line may exceed a block in memory.
+    while (( total < end )); do
+      chunk=""
+      sysread -i "$fd" -s 32768 chunk 2>/dev/null
+      read_status=$?
+      (( read_status == 0 || read_status == 5 )) || { _tool_fail "could not read file: $requested"; return 1; }
+      if [[ -z "$chunk" ]]; then
+        if [[ -n "$pending" ]]; then
+          (( total++ ))
+          if (( total >= start )); then
+            (( range_chars )) && _tool_range_append $'\n'
+            _tool_range_append "${total}: ${pending}"
+          fi
+        fi
+        break
+      fi
+      lines=("${(@ps:\n:)chunk}")
+      complete=$(( ${#lines} - 1 ))
+      # A line split across blocks is assembled only when it will be returned.
+      if (( total + 1 >= start )); then
+        lines[1]="${pending}${lines[1]}"
+      fi
+      pending="${lines[-1]}"
+      first=$(( start - total )); (( first >= 1 )) || first=1
+      last=$complete; (( total + last <= end )) || last=$(( end - total ))
+      for (( i=first; i<=last; i++ )); do
+        (( range_chars )) && _tool_range_append $'\n'
+        _tool_range_append "$(( total + i )): ${lines[i]}"
+      done
+      (( total += complete ))
+      # Preserve whether an unrequested unfinished final line exists without
+      # retaining its contents. This is enough for an accurate EOF line count.
+      if (( total + 1 < start )) && [[ -n "$pending" ]]; then pending='x'; fi
+    done
+  } always {
+    exec {fd}<&-
+  }
   (( start <= total )) || { _tool_fail "start_line $start is past end of file ($total lines)"; return 1; }
-  (( end > total )) && end=$total
-  for (( i=start; i<=end; i++ )); do
-    line="${lines[i]}"
-    output+="${i}: ${line}"
-    (( i < end )) && output+=$'\n'
-  done
+  if (( range_chars <= range_limit )); then
+    output="$range_head"
+  else
+    omitted=$(( range_chars - range_limit ))
+    # Include the marker itself in the omitted count; repeat until its width
+    # stabilizes, including when the count crosses a decimal digit boundary.
+    while true; do
+      marker=$'\n'"[... ${omitted} characters omitted ...]"$'\n'
+      (( omitted == range_chars - range_limit + ${#marker} )) && break
+      omitted=$(( range_chars - range_limit + ${#marker} ))
+    done
+    if (( range_limit <= ${#marker} + 16 )); then
+      output="$range_head"
+    else
+      head=$(( (range_limit - ${#marker}) * 3 / 5 ))
+      tail=$(( range_limit - ${#marker} - head ))
+      output="${range_head[1,head]}${marker}${range_tail[-tail,-1]}"
+    fi
+  fi
   _tool_succeed "$output"
 }
 
@@ -436,7 +507,7 @@ tool_search() {
   resolved_path="$REPLY"
   zcoder_temp_path search .out || { _tool_fail "could not create private temporary storage"; return 1; }
   out_file="$REPLY"
-  search_argv=(rg --line-number --column --color never --hidden --no-require-git \
+  search_argv=(rg --no-config --no-follow --line-number --column --color never --hidden --no-require-git \
     --glob '!.git/**' --glob '!.atlas/**' \
     --glob '!**/node_modules/**' --glob '!**/vendor/**' \
     --glob '!**/dist/**' --glob '!**/build/**' --glob '!**/target/**' \
