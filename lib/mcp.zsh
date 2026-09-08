@@ -58,8 +58,9 @@ _mcp_pcre_json_init() {
 # Zsh. The scanner tracks strings and escapes while balancing arrays/objects.
 _mcp_raw_value_bounds() {
   local source="$1"
-  local -i index="${2:-1}" length=${#source} depth=0 escaped=0 in_string=0
+  local -i index="${2:-1}" length=${#source} depth=0 in_string=0
   local ch="" first="" tail="" MATCH=""
+  local -a chars=()
   while (( index <= length )) && [[ "${source[index]}" == [[:space:]] ]]; do (( index++ )); done
   (( index <= length )) || return 1
   MCP_RAW_START=$index
@@ -71,35 +72,32 @@ _mcp_raw_value_bounds() {
     fi
   fi
   first="${source[index]}"
-  if [[ "$first" == '"' ]]; then
-    (( index++ ))
+  # PCRE is optional and can also reject a large/deep value at its resource
+  # limits. The native fallback must stay cheap: scalar subscripts repeatedly
+  # walk the UTF-8 prefix. Split once, then search the array for structural
+  # characters, skipping ordinary description/schema text in native code.
+  chars=("${(@s::)source}")
+  if [[ "$first" == '"' || "$first" == '{' || "$first" == '[' ]]; then
     while (( index <= length )); do
-      ch="${source[index]}"
-      if (( escaped )); then
-        escaped=0
-      elif [[ "$ch" == $'\\' ]]; then
-        escaped=1
-      elif [[ "$ch" == '"' ]]; then
-        MCP_RAW_END=$index
-        return 0
-      fi
-      (( index++ ))
-    done
-    return 1
-  fi
-  if [[ "$first" == '{' || "$first" == '[' ]]; then
-    for (( ; index<=length; index++ )); do
-      ch="${source[index]}"
       if (( in_string )); then
-        if (( escaped )); then
-          escaped=0
-        elif [[ "$ch" == $'\\' ]]; then
-          escaped=1
-        elif [[ "$ch" == '"' ]]; then
+        index=${chars[(ib:index:)[\"\\\\]]}
+        (( index <= length )) || return 1
+        if [[ "${chars[index]}" == $'\\' ]]; then
+          (( index += 2 ))
+          continue
+        else
           in_string=0
+          if (( depth == 0 )); then
+            MCP_RAW_END=$index
+            return 0
+          fi
         fi
+        (( index++ ))
         continue
       fi
+      index=${chars[(ib:index:)[\"\{\}\[\]]]}
+      (( index <= length )) || return 1
+      ch="${chars[index]}"
       if [[ "$ch" == '"' ]]; then
         in_string=1
       elif [[ "$ch" == '{' || "$ch" == '[' ]]; then
@@ -111,11 +109,12 @@ _mcp_raw_value_bounds() {
           return 0
         fi
       fi
+      (( index++ ))
     done
     return 1
   fi
   while (( index <= length )); do
-    ch="${source[index]}"
+    ch="${chars[index]}"
     [[ "$ch" == ',' || "$ch" == '}' || "$ch" == ']' || "$ch" == [[:space:]] ]] && break
     (( index++ ))
   done
@@ -404,7 +403,9 @@ _mcp_broker_exchange() {
   while (( EPOCHREALTIME < deadline )); do
     if [[ "$MCP_BROKER_BUFFER" == *$'\n'* ]]; then
       line="${MCP_BROKER_BUFFER%%$'\n'*}"
-      MCP_BROKER_BUFFER="${MCP_BROKER_BUFFER#*$'\n'}"
+      # The line boundary is already known. Shortest-prefix removal with
+      # *\n retries a growing pattern match and pins a core on tool catalogs.
+      MCP_BROKER_BUFFER="${MCP_BROKER_BUFFER[$(( ${#line} + 2 )),-1]}"
       _mcp_byte_length "$line"; (( buffered_bytes -= REPLY + 1 ))
       [[ -n "$line" ]] || continue
       _mcp_wire_envelope "$line"

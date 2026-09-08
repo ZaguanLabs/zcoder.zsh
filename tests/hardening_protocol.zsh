@@ -24,6 +24,7 @@ hardening_protocol_tests() {
     assert_eq '' "$MCP_WIRE_ID" 'MCP notifications cannot inherit a nested request ID'
     _mcp_wire_envelope ' {"jsonrpc":"2.0","id":1,"result":{}}'
     assert_eq 1 "$MCP_WIRE_ID" 'MCP envelope parsing accepts leading JSON whitespace'
+    hardening_mcp_native_scan_test
 
     # Prior integration fixtures can leave a saved coprocess write endpoint
     # whose reader has exited. Matched replies need a live consumer here.
@@ -81,6 +82,22 @@ hardening_protocol_tests() {
     _mcp_broker_exchange '{}' 2 1
     assert_success 'coalesced MCP replies remain buffered for the next exchange' $?
     assert_eq '' "$MCP_BROKER_BUFFER" 'complete MCP records consume exactly their own bytes'
+
+    # Exercise framing itself: routing-only tests miss quadratic removal of
+    # a long consumed line. Retain a following reply and an incomplete tail.
+    json_quote "${(pl:50000::é:)}"
+    wire='{"jsonrpc":"2.0","id":3,"result":{"text":'"$REPLY"'}}'
+    MCP_BROKER_BUFFER="$wire"$'\n{"jsonrpc":"2.0","id":4,"result":{}}\n{"partial":"é'
+    started=$EPOCHREALTIME
+    _mcp_broker_exchange '{}' 3 10
+    result=$?; elapsed=$(( EPOCHREALTIME - started ))
+    assert_success 'MCP framing accepts a large Unicode catalog response' "$result"
+    assert_eq "$wire" "$REPLY" 'MCP framing returns the complete large response unchanged'
+    assert_success 'MCP framing consumes a large line without a startup CPU stall' $(( elapsed < 1.5 ? 0 : 1 ))
+    _mcp_broker_exchange '{}' 4 1
+    assert_success 'a response following a large MCP frame remains readable' $?
+    assert_eq '{"partial":"é' "$MCP_BROKER_BUFFER" 'large MCP framing preserves an incomplete Unicode tail'
+    MCP_BROKER_BUFFER=''
     exec {MCP_BROKER_WRITE_FD}>&-
 
     hardening_mcp_timeout_test
@@ -127,6 +144,36 @@ hardening_protocol_tests() {
     [[ -n "$peer_pid" ]] && kill -TERM "$peer_pid" 2>/dev/null
     [[ -n "$peer_pid" ]] && wait "$peer_pid" 2>/dev/null
   }
+}
+
+hardening_mcp_native_scan_test() {
+  # Hosts without zsh/pcre and responses exceeding PCRE's resource limits
+  # both use this path. A long description used to pin a core at startup.
+  local -i MCP_PCRE_JSON_STATE=0
+  local description="${(pl:50000::é:)}" value='' wire=''
+  local -F started elapsed
+  json_quote "$description"; description="$REPLY"
+  wire='{"jsonrpc":"2.0","result":{"description":'"$description"',"id":999,"method":"nested"},"id":"outer"}'
+  started=$EPOCHREALTIME
+  _mcp_wire_envelope "$wire"
+  elapsed=$(( EPOCHREALTIME - started ))
+  assert_eq '"outer"' "$MCP_WIRE_ID" 'native MCP routing finds an ID after a large Unicode result'
+  assert_eq '' "$MCP_WIRE_METHOD" 'native MCP routing ignores methods inside a large result'
+  assert_success 'native MCP routing skips long text without a startup CPU stall' $(( elapsed < 1.5 ? 0 : 1 ))
+
+  for value in '""' '"é"' '"escaped \\\" ] } and \\\\"' '{"é":[1,{"text":"[ ] } \\\""}],"empty":{}}' '[true,false,null,-1.5e2]' true null -1.5e2; do
+    wire=$' \t'"$value"',42'
+    _mcp_raw_value_bounds "$wire"
+    assert_success 'native MCP scanner locates a complete JSON value' $?
+    assert_eq "$value" "${wire[MCP_RAW_START,MCP_RAW_END]}" 'native MCP bounds preserve Unicode, escapes and nested delimiters'
+  done
+  for value in '"unfinished' '"trailing\' '{"text":"closed"' '[1,{"text":"unfinished'; do
+    _mcp_raw_value_bounds "$value"
+    assert_failure 'native MCP scanner rejects unterminated strings and containers' $?
+  done
+  _mcp_raw_array_items '[{"name":"é","text":"escaped \\\" ] }"},[1,2],"",true]'
+  assert_success 'native MCP scanner splits a catalog with escaped structural text' $?
+  assert_eq 4 "${#MCP_RAW_ITEMS}" 'native MCP array slicing preserves item boundaries'
 }
 
 hardening_mcp_timeout_test() {
