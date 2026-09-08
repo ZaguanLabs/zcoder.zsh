@@ -10,8 +10,8 @@ ui_modal_text() {
   value="${value//$'\n'/ }"
   zcoder_terminal_safe "$value"; value="$REPLY"
   zcurses move overlay_win "$row" "$col"
-  zcurses attr overlay_win -bold -dim -reverse -underline default/default
-  zcurses attr overlay_win $=attr
+  ui_attr overlay_win -bold -dim -reverse -underline default/default
+  ui_attr overlay_win $=attr
   zcoder_clip "$value" "$available"
   zcurses string overlay_win "$REPLY"
 }
@@ -44,12 +44,13 @@ ui_modal_run() {
         (( modal_h >= 6 && modal_w >= 24 )) || return 1
         modal_rows=$(( modal_h - 4 ))
         zcurses addwin overlay_win "$modal_h" "$modal_w" $(( (SCREEN_H-modal_h)/2 )) $(( (SCREEN_W-modal_w)/2 )) || return 1
+        ui_window_background overlay_win
         previous_h=$SCREEN_H; previous_w=$SCREEN_W; modal_dirty=1
       fi
       if (( modal_dirty )); then
         zcurses clear overlay_win
-        zcurses attr overlay_win -reverse -dim bold cyan/black
-        zcurses border overlay_win
+        ui_attr overlay_win -reverse -dim -bold border/surface
+        ui_border overlay_win
         ui_modal_text 0 " ${modal_title} " "bold white/black"
         "$modal_draw" || return 1
         terminal_refresh overlay_win

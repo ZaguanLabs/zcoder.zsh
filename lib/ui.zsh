@@ -1,4 +1,5 @@
 # Adaptive curses interface for chat, tools, and prompt editing.
+source "${${(%):-%x}:A:h}/drawing.zsh"
 
 typeset -gi UI_ACTIVE=0 UI_ACTIVITY_DEPTH=0
 typeset -gF UI_ACTIVITY_ESCAPE_AT=0.0
@@ -227,6 +228,10 @@ ui_setup_windows() {
   zcurses addwin chat_win $main_h $chat_w $TOP_H $SIDE_W 2>/dev/null
   zcurses addwin input_win $INPUT_H $SCREEN_W $input_y 0 2>/dev/null
   zcurses addwin foot_win $FOOT_H $SCREEN_W $(( SCREEN_H - FOOT_H )) 0 2>/dev/null
+  local window
+  for window in top_win chat_win input_win foot_win; do ui_window_background "$window"; done
+  (( SIDE_W > 0 )) && ui_window_background side_win
+  return 0
 }
 
 ui_detect_geometry() {
@@ -244,6 +249,7 @@ ui_detect_geometry() {
 ui_init() {
   zcurses init || return 1
   ui_detect_geometry
+  ui_theme_init
   UI_ACTIVE=1
   terminal_start
   ui_setup_windows
@@ -320,20 +326,20 @@ _ui_paint_header() {
   local -a identities=("⚡ ${ZCODER_NAME} v${ZCODER_VERSION} │ " "$ZCODER_MODEL" " @ ${host} │ ${workspace}")
   local -a identity_attrs=('bold cyan/black' 'bold yellow/black' 'dim white/black')
   zcurses clear top_win
-  zcurses attr top_win -dim bold cyan/black
-  zcurses border top_win
+  ui_attr top_win -dim -bold border/surface
+  ui_border top_win
   zcurses move top_win 1 2
   for identity in "${identities[@]}"; do
     (( identity_limit > 0 )) || break
     zcoder_terminal_safe "$identity"; identity="${REPLY//$'\n'/ }"
     zcoder_clip "$identity" "$identity_limit"; identity="$REPLY"
-    zcurses attr top_win -bold -dim $=identity_attrs[section]
+    ui_attr top_win -bold -dim $=identity_attrs[section]
     zcurses string top_win "$identity"
     (( identity_limit -= ${(m)#identity}, section++ ))
   done
   if (( badge_x >= 2 )); then
     zcurses move top_win 1 $badge_x
-    zcurses attr top_win -bold -dim $=UI_STATUS_ATTR
+    ui_attr top_win -bold -dim $=UI_STATUS_ATTR
     zcurses string top_win "$badge"
   fi
   (( defer_refresh )) || terminal_refresh top_win
@@ -371,10 +377,10 @@ _ui_paint_sidebar() {
   fi
 
   zcurses clear side_win
-  [[ "$UI_FOCUS" == sidebar ]] && zcurses attr side_win bold yellow/black || zcurses attr side_win dim white/black
-  zcurses border side_win
+  [[ "$UI_FOCUS" == sidebar ]] && ui_attr side_win -dim bold accent/surface || ui_attr side_win -dim -bold border/surface
+  ui_border side_win
   zcurses move side_win 0 2
-  zcurses attr side_win bold cyan/black
+  ui_attr side_win bold cyan/black
   zcurses string side_win " Sessions (${#SESSION_IDS}) "
 
   row=1
@@ -385,10 +391,10 @@ _ui_paint_sidebar() {
     zcoder_pad "$display" $(( inner_w - 4 )); display="$REPLY"
     zcurses move side_win $row 1
     if [[ "$session_id" == "$CURRENT_SESSION_ID" ]]; then
-      zcurses attr side_win bold green/black
+      ui_attr side_win bold green/black
       zcurses string side_win " ▶ $display"
     else
-      zcurses attr side_win dim white/black
+      ui_attr side_win dim white/black
       zcurses string side_win "   $display"
     fi
     (( row++ ))
@@ -397,28 +403,28 @@ _ui_paint_sidebar() {
   divider="${(pl:inner_w::─:)}"
   if (( divider_row <= inner_h )); then
     zcurses move side_win $divider_row 1
-    zcurses attr side_win dim cyan/black
+    ui_attr side_win dim cyan/black
     zcurses string side_win "$divider"
   fi
   row=$(( divider_row + 1 ))
-  if (( row <= inner_h )); then zcurses move side_win $row 2; zcurses attr side_win bold white/black; zcurses string side_win "Project"; fi
+  if (( row <= inner_h )); then zcurses move side_win $row 2; ui_attr side_win bold white/black; zcurses string side_win "Project"; fi
   (( row++ ))
-  if (( row <= inner_h )); then zcurses move side_win $row 2; zcurses attr side_win green/black; zcoder_clip "$root" $(( inner_w - 1 )); zcurses string side_win "$REPLY"; fi
+  if (( row <= inner_h )); then zcurses move side_win $row 2; ui_attr side_win green/black; zcoder_clip "$root" $(( inner_w - 1 )); zcurses string side_win "$REPLY"; fi
   (( row++ ))
-  if (( row <= inner_h )); then zcurses move side_win $row 2; zcurses attr side_win dim cyan/black; zcurses string side_win "${ZCODER_PROFILE} · Guides: ${#INSTRUCTION_SOURCES}"; fi
+  if (( row <= inner_h )); then zcurses move side_win $row 2; ui_attr side_win dim cyan/black; zcurses string side_win "${ZCODER_PROFILE} · Guides: ${#INSTRUCTION_SOURCES}"; fi
   (( row++ ))
-  if (( row <= inner_h )); then zcurses move side_win $row 2; zcurses attr side_win bold white/black; zcurses string side_win "Available tools"; fi
+  if (( row <= inner_h )); then zcurses move side_win $row 2; ui_attr side_win bold white/black; zcurses string side_win "Available tools"; fi
   (( row++ ))
   for (( i=1; i<=${#names}; i++ )); do
     (( row > inner_h )) && break
     zcurses move side_win $row 2
-    [[ "${names[i]}" == run_command ]] && zcurses attr side_win yellow/black || zcurses attr side_win dim white/black
+    [[ "${names[i]}" == run_command ]] && ui_attr side_win yellow/black || ui_attr side_win dim white/black
     zcurses string side_win "• ${names[i]}"
     (( row++ ))
   done
-  if (( row <= inner_h )); then zcurses move side_win $row 2; zcurses attr side_win bold white/black; zcurses string side_win "Shell approval"; fi
+  if (( row <= inner_h )); then zcurses move side_win $row 2; ui_attr side_win bold white/black; zcurses string side_win "Shell approval"; fi
   (( row++ ))
-  if (( row <= inner_h )); then zcurses move side_win $row 2; zcurses attr side_win yellow/black; zcurses string side_win "$policy"; fi
+  if (( row <= inner_h )); then zcurses move side_win $row 2; ui_attr side_win yellow/black; zcurses string side_win "$policy"; fi
   (( defer_refresh )) || terminal_refresh side_win
 }
 
@@ -902,6 +908,7 @@ _ui_paint_chat() {
   local -i inner_w=$(( SCREEN_W - SIDE_W - 2 )) inner_h=$(( SCREEN_H - TOP_H - INPUT_H - FOOT_H - 2 ))
   local -i total row idx max_scroll segment_start segment_count segment_index remaining
   local attr="" segment="" cache_key="${UI_TRANSCRIPT_GENERATION}:${inner_w}:${ZCODER_MODEL}"
+  local -a row_spans=()
   local -i message_count=${#UI_ROLES} render_index
   if [[ "$cache_key" != "$UI_RENDER_CACHE_KEY" ]] || \
      (( message_count < UI_RENDER_COUNT )) || (( UI_RENDER_COUNT == 0 && message_count > 0 )); then
@@ -945,14 +952,13 @@ _ui_paint_chat() {
   (( UI_SCROLL > max_scroll )) && UI_SCROLL=$max_scroll
   (( UI_SCROLL < 0 )) && UI_SCROLL=0
   zcurses clear chat_win
-  [[ "$UI_FOCUS" == chat ]] && zcurses attr chat_win bold yellow/black || zcurses attr chat_win dim white/black
-  zcurses border chat_win
-  zcurses move chat_win 0 2; zcurses attr chat_win bold cyan/black; zcurses string chat_win " Agent Transcript (${#UI_ROLES} events) "
+  [[ "$UI_FOCUS" == chat ]] && ui_attr chat_win -dim bold accent/surface || ui_attr chat_win -dim -bold border/surface
+  ui_border chat_win
+  zcurses move chat_win 0 2; ui_attr chat_win bold cyan/black; zcurses string chat_win " Agent Transcript (${#UI_ROLES} events) "
   for (( row=1; row<=inner_h; row++ )); do
     idx=$(( UI_SCROLL + row ))
     (( idx <= total )) || continue
-    zcurses move chat_win $row 1
-    zcurses attr chat_win -bold -dim -reverse -underline default/default
+    row_spans=()
     segment_count=${UI_LINE_SEGMENT_COUNTS[idx]:-0}
     if (( segment_count > 0 )); then
       segment_start=${UI_LINE_SEGMENT_STARTS[idx]}
@@ -961,28 +967,25 @@ _ui_paint_chat() {
         zcoder_clip "${UI_SEGMENT_TEXTS[segment_index]}" "$remaining"
         segment="$REPLY"
         attr="${UI_SEGMENT_ATTRS[segment_index]}"
-        zcurses attr chat_win -bold -dim -reverse -underline default/default
-        zcurses attr chat_win $=attr
-        zcurses string chat_win "$segment"
+        row_spans+=("$attr" "$segment")
         (( remaining -= ${(m)#segment} ))
         [[ "$segment" == "${UI_SEGMENT_TEXTS[segment_index]}" ]] || break
       done
       if (( remaining > 0 )); then
-        zcurses attr chat_win -bold -dim -reverse -underline default/default
         zcoder_pad "" "$remaining"
-        zcurses string chat_win "$REPLY"
+        row_spans+=("default/default" "$REPLY")
       fi
     else
       attr="${UI_ATTRS[idx]}"
-      zcurses attr chat_win $=attr
       if [[ "$UI_FOCUS" == chat ]] && (( UI_SELECTED_EVENT > 0 && idx == ${UI_MESSAGE_STARTS[UI_SELECTED_EVENT]:-0} )); then
-        zcurses attr chat_win reverse bold
+        attr="${attr} reverse bold"
       fi
       zcoder_pad "${UI_LINES[idx]}" "$inner_w"
-      zcurses string chat_win "$REPLY"
+      row_spans+=("$attr" "$REPLY")
     fi
+    (( ${#row_spans} )) && ui_draw_row chat_win "$row" 1 "${row_spans[@]}"
   done
-  (( UI_SCROLL > 0 )) && { zcurses move chat_win 0 $(( inner_w - 12 )); zcurses attr chat_win dim yellow/black; zcurses string chat_win " [PgUp/PgDn] "; }
+  (( UI_SCROLL > 0 )) && { zcurses move chat_win 0 $(( inner_w - 12 )); ui_attr chat_win dim yellow/black; zcurses string chat_win " [PgUp/PgDn] "; }
   (( defer_refresh )) || terminal_refresh chat_win
 }
 
@@ -999,13 +1002,13 @@ _ui_paint_input() {
   fi
   total=${#INPUT_VISUAL_LINES}
   zcurses clear input_win
-  [[ "$UI_FOCUS" == input ]] && zcurses attr input_win bold green/black || zcurses attr input_win dim white/black
-  zcurses border input_win
+  [[ "$UI_FOCUS" == input ]] && ui_attr input_win -dim bold accent/surface || ui_attr input_win -dim -bold border/surface
+  ui_border input_win
   if (( total > INPUT_VISIBLE_ROWS && UI_ACTIVITY_DEPTH == 0 )); then
     title=" Prompt (Enter sends · Shift-Enter newline · ${INPUT_VIEW_TOP}-$(( INPUT_VIEW_TOP + INPUT_VISIBLE_ROWS - 1 ))/${total}) "
   fi
   zcurses move input_win 0 2
-  zcurses attr input_win bold white/black
+  ui_attr input_win bold white/black
   zcoder_clip "$title" $(( SCREEN_W - 4 )); zcurses string input_win "$REPLY"
   for (( row=1; row<=INPUT_VISIBLE_ROWS; row++ )); do
     visual_row=$(( INPUT_VIEW_TOP + row - 1 ))
@@ -1015,9 +1018,9 @@ _ui_paint_input() {
     (( row == 1 && INPUT_VIEW_TOP > 1 )) && marker="↑"
     (( row == INPUT_VISIBLE_ROWS && visual_row < total )) && marker="↓"
     zcurses move input_win $row 2
-    zcurses attr input_win bold green/black
+    ui_attr input_win bold green/black
     zcurses string input_win "$marker "
-    zcurses attr input_win white/black
+    ui_attr input_win white/black
     zcurses string input_win "$visible"
   done
   cursor_y=$(( INPUT_CURSOR_ROW - INPUT_VIEW_TOP + 1 ))
@@ -1051,7 +1054,7 @@ _ui_paint_footer() {
   [[ "$UI_FOCUS" == chat ]] && text=" ^P Commands  ↑/↓ Select  Enter/Space Fold  ^R Reasoning  Home/End First/Last  PgUp/Dn Scroll  Tab Prompt  ^Y Copy"
   (( UI_ACTIVITY_DEPTH > 0 )) && text=" Esc Stop  Tab Prompt/Transcript  ↑/↓ Navigate  Enter Fold in Transcript  ^R Reasoning  PgUp/Dn Scroll"
   zcoder_clip "$text" "$SCREEN_W"; text="$REPLY"
-  zcurses clear foot_win; zcurses attr foot_win reverse dim white/black
+  zcurses clear foot_win; ui_attr foot_win reverse dim white/black
   zcoder_pad "$text" "$SCREEN_W"; zcurses move foot_win 0 0; zcurses string foot_win "$REPLY"
   (( defer_refresh )) || terminal_refresh foot_win
 }

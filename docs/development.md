@@ -120,14 +120,21 @@ directory. The dependency's own broader module checks use a Python 3 PTY driver:
 ZSH_BUILD_ROOT=/path/to/matching/configured/zsh make -C vendor/zcurses test
 ```
 
-The pinned module adds `geometry` and the read-only `zcurses_features` array.
+The pinned module (`bc23176`) adds `geometry`, custom borders, runtime `colorinfo`,
+opt-in RGB colors and styled-span batching, with discovery through
+the read-only `zcurses_features` array. Its build also requires Autoconf,
+Autoheader, M4 and Patch for optional curses function checks. Its own RGB tests
+use `tic` to compile private terminfo fixtures. These are development tools,
+not additional runtime requirements for zcoder.
 zcoder checks the discovery parameter with `zmodload -F -e` on UI entry; an
 advertised geometry feature selects native polling even if its first query
 fails. A known feature set without geometry selects stty without probing the
 command. Missing/disabled discovery retains the legacy one-time probe, including
 compatibility with the original geometry-only fork. `/terminal` lists compiled
-features separately from negotiated terminal state. Cursor control, drawing
-batches, richer events, and color extensions remain upstream roadmap items.
+features separately from negotiated terminal state and active drawing modes.
+General Unicode clipping remains outside the drawing adapter. The application
+PTY tests compare batched/fallback retained cells and exercise combining-mark
+rejection, indexed and monochrome palettes, and stock/bundled modules.
 
 ## Performance measurements
 

@@ -3,6 +3,18 @@
 zcoder's adaptive curses interface keeps the prompt, agent transcript, saved
 jobs, project details, and command approvals in one terminal view.
 
+The palette uses a dark blue-gray surface, muted borders and coordinated syntax
+and status colors. A matching bundled zcurses build adds rounded borders and
+styled-row batching. Stock curses uses the same application layout and an
+indexed or basic palette. `ZCODER_COLOR=basic` or `mono`,
+`ZCODER_BORDERS=plain`, and `ZCODER_SPANS=false` select the fallback paths.
+
+Truecolor is enabled only when curses reports support through an appropriate
+direct-color terminal description. `COLORTERM=truecolor` alone does not enable
+it; zcoder never rewrites `TERM`. The 256-color palette also provides the new
+appearance on ordinary `xterm-256color` sessions. `/terminal` reports the chosen
+palette, border mode, batching support, RGB state and color-pair usage.
+
 ## Layout
 
 The interface includes:

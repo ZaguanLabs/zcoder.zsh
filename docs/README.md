@@ -35,6 +35,7 @@ zcoder.zsh. If you are new to the project, begin with
 
 ## Releases
 
+- [v0.13.0 — A fresh look for native Zsh](releases/v0.13.0.md)
 - [v0.12.3 — Bound context accounting memory](releases/v0.12.3.md)
 - [v0.12.2 — Native Zsh performance and reliability](releases/v0.12.2.md)
 

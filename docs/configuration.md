@@ -16,6 +16,9 @@ Run `./zcoder.zsh --help` for the complete CLI reference.
 | `ZCODER_COMMAND_POLICY` | `ask` | `ask`, `allow`, or `deny` |
 | `ZCODER_THINK` | `true` | Request model reasoning |
 | `ZCODER_CURSES` | `auto` | Load the matching local bundled module when built; `stock` skips the bundle |
+| `ZCODER_COLOR` | `auto` | Use RGB when supported, otherwise a 256-color or basic palette; `basic` and `mono` select conservative modes |
+| `ZCODER_BORDERS` | `auto` | Use rounded borders when supported; `plain` keeps curses' default borders |
+| `ZCODER_SPANS` | `true` | Batch transcript rows when supported; `false` uses individual drawing calls |
 | `ZCODER_SYNC_OUTPUT` | `auto` | Query synchronized-output support; `false` disables it, `true` forces it |
 | `ZCODER_ANIMATE` | `true` | Animate active status at four frames per second; `false` keeps elapsed time without a spinner |
 | `ZCODER_STREAM` | `true` | Stream eligible local interactive responses; `false` retains buffered responses |

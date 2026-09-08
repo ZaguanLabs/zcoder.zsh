@@ -16,6 +16,7 @@ lib/
   goal.zsh              persistent goals and read-only completion verifier
   harnesses.zsh         external harness catalog and availability
   delegate.zsh          external harness consultations and editing workers
+  drawing.zsh           semantic palette, custom borders and styled-row adapter
   http.zsh              native TCP/HTTP client
   input.zsh             multiline editor, viewport, and history
   input_queue.zsh       durable steering and queued follow-ups
@@ -86,6 +87,13 @@ physical update; an unchanged frame issues no curses calls. The input window is
 refreshed last to restore its cursor without repainting unchanged text. Resize,
 terminal re-entry, and modal dismissal explicitly invalidate the windows.
 Ncurses continues to own terminal cell comparison and output optimization.
+`ui.zsh` loads `drawing.zsh` only for the interactive interface. Its fixed palette
+resolves logical style records at paint time and chooses RGB, indexed, basic or
+monochrome output from initialized curses capabilities. Transcript rows use
+`spans` when available, including explicitly styled padding. Unsupported text
+or failed batches use the existing attribute/string path; wrapping and clipping
+remain in Zsh. No model text becomes drawing instructions. Background fills,
+borders and overlays share the palette; headless modes load none of this layer.
 Wrapping, clipping, padding, and cursor layout use terminal display-cell widths.
 Wide characters and combining marks are handled together; complex emoji shaping
 and widths still depend on the terminal. Paste input accumulates in bounded

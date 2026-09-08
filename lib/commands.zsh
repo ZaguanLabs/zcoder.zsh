@@ -220,9 +220,16 @@ _ui_terminal_draw() {
   [[ -n "$TERMINAL_FD" ]] && paste_state=enabled
   terminal_poll
   terminal_inspected_state="$TERMINAL_SYNC_STATE"
+  if [[ -n ${UI_COLOR_INFO[initialized]:-} ]]; then
+    zcurses colorinfo UI_COLOR_INFO 2>/dev/null
+  fi
   local -a lines=("Terminal: ${TERM:-unset}" "Size: ${SCREEN_W} columns × ${SCREEN_H} rows"
     "Curses module: ${ZCODER_CURSES_BACKEND:-preloaded}" "Resize queries: ${geometry_state}"
     "Compiled features: ${features_state}"
+    "Palette: ${UI_COLOR_MODE} · Borders: ${UI_BORDER_MODE}"
+    "Styled rows: ${UI_STYLED_SPANS} · Wide spans: ${UI_WIDE_SPANS} · Row fallbacks: ${UI_SPAN_FALLBACKS}"
+    "RGB supported/enabled: ${UI_COLOR_INFO[truecolor_supported]:-unknown}/${UI_COLOR_INFO[truecolor_enabled]:-unknown}"
+    "Color pairs used/free: ${UI_COLOR_INFO[pairs_used]:-unknown}/${UI_COLOR_INFO[pairs_free]:-unknown}"
     "Synchronized output: ${TERMINAL_SYNC_STATE}" "Policy: ${TERMINAL_SYNC_POLICY}"
     "Bracketed paste: ${paste_state}" ""
     "ZCODER_SYNC_OUTPUT=auto queries terminal support once on UI entry."
