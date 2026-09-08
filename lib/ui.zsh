@@ -906,8 +906,8 @@ _ui_paint_chat() {
   (( UI_ACTIVE )) || return 0
   local -i defer_refresh="${1:-0}"
   local -i inner_w=$(( SCREEN_W - SIDE_W - 2 )) inner_h=$(( SCREEN_H - TOP_H - INPUT_H - FOOT_H - 2 ))
-  local -i total row idx max_scroll segment_start segment_count segment_index remaining
-  local attr="" segment="" cache_key="${UI_TRANSCRIPT_GENERATION}:${inner_w}:${ZCODER_MODEL}"
+  local -i total row idx max_scroll segment_start segment_count segment_index
+  local attr="" padding="${(pl:inner_w:: :)}" cache_key="${UI_TRANSCRIPT_GENERATION}:${inner_w}:${ZCODER_MODEL}"
   local -a row_spans=()
   local -i message_count=${#UI_ROLES} render_index
   if [[ "$cache_key" != "$UI_RENDER_CACHE_KEY" ]] || \
@@ -962,28 +962,18 @@ _ui_paint_chat() {
     segment_count=${UI_LINE_SEGMENT_COUNTS[idx]:-0}
     if (( segment_count > 0 )); then
       segment_start=${UI_LINE_SEGMENT_STARTS[idx]}
-      remaining=$inner_w
-      for (( segment_index=segment_start; segment_index<segment_start+segment_count && remaining>=0; segment_index++ )); do
-        zcoder_clip "${UI_SEGMENT_TEXTS[segment_index]}" "$remaining"
-        segment="$REPLY"
-        attr="${UI_SEGMENT_ATTRS[segment_index]}"
-        row_spans+=("$attr" "$segment")
-        (( remaining -= ${(m)#segment} ))
-        [[ "$segment" == "${UI_SEGMENT_TEXTS[segment_index]}" ]] || break
+      for (( segment_index=segment_start; segment_index<segment_start+segment_count; segment_index++ )); do
+        row_spans+=("${UI_SEGMENT_ATTRS[segment_index]}" "${UI_SEGMENT_TEXTS[segment_index]}")
       done
-      if (( remaining > 0 )); then
-        zcoder_pad "" "$remaining"
-        row_spans+=("default/default" "$REPLY")
-      fi
+      row_spans+=("default/default" "$padding")
     else
       attr="${UI_ATTRS[idx]}"
       if [[ "$UI_FOCUS" == chat ]] && (( UI_SELECTED_EVENT > 0 && idx == ${UI_MESSAGE_STARTS[UI_SELECTED_EVENT]:-0} )); then
         attr="${attr} reverse bold"
       fi
-      zcoder_pad "${UI_LINES[idx]}" "$inner_w"
-      row_spans+=("$attr" "$REPLY")
+      row_spans+=("$attr" "${UI_LINES[idx]}$padding")
     fi
-    (( ${#row_spans} )) && ui_draw_row chat_win "$row" 1 "${row_spans[@]}"
+    (( ${#row_spans} )) && ui_draw_row chat_win "$row" 1 "$inner_w" "${row_spans[@]}"
   done
   (( UI_SCROLL > 0 )) && { zcurses move chat_win 0 $(( inner_w - 12 )); ui_attr chat_win dim yellow/black; zcurses string chat_win " [PgUp/PgDn] "; }
   (( defer_refresh )) || terminal_refresh chat_win

@@ -1,6 +1,6 @@
 # Application styles and bounded row drawing; curses retains screen ownership.
 typeset -g UI_COLOR_MODE=basic UI_BORDER_MODE=plain
-typeset -gi UI_STYLED_SPANS=0 UI_WIDE_SPANS=0 UI_SPAN_FALLBACKS=0
+typeset -gi UI_STYLED_SPANS=0 UI_WIDE_SPANS=0 UI_CLIPPED_SPANS=0 UI_SPAN_FALLBACKS=0
 typeset -gA UI_COLOR_INFO=() UI_THEME_COLORS=() UI_STYLE_CACHE=()
 typeset -gA UI_COLOR_ROLES=(white text black surface cyan accent green success
   yellow warning red error magenta syntax blue info)
@@ -55,12 +55,13 @@ ui_attr() {
 ui_theme_init() {
   emulate -L zsh
   UI_COLOR_INFO=(); UI_STYLE_CACHE=(); UI_SPAN_FALLBACKS=0
-  UI_STYLED_SPANS=0; UI_WIDE_SPANS=0; UI_BORDER_MODE=plain
+  UI_STYLED_SPANS=0; UI_WIDE_SPANS=0; UI_CLIPPED_SPANS=0; UI_BORDER_MODE=plain
   UI_COLOR_MODE=basic
   if zmodload -F -e zsh/curses +p:zcurses_features; then
     if [[ ${ZCODER_SPANS:-true} != false ]]; then
       (( ${zcurses_features[(Ie)styled_spans]} )) && UI_STYLED_SPANS=1
       (( ${zcurses_features[(Ie)wide_spans]} )) && UI_WIDE_SPANS=1
+      (( ${zcurses_features[(Ie)clipped_spans]} )) && UI_CLIPPED_SPANS=1
     fi
     if [[ ${ZCODER_BORDERS:-auto} != plain && -o multibyte ]] &&
        (( ${zcurses_features[(Ie)wide_borders]} )); then
@@ -115,26 +116,46 @@ ui_border() {
   zcurses border "$1"
 }
 
-# Rows arrive already clipped/padded by the existing layout. No clipping or
-# grapheme policy lives here. A rejected batch is repainted with legacy calls.
+# Draw a prefix across all styles within one cell budget. Callers clear the
+# window first and supply padding spans when blank cells need explicit styles.
+# A rejected native clip is repainted using the Zsh clipper and legacy calls.
 ui_draw_row() {
   local window="$1" row="$2" col="$3" style text REPLY
-  shift 3
-  local -a batch=()
+  local -i width=$4 remaining=$4
+  shift 4
+  (( width > 0 )) || return 0
+  local -a batch=() clipped=()
   local -i can_batch=$UI_STYLED_SPANS
   if (( can_batch )); then
     for style text in "$@"; do
       if (( ! UI_WIDE_SPANS )) && [[ "$text" == *[^\ -\~]* ]]; then can_batch=0; break; fi
+    done
+  fi
+  if (( can_batch && UI_CLIPPED_SPANS )); then
+    for style text in "$@"; do
       ui_style "$style"
       batch+=("${REPLY// /,}" "$text")
     done
+    zcurses spansclip "$window" "$row" "$col" "$width" "${batch[@]}" 2>/dev/null && return 0
+    (( UI_SPAN_FALLBACKS++ ))
+    can_batch=0
   fi
+  for style text in "$@"; do
+    zcoder_clip "$text" "$remaining"
+    clipped+=("$style" "$REPLY")
+    (( remaining -= ${(m)#REPLY} ))
+    [[ "$REPLY" == "$text" ]] || break
+  done
   if (( can_batch )); then
+    for style text in "${clipped[@]}"; do
+      ui_style "$style"
+      batch+=("${REPLY// /,}" "$text")
+    done
     zcurses spans "$window" "$row" "$col" "${batch[@]}" 2>/dev/null && return 0
     (( UI_SPAN_FALLBACKS++ ))
   fi
   zcurses move "$window" "$row" "$col"
-  for style text in "$@"; do
+  for style text in "${clipped[@]}"; do
     ui_attr "$window" -bold -dim -reverse -underline default/default
     ui_attr "$window" ${=style}
     zcurses string "$window" "$text"

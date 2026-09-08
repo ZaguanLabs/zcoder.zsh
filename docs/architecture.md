@@ -90,9 +90,13 @@ Ncurses continues to own terminal cell comparison and output optimization.
 `ui.zsh` loads `drawing.zsh` only for the interactive interface. Its fixed palette
 resolves logical style records at paint time and chooses RGB, indexed, basic or
 monochrome output from initialized curses capabilities. Transcript rows use
-`spans` when available, including explicitly styled padding. Unsupported text
-or failed batches use the existing attribute/string path; wrapping and clipping
-remain in Zsh. No model text becomes drawing instructions. Background fills,
+`spansclip` when available, with one cell budget across all styles and explicit
+padding. The window is cleared before rows are drawn, including any unused
+column before a wide character that does not fit. Older modules use Zsh clipping
+followed by `spans` or individual attribute/string calls. Unsupported text or
+failed batches use the same bounded Zsh fallback. Wrapping remains in Zsh;
+clipping does not promise whole-grapheme handling of joined emoji.
+No model text becomes drawing instructions. Background fills,
 borders and overlays share the palette; headless modes load none of this layer.
 Wrapping, clipping, padding, and cursor layout use terminal display-cell widths.
 Wide characters and combining marks are handled together; complex emoji shaping
