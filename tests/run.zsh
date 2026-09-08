@@ -454,6 +454,7 @@ assert_eq "$quote_sample" "$JSON_TOKEN_VALUE" "bulk JSON quoting round-trips mix
 control_quote_sample=$'slash \\ and control \x01'
 json_quote "$control_quote_sample"; json_begin "$REPLY"
 assert_eq "$control_quote_sample" "$JSON_TOKEN_VALUE" "fallback JSON quoting round-trips uncommon controls"
+source "${TEST_DIR}/json_utf8.zsh"
 
 tool_write_file "src/note.txt" $'one\ntwo\nthree\n'
 assert_success "write_file creates parent directories" $?
@@ -1012,6 +1013,7 @@ assert_eq "21:27" "${JSON_OBJECT[time]}" "remote transcript loading preserves di
 assert_eq "1" "${JSON_OBJECT[reasoning_open]}" "remote transcript loading preserves reasoning visibility"
 _remote_server_session_event "../../escape" 0
 assert_eq "2" "$?" "remote transcript loading rejects unsafe session identifiers"
+json_utf8_session_tests "$remote_fixture_dir" "$remote_current_id"
 
 ZCODER_SESSIONS_DIR="$saved_remote_sessions_dir"
 ZCODER_WORKSPACE="$saved_remote_workspace"

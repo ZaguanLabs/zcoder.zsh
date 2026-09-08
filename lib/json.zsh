@@ -38,6 +38,71 @@ _json_quote_controls() {
   REPLY="$output"
 }
 
+# Repair malformed UTF-8 at the JSON boundary, including bytes in old saved
+# transcripts. Work in bytes regardless of the process locale. Valid text is
+# copied in bounded blocks: an unbounded repeated glob can exhaust Zsh's stack.
+_json_utf8_text() {
+  emulate -L zsh
+  setopt extendedglob nomultibyte
+  local LC_ALL=C
+  local input="$1" chunk='' byte='' second='' replacement=$'\xef\xbf\xbd'
+  local unit=$'([\x00-\x7f]|[\xc2-\xdf][\x80-\xbf]|\xe0[\xa0-\xbf][\x80-\xbf]|[\xe1-\xec\xee-\xef][\x80-\xbf][\x80-\xbf]|\xed[\x80-\x9f][\x80-\xbf]|\xf0[\x90-\xbf][\x80-\xbf][\x80-\xbf]|[\xf1-\xf3][\x80-\xbf][\x80-\xbf][\x80-\xbf]|\xf4[\x80-\x8f][\x80-\xbf][\x80-\xbf])'
+  local -a pieces=() bytes=()
+  local -i offset=1 end length=${#input} i j width count extra
+  if [[ "$input" != *[$'\x80'-$'\xff']* ]]; then
+    REPLY="$input"
+    return 0
+  fi
+  while (( offset <= length )); do
+    end=$(( offset + 1023 ))
+    (( end > length )) && end=$length
+    # Include continuation bytes when a valid character crosses a block edge.
+    for extra in 1 2 3; do
+      (( end < length )) || break
+      [[ ${input[end+1]} == [$'\x80'-$'\xbf'] ]] || break
+      (( end++ ))
+    done
+    chunk="${input[offset,end]}"
+    if [[ "$chunk" == (${~unit})# ]]; then
+      pieces+=("$chunk")
+    else
+      bytes=("${(@s::)chunk}")
+      count=${#bytes}
+      for (( i=1; i<=count; )); do
+        byte=${bytes[i]}
+        width=1
+        second=$'[\x80-\xbf]'
+        case "$byte" in
+          [$'\x00'-$'\x7f']) pieces+=("$byte"); (( i++ )); continue ;;
+          [$'\xc2'-$'\xdf']) width=2 ;;
+          $'\xe0') width=3; second=$'[\xa0-\xbf]' ;;
+          [$'\xe1'-$'\xec']|[$'\xee'-$'\xef']) width=3 ;;
+          $'\xed') width=3; second=$'[\x80-\x9f]' ;;
+          $'\xf0') width=4; second=$'[\x90-\xbf]' ;;
+          [$'\xf1'-$'\xf3']) width=4 ;;
+          $'\xf4') width=4; second=$'[\x80-\x8f]' ;;
+        esac
+        j=$(( i + 1 ))
+        if (( width > 1 && j <= count )) && [[ ${bytes[j]} == ${~second} ]]; then
+          (( j++ ))
+          while (( j < i + width && j <= count )) && [[ ${bytes[j]} == [$'\x80'-$'\xbf'] ]]; do
+            (( j++ ))
+          done
+        fi
+        if (( width > 1 && j == i + width )); then
+          pieces+=("${(j::)bytes[i,j-1]}")
+        else
+          # Consume only the malformed prefix; retain the following character.
+          pieces+=("$replacement")
+        fi
+        i=$j
+      done
+    fi
+    offset=$(( end + 1 ))
+  done
+  REPLY="${(j::)pieces}"
+}
+
 json_quote() {
   local input="$1" output=""
 
@@ -47,7 +112,8 @@ json_quote() {
   # ${//} pays a rebuild per match, so the frequent newline and tab escapes use
   # a C-speed split+join instead; quoted (@s) splitting keeps empty fields, so
   # the round trip is exact.
-  output="$input"
+  _json_utf8_text "$input"
+  output="$REPLY"
   [[ "$output" == *'\'* ]] && output="${(pj:\\\\:)${(@ps:\\:)output}}"
   [[ "$output" == *'"'* ]] && output="${(pj:\\\":)${(@ps:\":)output}}"
   [[ "$output" == *$'\b'* ]] && output="${(pj:\\b:)${(@ps:\b:)output}}"

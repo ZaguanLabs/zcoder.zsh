@@ -1111,6 +1111,8 @@ _remote_http_send() {
   local fd="$1" status_code="$2" body="${3:-}" reason="" response=""
   local -i body_bytes
   _remote_http_reason "$status_code"; reason="$REPLY"
+  # Cached events may contain JSON serialized before UTF-8 repair was added.
+  _json_utf8_text "$body"; body="$REPLY"
   _http_byte_length "$body"; body_bytes=$REPLY
   response="HTTP/1.1 ${status_code} ${reason}"$'\r\n'\
 "Content-Type: application/json"$'\r\n'\

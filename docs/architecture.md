@@ -412,6 +412,14 @@ retain the existing replacement-character behavior. DEL is legal literal JSON.
 Encoding uses native split/join transforms, including uncommon controls, rather
 than indexing every character in a growing Unicode scalar.
 
+JSON string encoding replaces malformed UTF-8 prefixes with U+FFFD while
+preserving valid Unicode and escaping JSON controls. Native byte validation
+works independently of the process locale and uses bounded blocks to avoid
+unbounded glob recursion. The remote HTTP writer also repairs previously
+serialized cached events before calculating `Content-Length`. This lets strict
+UTF-8 clients load older binary tool-output events without rewriting stored
+transcript bytes.
+
 The buffered HTTP decoder validates chunk sizes, data CRLF delimiters, and the
 terminal zero chunk. Missing completion fails the response even when earlier
 chunks were complete. This complements the incremental framing checks in
