@@ -4,7 +4,7 @@ zcoder's adaptive curses interface keeps the prompt, agent transcript, saved
 jobs, project details, and command approvals in one terminal view.
 
 The palette uses a dark blue-gray surface, muted borders and coordinated syntax
-and status colors. A matching bundled zcurses build adds rounded borders and
+and status colors. A matching bundled zdraw build adds rounded borders and
 styled-row batching with a shared cell budget for transcript clipping. Stock
 curses uses the same application layout and an
 indexed or basic palette. `ZCODER_COLOR=basic` or `mono`,

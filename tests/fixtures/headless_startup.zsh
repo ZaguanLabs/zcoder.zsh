@@ -10,7 +10,7 @@ headless_probe() {
   for name in ui_init input_reset ui_command_palette ui_modal_run TRAPWINCH main_tui handle_slash_command; do
     (( ! $+functions[$name] )) || return 11
   done
-  for name in zsh/curses zsh/terminfo; do
+  for name in zdraw zsh/curses zsh/terminfo; do
     zmodload -e "$name" && return 12
   done
   [[ "$REMOTE_MODE" == server ]] || return 0

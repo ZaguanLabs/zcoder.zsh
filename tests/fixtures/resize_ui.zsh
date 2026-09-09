@@ -2,17 +2,21 @@
 emulate -R zsh
 setopt extendedglob
 typeset -g fixture_root=$1 fixture_base=$2
+source "$fixture_root/lib/curses.zsh"
 if [[ ${3:-} == auto ]]; then
-  source "$fixture_root/lib/curses.zsh"
   ZCODER_CURSES=auto zcoder_curses_load "$fixture_root" || exit 1
 elif [[ -n ${3:-} ]]; then
   module_path=("$3" $module_path)
+  zmodload zdraw || exit 1
+  ZCODER_CURSES_MODULE=zdraw ZCODER_CURSES_COMMAND=zdraw
+else
+  ZCODER_CURSES=stock zcoder_curses_load "$fixture_root" || exit 1
 fi
-zmodload zsh/curses zsh/terminfo zsh/datetime zsh/mapfile || exit 1
+zmodload zsh/terminfo zsh/datetime zsh/mapfile || exit 1
 typeset -gi fixture_geometry_calls=0
-zcurses() {
+zcoder_curses() {
   [[ $1 == geometry ]] && (( fixture_geometry_calls++ ))
-  builtin zcurses "$@"
+  builtin "$ZCODER_CURSES_COMMAND" "$@"
 }
 for fixture_lib in util json transcript input terminal ui; do
   source "$fixture_root/lib/$fixture_lib.zsh"

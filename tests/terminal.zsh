@@ -65,8 +65,8 @@ assert_eq x "${TERMINAL_INPUT_QUEUE[1]}" "ordinary input resumes after an overlo
 TERMINAL_INPUT_QUEUE=()
 
 # A failed curses update must still end the synchronized frame.
-functions[_terminal_saved_curses]="${functions[zcurses]}"
-zcurses() { print -rn -u "$TERMINAL_FD" -- FRAME; return 7; }
+functions[_terminal_saved_curses]="${functions[zcoder_curses]}"
+zcoder_curses() { print -rn -u "$TERMINAL_FD" -- FRAME; return 7; }
 exec {TERMINAL_FD}> "$TEST_TMP/terminal-frame"
 TERMINAL_SYNC_ENABLED=1
 terminal_refresh overlay_win
@@ -75,8 +75,81 @@ assert_eq $'\e[?2026hFRAME\e[?2026l' "${mapfile[$TEST_TMP/terminal-frame]}" "fai
 assert_eq 0 "$TERMINAL_FRAME_ACTIVE" "failed refreshes release frame ownership"
 terminal_end
 assert_eq '' "$TERMINAL_FD" "terminal cleanup closes its output descriptor"
-functions[zcurses]="${functions[_terminal_saved_curses]}"
+functions[zcoder_curses]="${functions[_terminal_saved_curses]}"
 unfunction _terminal_saved_curses
+
+# Exercise capability selection and record adaptation without terminal I/O.
+() {
+  local saved_curses=${functions[zcoder_curses]}
+  local saved_features=${functions[zcoder_curses_features]}
+  local -a features=() TERMINAL_EVENT_FLAGS=() TERMINAL_INPUT_QUEUE=()
+  local -i TERMINAL_NOREFRESH_INPUT=0 discovery_result=0 read_result=0 calls=0 legacy_calls=0
+  local TERMINAL_SEQUENCE='' TERMINAL_SYNC_STATE=disabled TERMINAL_PASTE_TAIL=''
+  local -i TERMINAL_PASTE=0 TERMINAL_CSI_DISCARD=0
+  local TERMINAL_FD='' ch='' key='' mouse='' call='' feature_set=''
+  local -A record=(type character text 界)
+  zcoder_curses_features() { reply=("${features[@]}"); return "$discovery_result"; }
+  zcoder_curses() {
+    (( calls++ )); call="${(j: :)@}"
+    if [[ $1 == event ]]; then
+      terminal_event=("${(@kv)record}")
+      return "$read_result"
+    fi
+    (( legacy_calls++ )); terminal_byte=L; terminal_key=''; terminal_mouse=''
+  }
+  {
+    for feature_set in '' structured_events norefresh_events; do
+      features=("$feature_set")
+      terminal_detect_input
+      assert_eq 0 "$TERMINAL_NOREFRESH_INPUT" 'incomplete capabilities retain legacy input'
+    done
+    features=(structured_events norefresh_events)
+    terminal_detect_input
+    assert_eq '1:norefresh' "$TERMINAL_NOREFRESH_INPUT:${(j: :)TERMINAL_EVENT_FLAGS}" 'no-refresh input works without compiled mouse support'
+    features+=(mouse)
+    terminal_detect_input
+    assert_eq 'norefresh mouse' "${(j: :)TERMINAL_EVENT_FLAGS}" 'supported mouse reporting stays enabled'
+    terminal_read_event input_win ch key mouse
+    assert_eq '界::' "$ch:$key:$mouse" 'structured Unicode reaches the character queue'
+    assert_eq 'event input_win terminal_event norefresh mouse' "$call" 'input requests explicit presentation on the selected window'
+    record=(type key key UP)
+    terminal_read_event overlay_win ch key mouse
+    assert_eq ':UP:' "$ch:$key:$mouse" 'structured navigation preserves the existing key contract'
+    record=(type resize source terminal rows 40 columns 120)
+    terminal_read_event input_win ch key mouse
+    assert_eq ':RESIZE:' "$ch:$key:$mouse" 'synthetic resize reaches existing resize handling'
+    record=(type mouse id 0 x 12 y 4 z 0 buttons 'PRESSED1 RELEASED1' modifiers 'SHIFT CTRL')
+    terminal_read_event input_win ch key mouse
+    assert_eq ':MOUSE:0 12 4 0 PRESSED1 RELEASED1 SHIFT CTRL' "$ch:$key:$mouse" 'mouse records preserve the legacy coordinates, buttons and modifiers'
+    record=(type character text y); read_result=1; calls=0
+    terminal_read_event input_win ch key mouse
+    assert_eq ':::1:0' "$ch:$key:$mouse:$calls:$legacy_calls" 'failed reads discard record contents and never call a second reader'
+    TERMINAL_SEQUENCE=$'\e'; TERMINAL_ESCAPE_AT=0
+    terminal_read_event input_win ch key mouse
+    assert_eq $'\e' "$ch" 'an idle structured read still releases a bare Escape'
+    TERMINAL_INPUT_QUEUE=(queued '' ''); calls=0
+    terminal_read_event input_win ch key mouse
+    assert_eq queued:0 "$ch:$calls" 'queued filtered input is delivered without another module read'
+    read_result=2; calls=0
+    terminal_read_event input_win ch key mouse
+    assert_eq 'L:0:2:1' "$ch:$TERMINAL_NOREFRESH_INPUT:$calls:$legacy_calls" 'unsupported flags switch to legacy with exactly one fallback read'
+    assert_eq 0 "${#TERMINAL_EVENT_FLAGS}" 'unsupported event flags are cleared'
+    calls=0
+    terminal_read_event input_win ch key mouse
+    assert_eq L:1:2 "$ch:$calls:$legacy_calls" 'later reads stay on the legacy path without probing'
+    discovery_result=1
+    terminal_detect_input
+    assert_eq 0 "$TERMINAL_NOREFRESH_INPUT" 'unavailable discovery retains legacy input'
+    discovery_result=0
+    terminal_detect_input
+    assert_eq 1 "$TERMINAL_NOREFRESH_INPUT" 'a new UI entry can select supported events again'
+    terminal_end
+    assert_eq 0:0 "$TERMINAL_NOREFRESH_INPUT:${#TERMINAL_EVENT_FLAGS}" 'terminal cleanup resets cached input capabilities'
+  } always {
+    functions[zcoder_curses]=$saved_curses
+    functions[zcoder_curses_features]=$saved_features
+  }
+}
 
 typeset -g terminal_pty_base="$TEST_TMP/terminal-pty" terminal_pty_output='' terminal_pty_chunk=''
 terminal_pty_wait() {
@@ -91,37 +164,50 @@ terminal_pty_wait() {
 }
 terminal_pty_run() {
   trap - EXIT INT TERM
-  exec zsh -f "$TEST_DIR/fixtures/terminal_ui.zsh" "$PROJECT_DIR" "$terminal_pty_base"
+  exec zsh -f "$TEST_DIR/fixtures/terminal_ui.zsh" "$PROJECT_DIR" "$terminal_pty_base" "$terminal_pty_mode"
 }
-TERM=xterm-256color zpty -b terminal-ui terminal_pty_run
-assert_success "terminal capability fixture starts in real curses" $?
-terminal_pty_wait "$terminal_pty_base.approval" '0:pending'
-assert_success "approval is active while asynchronous terminal detection is pending" $?
-assert_contains "$terminal_pty_output" $'\e[?2026$p' "auto mode emits the capability query"
-assert_not_contains "$terminal_pty_output" $'\e[?2026h' "unknown support does not start synchronized frames"
-zpty -w -n terminal-ui $'\e[?2026;2$y'
-terminal_pty_wait "$terminal_pty_base.approval" '0:supported'
-assert_success "a real terminal reply enables synchronization without approving or dismissing the dialog" $?
-zpty -w -n terminal-ui n
-terminal_pty_wait "$terminal_pty_base.answer" n
-assert_success "only the user's explicit denial completes the approval" $?
-zpty -w -n terminal-ui $'draft\e[200~line1\nline2\e[201~'
-terminal_pty_wait "$terminal_pty_base.draft" $'draftline1\nline2'
-assert_success "real curses preserves multiline paste after capability detection" $?
-assert_contains "$terminal_pty_output" $'\e[?2026h' "supported terminals wrap subsequent curses output"
-assert_contains "$terminal_pty_output" $'\e[?2026l' "synchronized frames end before input waits"
-zpty -w -n terminal-ui $'\x07'
-terminal_pty_wait "$terminal_pty_base.diagnostics" 1
-assert_success "terminal diagnostics opens after background activity" $?
-zpty -w -n terminal-ui $'\e'
-terminal_pty_wait "$terminal_pty_base.done" 1
-assert_success "diagnostics closes and terminal lifecycle reentry completes" $?
-assert_contains "$terminal_pty_output" 'Terminal diagnostics' "terminal inspection renders a real modal"
-assert_eq ':0:0' "${mapfile[$terminal_pty_base.closed]:-}" "UI exit releases terminal descriptor and frame state"
-assert_eq 'disabled:0' "${mapfile[$terminal_pty_base.false]:-}" "explicit opt-out survives UI reentry"
-assert_eq 'forced:1' "${mapfile[$terminal_pty_base.true]:-}" "explicit support override enables synchronization"
-assert_eq 'disabled (invalid setting):0' "${mapfile[$terminal_pty_base.invalid]:-}" "invalid configuration fails closed"
-assert_eq 'no reply:0' "${mapfile[$terminal_pty_base.auto]:-}" "a silent terminal retains normal rendering"
-assert_contains "$terminal_pty_output" $'\e[?2004l' "UI exit restores bracketed paste mode"
-zpty -d terminal-ui
+typeset -a terminal_pty_modes=(stock)
+terminal_has_norefresh=$(zsh -dfc 'source "$1/lib/curses.zsh"; source "$1/lib/terminal.zsh"; ZCODER_CURSES=auto zcoder_curses_load "$1" || exit; terminal_detect_input; print -r -- "$TERMINAL_NOREFRESH_INPUT"' zcoder-test "$PROJECT_DIR")
+[[ $terminal_has_norefresh == 1 ]] && terminal_pty_modes+=(auto)
+for terminal_pty_mode in "${terminal_pty_modes[@]}"; do
+  terminal_pty_base="$TEST_TMP/terminal-pty-$terminal_pty_mode"
+  terminal_pty_output=''
+  TERM=xterm-256color zpty -b terminal-ui terminal_pty_run
+  assert_success "terminal capability fixture starts in real curses" $?
+  terminal_pty_wait "$terminal_pty_base.approval" '0:pending'
+  assert_success "approval is active while asynchronous terminal detection is pending" $?
+  terminal_expected_input=0
+  [[ $terminal_pty_mode == auto ]] && terminal_expected_input=1
+  assert_eq "$terminal_expected_input" "${mapfile[$terminal_pty_base.input]:-}" "$terminal_pty_mode selects its supported input presentation mode"
+  assert_contains "$terminal_pty_output" $'\e[?2026$p' "auto mode emits the capability query"
+  assert_not_contains "$terminal_pty_output" $'\e[?2026h' "unknown support does not start synchronized frames"
+  zpty -w -n terminal-ui $'\e[?2026;2$y'
+  terminal_pty_wait "$terminal_pty_base.approval" '0:supported'
+  assert_success "a real terminal reply enables synchronization without approving or dismissing the dialog" $?
+  zpty -w -n terminal-ui n
+  terminal_pty_wait "$terminal_pty_base.answer" n
+  assert_success "only the user's explicit denial completes the approval" $?
+  zpty -w -n terminal-ui $'draft\e[200~line1\nline2界e\u0301\e[201~'
+  terminal_pty_wait "$terminal_pty_base.draft" $'draftline1\nline2界e\u0301'
+  assert_success "real curses preserves Unicode multiline paste after capability detection" $?
+  zpty -w -n terminal-ui $'\eOD\eOC!'
+  terminal_pty_wait "$terminal_pty_base.draft" $'draftline1\nline2界e\u0301!'
+  assert_success "decoded arrow keys remain navigation during activity" $?
+  assert_contains "$terminal_pty_output" $'\e[?2026h' "supported terminals wrap subsequent curses output"
+  assert_contains "$terminal_pty_output" $'\e[?2026l' "synchronized frames end before input waits"
+  zpty -w -n terminal-ui $'\x07'
+  terminal_pty_wait "$terminal_pty_base.diagnostics" 1
+  assert_success "terminal diagnostics opens after background activity" $?
+  zpty -w -n terminal-ui $'\e'
+  terminal_pty_wait "$terminal_pty_base.done" 1
+  assert_success "diagnostics closes and terminal lifecycle reentry completes" $?
+  assert_contains "$terminal_pty_output" 'Terminal diagnostics' "terminal inspection renders a real modal"
+  assert_eq ':0:0' "${mapfile[$terminal_pty_base.closed]:-}" "UI exit releases terminal descriptor and frame state"
+  assert_eq 'disabled:0' "${mapfile[$terminal_pty_base.false]:-}" "explicit opt-out survives UI reentry"
+  assert_eq 'forced:1' "${mapfile[$terminal_pty_base.true]:-}" "explicit support override enables synchronization"
+  assert_eq 'disabled (invalid setting):0' "${mapfile[$terminal_pty_base.invalid]:-}" "invalid configuration fails closed"
+  assert_eq 'no reply:0' "${mapfile[$terminal_pty_base.auto]:-}" "a silent terminal retains normal rendering"
+  assert_contains "$terminal_pty_output" $'\e[?2004l' "UI exit restores bracketed paste mode"
+  zpty -d terminal-ui
+done
 unfunction terminal_test_feed terminal_pty_wait terminal_pty_run

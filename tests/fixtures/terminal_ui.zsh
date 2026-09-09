@@ -1,8 +1,10 @@
 #!/usr/bin/env zsh
 emulate -R zsh
 setopt extendedglob
-zmodload zsh/curses zsh/terminfo zsh/datetime zsh/mapfile || exit 1
 typeset -g fixture_root="$1" fixture_base="$2"
+source "$fixture_root/lib/curses.zsh"
+ZCODER_CURSES=${3:-stock} zcoder_curses_load "$fixture_root" || exit 1
+zmodload zsh/terminfo zsh/datetime zsh/mapfile || exit 1
 for fixture_lib in util json transcript input terminal ui overlays commands; do
   source "$fixture_root/lib/${fixture_lib}.zsh"
 done
@@ -17,12 +19,13 @@ _ui_approval_input() {
   mapfile[${fixture_base}.approval]="${modal_done}:${TERMINAL_SYNC_STATE}"
 }
 ui_init || exit 1
+mapfile[${fixture_base}.input]="$TERMINAL_NOREFRESH_INPUT"
 ui_confirm_command 'This fixture only records the choice; it never runs commands.'
 mapfile[${fixture_base}.answer]="$REPLY"
 typeset -g fixture_ch='' fixture_key='' fixture_mouse=''
 ui_activity_begin
 while true; do
-  zcurses timeout input_win 50
+  zcoder_curses timeout input_win 50
   terminal_read_event input_win fixture_ch fixture_key fixture_mouse
   [[ "$fixture_ch" == $'\x07' ]] && break
   ui_activity_input "$fixture_ch" "$fixture_key"

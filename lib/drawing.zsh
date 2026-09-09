@@ -49,39 +49,43 @@ ui_attr() {
   shift
   ui_style "$*"
   [[ -n "$REPLY" ]] || return 0
-  zcurses attr "$window" ${=REPLY}
+  zcoder_curses attr "$window" ${=REPLY}
 }
 
 ui_theme_init() {
   emulate -L zsh
+  local color_parameter=ZCURSES_COLORS
+  [[ $ZCODER_CURSES_COMMAND == zdraw ]] && color_parameter=ZDRAW_COLORS
+  local -i curses_colors=${${(P)color_parameter}:-0}
   UI_COLOR_INFO=(); UI_STYLE_CACHE=(); UI_SPAN_FALLBACKS=0
   UI_STYLED_SPANS=0; UI_WIDE_SPANS=0; UI_CLIPPED_SPANS=0; UI_BORDER_MODE=plain
   UI_COLOR_MODE=basic
-  if zmodload -F -e zsh/curses +p:zcurses_features; then
+  local -a reply=()
+  if zcoder_curses_features; then
     if [[ ${ZCODER_SPANS:-true} != false ]]; then
-      (( ${zcurses_features[(Ie)styled_spans]} )) && UI_STYLED_SPANS=1
-      (( ${zcurses_features[(Ie)wide_spans]} )) && UI_WIDE_SPANS=1
-      (( ${zcurses_features[(Ie)clipped_spans]} )) && UI_CLIPPED_SPANS=1
+      (( ${reply[(Ie)styled_spans]} )) && UI_STYLED_SPANS=1
+      (( ${reply[(Ie)wide_spans]} )) && UI_WIDE_SPANS=1
+      (( ${reply[(Ie)clipped_spans]} )) && UI_CLIPPED_SPANS=1
     fi
     if [[ ${ZCODER_BORDERS:-auto} != plain && -o multibyte ]] &&
-       (( ${zcurses_features[(Ie)wide_borders]} )); then
+       (( ${reply[(Ie)wide_borders]} )); then
       UI_BORDER_MODE=rounded
     fi
-    if (( ${zcurses_features[(Ie)colorinfo]} )); then
-      zcurses colorinfo UI_COLOR_INFO 2>/dev/null || UI_COLOR_INFO=()
+    if (( ${reply[(Ie)colorinfo]} )); then
+      zcoder_curses colorinfo UI_COLOR_INFO 2>/dev/null || UI_COLOR_INFO=()
     fi
   fi
   if [[ ${ZCODER_COLOR:-auto} == mono ]] ||
      [[ ${UI_COLOR_INFO[has_colors]:-1} == 0 || ${UI_COLOR_INFO[color_started]:-1} == 0 ]] ||
-     (( ${ZCURSES_COLORS:-0} < 8 )); then
+     (( curses_colors < 8 )); then
     UI_COLOR_MODE=mono
   elif [[ ${ZCODER_COLOR:-auto} != basic ]]; then
     if [[ ${UI_COLOR_INFO[truecolor_supported]:-0} == 1 ]] &&
-       zcurses truecolor on 2>/dev/null; then
+       zcoder_curses truecolor on 2>/dev/null; then
       UI_COLOR_MODE=rgb
     # Direct-color entries interpret numeric values differently from the
     # indexed cube. Never apply our 256-color palette to those descriptions.
-    elif (( ${ZCURSES_COLORS:-0} == 256 )); then
+    elif (( curses_colors == 256 )); then
       UI_COLOR_MODE=256
     fi
   fi
@@ -106,14 +110,14 @@ ui_window_background() {
   [[ "$UI_COLOR_MODE" == mono ]] && return 0
   local REPLY
   ui_style text/surface
-  zcurses bg "$1" "$REPLY" 2>/dev/null
+  zcoder_curses bg "$1" "$REPLY" 2>/dev/null
 }
 
 ui_border() {
   if [[ "$UI_BORDER_MODE" == rounded ]]; then
-    zcurses border "$1" '│' '│' '─' '─' '╭' '╮' '╰' '╯' 2>/dev/null && return 0
+    zcoder_curses border "$1" '│' '│' '─' '─' '╭' '╮' '╰' '╯' 2>/dev/null && return 0
   fi
-  zcurses border "$1"
+  zcoder_curses border "$1"
 }
 
 # Draw a prefix across all styles within one cell budget. Callers clear the
@@ -136,7 +140,7 @@ ui_draw_row() {
       ui_style "$style"
       batch+=("${REPLY// /,}" "$text")
     done
-    zcurses spansclip "$window" "$row" "$col" "$width" "${batch[@]}" 2>/dev/null && return 0
+    zcoder_curses spansclip "$window" "$row" "$col" "$width" "${batch[@]}" 2>/dev/null && return 0
     (( UI_SPAN_FALLBACKS++ ))
     can_batch=0
   fi
@@ -151,14 +155,14 @@ ui_draw_row() {
       ui_style "$style"
       batch+=("${REPLY// /,}" "$text")
     done
-    zcurses spans "$window" "$row" "$col" "${batch[@]}" 2>/dev/null && return 0
+    zcoder_curses spans "$window" "$row" "$col" "${batch[@]}" 2>/dev/null && return 0
     (( UI_SPAN_FALLBACKS++ ))
   fi
-  zcurses move "$window" "$row" "$col"
+  zcoder_curses move "$window" "$row" "$col"
   for style text in "${clipped[@]}"; do
     ui_attr "$window" -bold -dim -reverse -underline default/default
     ui_attr "$window" ${=style}
-    zcurses string "$window" "$text"
+    zcoder_curses string "$window" "$text"
   done
   return 0
 }

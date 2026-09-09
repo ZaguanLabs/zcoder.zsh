@@ -65,8 +65,8 @@ and cancellation using the actual editor and queue.
 
 ## Building the curses dependency
 
-`vendor/zcurses` is a pinned Git submodule using
-`https://github.com/ZaguanLabs/zcurses`. Initialize it over public HTTPS:
+`vendor/zdraw` is a pinned Git submodule using
+`https://github.com/ZaguanLabs/zdraw`. Initialize it over public HTTPS:
 
 ```sh
 git submodule update --init --recursive
@@ -83,28 +83,33 @@ git submodule update --init --recursive
 ```
 
 The dependency can now configure and build an extracted public Zsh release in
-isolation; its tested baseline is 5.9.2. See `vendor/zcurses/README.md` for that
+isolation; its tested baseline is 5.9.2. See `vendor/zdraw/README.md` for that
 standalone workflow. Our `make curses` integration still requires a configured,
 built source tree matching the installed shell, because it enables the module
 for ordinary zcoder launches. `make curses` checks the
 source-tree shell's version, patch level, and platform against the running Zsh,
-builds in `vendor/zcurses/.build`, checks that the module loads in a fresh shell,
+builds in `vendor/zdraw/.build`, checks that the module loads in a fresh shell,
 and writes a local version/platform/host stamp. It never installs a system module.
 The source tree and its C toolchain/development dependencies are build-time
 requirements; ordinary `make compile` still only compiles Zsh libraries.
 
 Fresh application processes select the bundle only with a matching stamp and
 available binary. A load failure falls back to the normal module search path.
-An already loaded curses module is retained. `ZCODER_CURSES=stock` bypasses the
-bundle; `/terminal` reports selection and native versus fallback resize queries.
+An already loaded module is retained. The adapter dispatches to `zdraw`
+or stock `zcurses` and reads the selected module's features and color limits.
+`ZCODER_CURSES=stock` bypasses the bundle; `/terminal` reports selection and
+native versus fallback resize queries.
 The stamp guards against common mismatches, including copying the build to a
 different farm host; it is not proof of ABI compatibility for arbitrary builds
 with different configuration flags. Supply a source build matching the installed
 shell. The experimental C module has not been validated against Zsh 5.8.
 
+After upgrading from `vendor/zcurses`, run `make -C vendor/zdraw clean`
+once before rebuilding to discard the old module build cache.
+
 Rebuild after changing the pinned submodule revision or upgrading the local
 shell. When changing source trees or build configuration, run
-`make -C vendor/zcurses clean` first; this preserves downloaded sources while
+`make -C vendor/zdraw clean` first; this preserves downloaded sources while
 removing the working build and staged module. Farm headless
 processes need no module build; the NAS may receive the source via rsync and
 continues to run headlessly without a compiler or Make.
@@ -117,12 +122,12 @@ external development build as well, set `ZCODER_TEST_CURSES_PATH` to its modules
 directory. The dependency's own broader module checks use a Python 3 PTY driver:
 
 ```sh
-ZSH_BUILD_ROOT=/path/to/matching/configured/zsh make -C vendor/zcurses test
+ZSH_BUILD_ROOT=/path/to/matching/configured/zsh make -C vendor/zdraw test
 ```
 
-The pinned module (`bc23176`) adds `geometry`, custom borders, runtime `colorinfo`,
+The pinned module (`4e133e4`) adds `geometry`, custom borders, runtime `colorinfo`,
 opt-in RGB colors and styled-span batching, with discovery through
-the read-only `zcurses_features` array. Its build also requires Autoconf,
+the read-only `zdraw_features` array. Its build also requires Autoconf,
 Autoheader, M4 and Patch for optional curses function checks. Its own RGB tests
 use `tic` to compile private terminfo fixtures. These are development tools,
 not additional runtime requirements for zcoder.
@@ -135,6 +140,20 @@ features separately from negotiated terminal state and active drawing modes.
 General Unicode clipping remains outside the drawing adapter. The application
 PTY tests compare batched/fallback retained cells and exercise combining-mark
 rejection, indexed and monochrome palettes, and stock/bundled modules.
+
+When both `structured_events` and `norefresh_events` are advertised, input uses
+`event ... norefresh` so reads cannot present unfinished drawing. Feature
+selection is cached per UI entry. Character, key, resize and supported mouse
+records feed the existing paste and terminal-reply filter; frame presentation
+stays with `terminal_refresh`. Missing capabilities use legacy `input`. Only
+status 2 (unsupported before consuming input) disables the new path and retries
+through legacy input; timeouts and other failures never trigger a second read.
+`/terminal` reports the active input presentation mode.
+
+Session-scoped prepared rows (`prepare`/`draw`) and headless byte/column
+hit-testing (`textpos`) remain available for experiments. Prepared rows need
+measurement against our existing transcript cache before adoption, and
+`textpos` returns byte offsets rather than the editor's character indices.
 
 ## Performance measurements
 

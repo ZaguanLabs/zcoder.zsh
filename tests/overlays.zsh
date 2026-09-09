@@ -1,9 +1,9 @@
 # The parent suite supplies assertions and a curses recorder.
-functions[_overlay_saved_curses]="${functions[zcurses]}"
+functions[_overlay_saved_curses]="${functions[zcoder_curses]}"
 functions[_overlay_saved_resize]="${functions[ui_poll_resize]}"
 typeset -ga OVERLAY_CHARS=() OVERLAY_KEYS=() OVERLAY_CALLS=()
 typeset -gi OVERLAY_CURSOR=0 OVERLAY_ADD_FAIL=0 OVERLAY_RESIZE_W=80 OVERLAY_RESIZE_H=24
-zcurses() {
+zcoder_curses() {
   OVERLAY_CALLS+=("${(j: :)@}")
   if [[ "$1" == addwin && "$2" == overlay_win ]] && (( OVERLAY_ADD_FAIL )); then return 1; fi
   if [[ "$1" == input ]]; then
@@ -162,7 +162,7 @@ assert_contains "${(F)UI_CONTEXT_LINES}" "maintained by the server" "remote cont
 assert_not_contains "${(F)UI_CONTEXT_LINES}" "350" "remote context inspection never substitutes local counters"
 REMOTE_MODE=local
 
-functions[zcurses]="${functions[_overlay_saved_curses]}"
+functions[zcoder_curses]="${functions[_overlay_saved_curses]}"
 functions[ui_poll_resize]="${functions[_overlay_saved_resize]}"
 unfunction _overlay_saved_curses _overlay_saved_resize overlay_keys
 SCREEN_W=80; SCREEN_H=24; UI_RESIZE_PENDING=0; UI_FOCUS=input

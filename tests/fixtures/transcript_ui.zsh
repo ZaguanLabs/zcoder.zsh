@@ -27,7 +27,7 @@ mapfile[${fixture_base}.headers]=${#fixture_headers}
 mapfile[${fixture_base}.ready]=1
 while true; do
   fixture_ch=""; fixture_key=""; fixture_mouse=""
-  zcurses timeout input_win 100
+  zcoder_curses timeout input_win 100
   terminal_read_event input_win fixture_ch fixture_key fixture_mouse || continue
   [[ "$fixture_ch" == q ]] && break
   if [[ "$fixture_ch" == $'\x12' ]]; then

@@ -98,7 +98,7 @@ _ui_palette_draw() {
   done
   ui_modal_text 1 "> ${query_view}" "bold white/black"
   _ui_modal_list_draw
-  zcurses move overlay_win 1 $(( 4 + ${#query_view} ))
+  zcoder_curses move overlay_win 1 $(( 4 + ${#query_view} ))
 }
 
 _ui_palette_input() {
@@ -209,8 +209,9 @@ typeset -ga UI_CONTEXT_LINES=()
 
 _ui_terminal_draw() {
   local line='' paste_state=inactive geometry_state=unprobed features_state=unknown
-  if zmodload -F -e zsh/curses +p:zcurses_features; then
-    features_state="${(j:, :)zcurses_features}"
+  local -a reply=()
+  if zcoder_curses_features; then
+    features_state="${(j:, :)reply}"
     [[ -n $features_state ]] || features_state=none
   fi
   case $UI_NATIVE_GEOMETRY in
@@ -221,13 +222,16 @@ _ui_terminal_draw() {
   terminal_poll
   terminal_inspected_state="$TERMINAL_SYNC_STATE"
   if [[ -n ${UI_COLOR_INFO[initialized]:-} ]]; then
-    zcurses colorinfo UI_COLOR_INFO 2>/dev/null
+    zcoder_curses colorinfo UI_COLOR_INFO 2>/dev/null
   fi
   local clipping_state='Zsh fallback'
   (( UI_STYLED_SPANS && UI_CLIPPED_SPANS )) && clipping_state='native cell budget'
+  local input_state='curses default'
+  (( TERMINAL_NOREFRESH_INPUT )) && input_state='explicit refresh (zdraw)'
   local -a lines=("Terminal: ${TERM:-unset}" "Size: ${SCREEN_W} columns × ${SCREEN_H} rows"
     "Curses module: ${ZCODER_CURSES_BACKEND:-preloaded}" "Resize queries: ${geometry_state}"
     "Compiled features: ${features_state}"
+    "Input presentation: ${input_state}"
     "Palette: ${UI_COLOR_MODE} · Borders: ${UI_BORDER_MODE}"
     "Styled rows: ${UI_STYLED_SPANS} · Wide spans: ${UI_WIDE_SPANS} · Row fallbacks: ${UI_SPAN_FALLBACKS}"
     "Row clipping: ${clipping_state}"

@@ -1,4 +1,5 @@
 # Adaptive curses interface for chat, tools, and prompt editing.
+(( ${+functions[zcoder_curses]} )) || source "${${(%):-%x}:A:h}/curses.zsh"
 source "${${(%):-%x}:A:h}/drawing.zsh"
 
 typeset -gi UI_ACTIVE=0 UI_ACTIVITY_DEPTH=0
@@ -187,11 +188,11 @@ ui_status_update() {
 ui_destroy_windows() {
   # delwin accepts exactly one window name. Passing the whole set leaves
   # names registered, so the next addwin fails during a resize.
-  zcurses delwin top_win 2>/dev/null || true
-  zcurses delwin side_win 2>/dev/null || true
-  zcurses delwin chat_win 2>/dev/null || true
-  zcurses delwin input_win 2>/dev/null || true
-  zcurses delwin foot_win 2>/dev/null || true
+  zcoder_curses delwin top_win 2>/dev/null || true
+  zcoder_curses delwin side_win 2>/dev/null || true
+  zcoder_curses delwin chat_win 2>/dev/null || true
+  zcoder_curses delwin input_win 2>/dev/null || true
+  zcoder_curses delwin foot_win 2>/dev/null || true
 }
 
 ui_input_width() {
@@ -215,7 +216,7 @@ ui_setup_windows() {
   ui_invalidate
   [[ "$UI_FOCUS" == chat ]] && UI_REVEAL_SELECTED=1
   local -a pos=()
-  zcurses position stdscr pos 2>/dev/null
+  zcoder_curses position stdscr pos 2>/dev/null
   SCREEN_H=${pos[5]:-${LINES:-24}}
   SCREEN_W=${pos[6]:-${COLUMNS:-80}}
   (( SCREEN_W < 88 )) && SIDE_W=0 || SIDE_W=25
@@ -223,11 +224,11 @@ ui_setup_windows() {
   local -i main_h=$(( SCREEN_H - TOP_H - INPUT_H - FOOT_H ))
   (( main_h < 3 )) && main_h=3
   local -i chat_w=$(( SCREEN_W - SIDE_W )) input_y=$(( TOP_H + main_h ))
-  zcurses addwin top_win $TOP_H $SCREEN_W 0 0 2>/dev/null
-  (( SIDE_W > 0 )) && zcurses addwin side_win $main_h $SIDE_W $TOP_H 0 2>/dev/null
-  zcurses addwin chat_win $main_h $chat_w $TOP_H $SIDE_W 2>/dev/null
-  zcurses addwin input_win $INPUT_H $SCREEN_W $input_y 0 2>/dev/null
-  zcurses addwin foot_win $FOOT_H $SCREEN_W $(( SCREEN_H - FOOT_H )) 0 2>/dev/null
+  zcoder_curses addwin top_win $TOP_H $SCREEN_W 0 0 2>/dev/null
+  (( SIDE_W > 0 )) && zcoder_curses addwin side_win $main_h $SIDE_W $TOP_H 0 2>/dev/null
+  zcoder_curses addwin chat_win $main_h $chat_w $TOP_H $SIDE_W 2>/dev/null
+  zcoder_curses addwin input_win $INPUT_H $SCREEN_W $input_y 0 2>/dev/null
+  zcoder_curses addwin foot_win $FOOT_H $SCREEN_W $(( SCREEN_H - FOOT_H )) 0 2>/dev/null
   local window
   for window in top_win chat_win input_win foot_win; do ui_window_background "$window"; done
   (( SIDE_W > 0 )) && ui_window_background side_win
@@ -239,15 +240,16 @@ ui_detect_geometry() {
   # An enabled discovery parameter distinguishes compiled support from a
   # transient terminal-query failure. Older modules retain the one-time probe.
   UI_NATIVE_GEOMETRY=-1
-  if zmodload -F -e zsh/curses +p:zcurses_features; then
+  local -a reply=()
+  if zcoder_curses_features; then
     UI_NATIVE_GEOMETRY=0
-    (( ${zcurses_features[(Ie)geometry]} )) && UI_NATIVE_GEOMETRY=1
+    (( ${reply[(Ie)geometry]} )) && UI_NATIVE_GEOMETRY=1
   fi
   return 0
 }
 
 ui_init() {
-  zcurses init || return 1
+  zcoder_curses init || return 1
   ui_detect_geometry
   ui_theme_init
   UI_ACTIVE=1
@@ -262,7 +264,7 @@ ui_end() {
   UI_ACTIVE=0
   ui_destroy_windows
   terminal_end
-  zcurses end 2>/dev/null
+  zcoder_curses end 2>/dev/null
   print -rn -- "${terminfo[cnorm]}" 2>/dev/null
 }
 
@@ -286,7 +288,7 @@ ui_poll_resize() {
   local size=""
   local -a dimensions=()
   if (( UI_NATIVE_GEOMETRY != 0 )); then
-    if zcurses geometry dimensions 2>/dev/null; then
+    if zcoder_curses geometry dimensions 2>/dev/null; then
       UI_NATIVE_GEOMETRY=1
     elif (( UI_NATIVE_GEOMETRY == 1 )); then
       return 0
@@ -303,7 +305,7 @@ ui_poll_resize() {
   local -i h=${dimensions[1]} w=${dimensions[2]}
   (( h > 0 && w > 0 )) || return 0
   (( h == SCREEN_H && w == SCREEN_W )) && return 0
-  zcurses resize "$h" "$w" endwin 2>/dev/null || return 0
+  zcoder_curses resize "$h" "$w" endwin 2>/dev/null || return 0
   ui_setup_windows
   ui_refresh_all
 }
@@ -325,22 +327,22 @@ _ui_paint_header() {
   local -i section=1
   local -a identities=("⚡ ${ZCODER_NAME} v${ZCODER_VERSION} │ " "$ZCODER_MODEL" " @ ${host} │ ${workspace}")
   local -a identity_attrs=('bold cyan/black' 'bold yellow/black' 'dim white/black')
-  zcurses clear top_win
+  zcoder_curses clear top_win
   ui_attr top_win -dim -bold border/surface
   ui_border top_win
-  zcurses move top_win 1 2
+  zcoder_curses move top_win 1 2
   for identity in "${identities[@]}"; do
     (( identity_limit > 0 )) || break
     zcoder_terminal_safe "$identity"; identity="${REPLY//$'\n'/ }"
     zcoder_clip "$identity" "$identity_limit"; identity="$REPLY"
     ui_attr top_win -bold -dim $=identity_attrs[section]
-    zcurses string top_win "$identity"
+    zcoder_curses string top_win "$identity"
     (( identity_limit -= ${(m)#identity}, section++ ))
   done
   if (( badge_x >= 2 )); then
-    zcurses move top_win 1 $badge_x
+    zcoder_curses move top_win 1 $badge_x
     ui_attr top_win -bold -dim $=UI_STATUS_ATTR
-    zcurses string top_win "$badge"
+    zcoder_curses string top_win "$badge"
   fi
   (( defer_refresh )) || terminal_refresh top_win
 }
@@ -376,12 +378,12 @@ _ui_paint_sidebar() {
     session_start=$(( current_index - session_rows + 1 ))
   fi
 
-  zcurses clear side_win
+  zcoder_curses clear side_win
   [[ "$UI_FOCUS" == sidebar ]] && ui_attr side_win -dim bold accent/surface || ui_attr side_win -dim -bold border/surface
   ui_border side_win
-  zcurses move side_win 0 2
+  zcoder_curses move side_win 0 2
   ui_attr side_win bold cyan/black
-  zcurses string side_win " Sessions (${#SESSION_IDS}) "
+  zcoder_curses string side_win " Sessions (${#SESSION_IDS}) "
 
   row=1
   for (( i=session_start; i<=${#SESSION_IDS} && row<=session_rows; i++ )); do
@@ -389,42 +391,42 @@ _ui_paint_sidebar() {
     title="${SESSION_TITLES[i]:-Untitled}"
     display="$title"
     zcoder_pad "$display" $(( inner_w - 4 )); display="$REPLY"
-    zcurses move side_win $row 1
+    zcoder_curses move side_win $row 1
     if [[ "$session_id" == "$CURRENT_SESSION_ID" ]]; then
       ui_attr side_win bold green/black
-      zcurses string side_win " ▶ $display"
+      zcoder_curses string side_win " ▶ $display"
     else
       ui_attr side_win dim white/black
-      zcurses string side_win "   $display"
+      zcoder_curses string side_win "   $display"
     fi
     (( row++ ))
   done
 
   divider="${(pl:inner_w::─:)}"
   if (( divider_row <= inner_h )); then
-    zcurses move side_win $divider_row 1
+    zcoder_curses move side_win $divider_row 1
     ui_attr side_win dim cyan/black
-    zcurses string side_win "$divider"
+    zcoder_curses string side_win "$divider"
   fi
   row=$(( divider_row + 1 ))
-  if (( row <= inner_h )); then zcurses move side_win $row 2; ui_attr side_win bold white/black; zcurses string side_win "Project"; fi
+  if (( row <= inner_h )); then zcoder_curses move side_win $row 2; ui_attr side_win bold white/black; zcoder_curses string side_win "Project"; fi
   (( row++ ))
-  if (( row <= inner_h )); then zcurses move side_win $row 2; ui_attr side_win green/black; zcoder_clip "$root" $(( inner_w - 1 )); zcurses string side_win "$REPLY"; fi
+  if (( row <= inner_h )); then zcoder_curses move side_win $row 2; ui_attr side_win green/black; zcoder_clip "$root" $(( inner_w - 1 )); zcoder_curses string side_win "$REPLY"; fi
   (( row++ ))
-  if (( row <= inner_h )); then zcurses move side_win $row 2; ui_attr side_win dim cyan/black; zcurses string side_win "${ZCODER_PROFILE} · Guides: ${#INSTRUCTION_SOURCES}"; fi
+  if (( row <= inner_h )); then zcoder_curses move side_win $row 2; ui_attr side_win dim cyan/black; zcoder_curses string side_win "${ZCODER_PROFILE} · Guides: ${#INSTRUCTION_SOURCES}"; fi
   (( row++ ))
-  if (( row <= inner_h )); then zcurses move side_win $row 2; ui_attr side_win bold white/black; zcurses string side_win "Available tools"; fi
+  if (( row <= inner_h )); then zcoder_curses move side_win $row 2; ui_attr side_win bold white/black; zcoder_curses string side_win "Available tools"; fi
   (( row++ ))
   for (( i=1; i<=${#names}; i++ )); do
     (( row > inner_h )) && break
-    zcurses move side_win $row 2
+    zcoder_curses move side_win $row 2
     [[ "${names[i]}" == run_command ]] && ui_attr side_win yellow/black || ui_attr side_win dim white/black
-    zcurses string side_win "• ${names[i]}"
+    zcoder_curses string side_win "• ${names[i]}"
     (( row++ ))
   done
-  if (( row <= inner_h )); then zcurses move side_win $row 2; ui_attr side_win bold white/black; zcurses string side_win "Shell approval"; fi
+  if (( row <= inner_h )); then zcoder_curses move side_win $row 2; ui_attr side_win bold white/black; zcoder_curses string side_win "Shell approval"; fi
   (( row++ ))
-  if (( row <= inner_h )); then zcurses move side_win $row 2; ui_attr side_win yellow/black; zcurses string side_win "$policy"; fi
+  if (( row <= inner_h )); then zcoder_curses move side_win $row 2; ui_attr side_win yellow/black; zcoder_curses string side_win "$policy"; fi
   (( defer_refresh )) || terminal_refresh side_win
 }
 
@@ -951,10 +953,10 @@ _ui_paint_chat() {
   UI_REVEAL_SELECTED=0
   (( UI_SCROLL > max_scroll )) && UI_SCROLL=$max_scroll
   (( UI_SCROLL < 0 )) && UI_SCROLL=0
-  zcurses clear chat_win
+  zcoder_curses clear chat_win
   [[ "$UI_FOCUS" == chat ]] && ui_attr chat_win -dim bold accent/surface || ui_attr chat_win -dim -bold border/surface
   ui_border chat_win
-  zcurses move chat_win 0 2; ui_attr chat_win bold cyan/black; zcurses string chat_win " Agent Transcript (${#UI_ROLES} events) "
+  zcoder_curses move chat_win 0 2; ui_attr chat_win bold cyan/black; zcoder_curses string chat_win " Agent Transcript (${#UI_ROLES} events) "
   for (( row=1; row<=inner_h; row++ )); do
     idx=$(( UI_SCROLL + row ))
     (( idx <= total )) || continue
@@ -975,7 +977,7 @@ _ui_paint_chat() {
     fi
     (( ${#row_spans} )) && ui_draw_row chat_win "$row" 1 "$inner_w" "${row_spans[@]}"
   done
-  (( UI_SCROLL > 0 )) && { zcurses move chat_win 0 $(( inner_w - 12 )); ui_attr chat_win dim yellow/black; zcurses string chat_win " [PgUp/PgDn] "; }
+  (( UI_SCROLL > 0 )) && { zcoder_curses move chat_win 0 $(( inner_w - 12 )); ui_attr chat_win dim yellow/black; zcoder_curses string chat_win " [PgUp/PgDn] "; }
   (( defer_refresh )) || terminal_refresh chat_win
 }
 
@@ -991,15 +993,15 @@ _ui_paint_input() {
     [[ -n "${INPUT_QUEUE_TURN_ID:-}${REMOTE_INPUT_TURN_ID:-}" ]] && title=" Prompt (Enter: steer · Ctrl+G: follow-up) "
   fi
   total=${#INPUT_VISUAL_LINES}
-  zcurses clear input_win
+  zcoder_curses clear input_win
   [[ "$UI_FOCUS" == input ]] && ui_attr input_win -dim bold accent/surface || ui_attr input_win -dim -bold border/surface
   ui_border input_win
   if (( total > INPUT_VISIBLE_ROWS && UI_ACTIVITY_DEPTH == 0 )); then
     title=" Prompt (Enter sends · Shift-Enter newline · ${INPUT_VIEW_TOP}-$(( INPUT_VIEW_TOP + INPUT_VISIBLE_ROWS - 1 ))/${total}) "
   fi
-  zcurses move input_win 0 2
+  zcoder_curses move input_win 0 2
   ui_attr input_win bold white/black
-  zcoder_clip "$title" $(( SCREEN_W - 4 )); zcurses string input_win "$REPLY"
+  zcoder_clip "$title" $(( SCREEN_W - 4 )); zcoder_curses string input_win "$REPLY"
   for (( row=1; row<=INPUT_VISIBLE_ROWS; row++ )); do
     visual_row=$(( INPUT_VIEW_TOP + row - 1 ))
     visible="${INPUT_VISUAL_LINES[visual_row]}"
@@ -1007,11 +1009,11 @@ _ui_paint_input() {
     (( visual_row == 1 )) && marker="❯"
     (( row == 1 && INPUT_VIEW_TOP > 1 )) && marker="↑"
     (( row == INPUT_VISIBLE_ROWS && visual_row < total )) && marker="↓"
-    zcurses move input_win $row 2
+    zcoder_curses move input_win $row 2
     ui_attr input_win bold green/black
-    zcurses string input_win "$marker "
+    zcoder_curses string input_win "$marker "
     ui_attr input_win white/black
-    zcurses string input_win "$visible"
+    zcoder_curses string input_win "$visible"
   done
   cursor_y=$(( INPUT_CURSOR_ROW - INPUT_VIEW_TOP + 1 ))
   cursor_x=$(( 4 + INPUT_CURSOR_COL ))
@@ -1019,7 +1021,7 @@ _ui_paint_input() {
   (( cursor_y > INPUT_VISIBLE_ROWS )) && cursor_y=$INPUT_VISIBLE_ROWS
   (( cursor_x < 4 )) && cursor_x=4
   (( cursor_x > SCREEN_W - 2 )) && cursor_x=$(( SCREEN_W - 2 ))
-  zcurses move input_win $cursor_y $cursor_x
+  zcoder_curses move input_win $cursor_y $cursor_x
   (( defer_refresh )) || terminal_refresh input_win
 }
 
@@ -1044,8 +1046,8 @@ _ui_paint_footer() {
   [[ "$UI_FOCUS" == chat ]] && text=" ^P Commands  ↑/↓ Select  Enter/Space Fold  ^R Reasoning  Home/End First/Last  PgUp/Dn Scroll  Tab Prompt  ^Y Copy"
   (( UI_ACTIVITY_DEPTH > 0 )) && text=" Esc Stop  Tab Prompt/Transcript  ↑/↓ Navigate  Enter Fold in Transcript  ^R Reasoning  PgUp/Dn Scroll"
   zcoder_clip "$text" "$SCREEN_W"; text="$REPLY"
-  zcurses clear foot_win; ui_attr foot_win reverse dim white/black
-  zcoder_pad "$text" "$SCREEN_W"; zcurses move foot_win 0 0; zcurses string foot_win "$REPLY"
+  zcoder_curses clear foot_win; ui_attr foot_win reverse dim white/black
+  zcoder_pad "$text" "$SCREEN_W"; zcoder_curses move foot_win 0 0; zcoder_curses string foot_win "$REPLY"
   (( defer_refresh )) || terminal_refresh foot_win
 }
 
@@ -1137,7 +1139,7 @@ ui_activity_input() {
 ui_poll_activity() {
   local ch="" key="" mouse=""
   ui_poll_resize
-  zcurses timeout input_win "${1:-50}"
+  zcoder_curses timeout input_win "${1:-50}"
   terminal_read_event input_win ch key mouse
   ui_activity_input "$ch" "$key"
 }

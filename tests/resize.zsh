@@ -1,8 +1,11 @@
 # Feature discovery selects a backend without terminal I/O or command probes.
 () {
   local -i UI_NATIVE_GEOMETRY=-1 discovery_result=0
+  local ZCODER_CURSES_MODULE=zsh/curses ZCODER_CURSES_COMMAND=zcurses
+  local discovery_call=''
   local -a zcurses_features=(future_feature mouse geometry resize)
-  zmodload() { return "$discovery_result"; }
+  local -a zdraw_features=(styled_spans geometry clipped_spans)
+  zmodload() { discovery_call="${(j: :)@}"; return "$discovery_result"; }
   {
     ui_detect_geometry
     assert_eq 1 "$UI_NATIVE_GEOMETRY" 'feature discovery selects native geometry before querying the terminal'
@@ -15,6 +18,11 @@
     discovery_result=1
     ui_detect_geometry
     assert_eq -1 "$UI_NATIVE_GEOMETRY" 'missing or disabled discovery keeps legacy module probing'
+    discovery_result=0
+    ZCODER_CURSES_MODULE=zdraw ZCODER_CURSES_COMMAND=zdraw
+    ui_detect_geometry
+    assert_eq 1 "$UI_NATIVE_GEOMETRY" 'zdraw discovery reads zdraw_features even when stock features are empty'
+    assert_eq '-F -e zdraw +p:zdraw_features' "$discovery_call" 'feature check uses the selected module namespace'
   } always {
     unfunction zmodload
   }
@@ -22,7 +30,7 @@
 
 # Exercise scheduling and failed native queries without a terminal.
 () {
-  local saved_curses=${functions[zcurses]}
+  local saved_curses=${functions[zcoder_curses]}
   local saved_setup=${functions[ui_setup_windows]} saved_refresh=${functions[ui_refresh_all]}
   local -i UI_ACTIVE=0 UI_NATIVE_GEOMETRY=-1 UI_RESIZE_PENDING=1
   local -i SCREEN_H=24 SCREEN_W=80 geometry_calls=0 resize_calls=0 layout_calls=0
@@ -30,7 +38,7 @@
   local -i geometry_result=0
   local invalid=''
   local -a geometry_value=(40 120)
-  zcurses() {
+  zcoder_curses() {
     case "$1" in
       geometry) (( geometry_calls++ )); dimensions=("${geometry_value[@]}"); return "$geometry_result" ;;
       resize) (( resize_calls++ )); return 0 ;;
@@ -66,7 +74,7 @@
     ui_poll_resize
     assert_eq 2 "$resize_calls" 'invalid dimensions never reach curses resize'
   } always {
-    functions[zcurses]=$saved_curses
+    functions[zcoder_curses]=$saved_curses
     functions[ui_setup_windows]=$saved_setup
     functions[ui_refresh_all]=$saved_refresh
   }

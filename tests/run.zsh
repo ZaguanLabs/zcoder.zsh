@@ -3113,7 +3113,7 @@ ui_render_messages 80
 assert_contains "${(j:\n:)UI_LINES}" "reasoning without assistant content" "expanded reasoning-only turn renders its reasoning"
 
 typeset -ga MOCK_ZCURSES_CALLS=()
-zcurses() {
+zcoder_curses() {
   MOCK_ZCURSES_CALLS+=("${(j: :)@}")
   return 0
 }
@@ -3161,6 +3161,7 @@ source "${TEST_DIR}/activity.zsh"
 source "${PROJECT_DIR}/lib/stream.zsh"
 source "${TEST_DIR}/stream.zsh"
 source "${TEST_DIR}/terminal.zsh"
+source "${TEST_DIR}/presentation.zsh"
 source "${TEST_DIR}/curses.zsh"
 source "${TEST_DIR}/resize.zsh"
 source "${TEST_DIR}/drawing.zsh"

@@ -38,7 +38,7 @@ fixture_header=0; fixture_chat=1; fixture_input=1
 typeset -g fixture_ch='' fixture_key='' fixture_mouse=''
 while true; do
   ui_poll_resize
-  zcurses timeout input_win 50
+  zcoder_curses timeout input_win 50
   terminal_read_event input_win fixture_ch fixture_key fixture_mouse
   if [[ "$fixture_ch" == $'\x07' ]]; then
     fixture_modal_header=$fixture_header

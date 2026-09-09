@@ -4,6 +4,22 @@ typeset -gi TERMINAL_SYNC_ENABLED=0 TERMINAL_FRAME_ACTIVE=0 TERMINAL_PASTE=0 TER
 typeset -gF TERMINAL_QUERY_DEADLINE=0.0 TERMINAL_ESCAPE_AT=0.0
 typeset -g TERMINAL_SEQUENCE='' TERMINAL_PASTE_TAIL=''
 typeset -ga TERMINAL_INPUT_QUEUE=()
+typeset -gi TERMINAL_NOREFRESH_INPUT=0
+typeset -ga TERMINAL_EVENT_FLAGS=()
+
+# Discover once per UI entry; input timeouts must never probe another reader.
+terminal_detect_input() {
+  emulate -L zsh
+  local -a reply=()
+  TERMINAL_NOREFRESH_INPUT=0; TERMINAL_EVENT_FLAGS=()
+  if zcoder_curses_features &&
+     (( ${reply[(Ie)structured_events]} && ${reply[(Ie)norefresh_events]} )); then
+    TERMINAL_NOREFRESH_INPUT=1
+    TERMINAL_EVENT_FLAGS=(norefresh)
+    (( ${reply[(Ie)mouse]} )) && TERMINAL_EVENT_FLAGS+=(mouse)
+  fi
+  return 0
+}
 
 _terminal_write() {
   [[ -n "$TERMINAL_FD" ]] || return 1
@@ -13,6 +29,7 @@ _terminal_write() {
 terminal_start() {
   emulate -L zsh
   terminal_end
+  terminal_detect_input
   TERMINAL_SYNC_POLICY=${ZCODER_SYNC_OUTPUT:-auto}
   TERMINAL_SYNC_STATE=unavailable
   zmodload zsh/system || return 0
@@ -40,6 +57,7 @@ terminal_end() {
   fi
   TERMINAL_FD=''; TERMINAL_FRAME_ACTIVE=0; TERMINAL_SYNC_ENABLED=0
   TERMINAL_SYNC_STATE=inactive
+  TERMINAL_NOREFRESH_INPUT=0; TERMINAL_EVENT_FLAGS=()
   TERMINAL_SEQUENCE=''; TERMINAL_INPUT_QUEUE=(); TERMINAL_PASTE=0; TERMINAL_PASTE_TAIL=''; TERMINAL_CSI_DISCARD=0
   return 0
 }
@@ -51,7 +69,7 @@ terminal_refresh() {
     if (( TERMINAL_SYNC_ENABLED )) && _terminal_write $'\e[?2026h'; then
       TERMINAL_FRAME_ACTIVE=1
     fi
-    zcurses refresh "$@"
+    zcoder_curses refresh "$@"
     refresh_result=$?
   } always {
     if (( TERMINAL_FRAME_ACTIVE )); then
@@ -83,9 +101,11 @@ terminal_filter_input() {
       return 0
     fi
     # Curses has already decoded this key. Any preceding Escape is independent.
-    for queued_byte in "${(@s::)TERMINAL_SEQUENCE}"; do
-      TERMINAL_INPUT_QUEUE+=("$queued_byte" '' '')
-    done
+    if [[ -n $TERMINAL_SEQUENCE ]]; then
+      for queued_byte in "${(@s::)TERMINAL_SEQUENCE}"; do
+        TERMINAL_INPUT_QUEUE+=("$queued_byte" '' '')
+      done
+    fi
     TERMINAL_SEQUENCE=''; TERMINAL_CSI_DISCARD=0
     TERMINAL_INPUT_QUEUE+=("$byte" "$event_key" "$event_mouse")
     return 0
@@ -147,12 +167,37 @@ terminal_filter_input() {
   return 0
 }
 
-# Output variables are caller-owned (Zsh dynamic scope), like zcurses input.
+# Output variables are caller-owned (Zsh dynamic scope), like zcoder_curses input.
 terminal_read_event() {
   emulate -L zsh
   local terminal_byte='' terminal_key='' terminal_mouse=''
   if (( ! ${#TERMINAL_INPUT_QUEUE} )); then
-    zcurses input "$1" terminal_byte terminal_key terminal_mouse
+    if (( TERMINAL_NOREFRESH_INPUT )); then
+      local -A terminal_event=()
+      if zcoder_curses event "$1" terminal_event "${TERMINAL_EVENT_FLAGS[@]}"; then
+        case ${terminal_event[type]} in
+          character) terminal_byte=${terminal_event[text]} ;;
+          key) terminal_key=${terminal_event[key]} ;;
+          resize) terminal_key=RESIZE ;;
+          mouse)
+            terminal_key=MOUSE
+            terminal_mouse="${terminal_event[id]} ${terminal_event[x]} ${terminal_event[y]} ${terminal_event[z]}"
+            [[ -n ${terminal_event[buttons]} ]] && terminal_mouse+=" ${terminal_event[buttons]}"
+            [[ -n ${terminal_event[modifiers]} ]] && terminal_mouse+=" ${terminal_event[modifiers]}"
+            ;;
+        esac
+      else
+        local -i terminal_read_result=$?
+        # Status 2 guarantees no input was consumed. Other failures (including
+        # timeouts) must not cause a second read or replay an old record.
+        if (( terminal_read_result == 2 )); then
+          TERMINAL_NOREFRESH_INPUT=0; TERMINAL_EVENT_FLAGS=()
+        fi
+      fi
+    fi
+    if (( ! TERMINAL_NOREFRESH_INPUT )); then
+      zcoder_curses input "$1" terminal_byte terminal_key terminal_mouse
+    fi
     terminal_filter_input "$terminal_byte" "$terminal_key" "$terminal_mouse"
   fi
   printf -v "$2" '%s' "${TERMINAL_INPUT_QUEUE[1]:-}"

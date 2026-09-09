@@ -8,7 +8,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.13.2"
+typeset -gr ZCODER_VERSION="0.13.3"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -729,7 +729,7 @@ main_tui() {
       fi
     fi
     ch=""; key=""; mouse=""
-    zcurses timeout input_win 100
+    zcoder_curses timeout input_win 100
     terminal_read_event input_win ch key mouse
     if [[ "$key" == RESIZE ]]; then
       UI_RESIZE_PENDING=1

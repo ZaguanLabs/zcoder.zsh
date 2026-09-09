@@ -3,7 +3,7 @@
 emulate -R zsh
 setopt errexit nounset pipefail
 typeset project_root=${0:A:h:h}
-typeset dependency=$project_root/vendor/zcurses
+typeset dependency=$project_root/vendor/zdraw
 [[ -f $dependency/Makefile ]] || {
   print -u2 -r -- 'Initialize the dependency: git submodule update --init --recursive'
   exit 1
@@ -20,7 +20,7 @@ zmodload zsh/files
 zf_rm -f -- "$dependency/.build/zcoder-abi"
 make -C "$dependency" build
 # Verify the module loads in this shell ABI, isolated from the build process.
-zsh -dfc 'module_path=("$1" $module_path); zmodload zsh/curses' \
+zsh -dfc 'module_path=("$1" $module_path); zmodload zdraw' \
   zcoder-curses "$dependency/.build/modules"
 print -r -- "$signature" >| "$dependency/.build/zcoder-abi"
-print -r -- 'Local zcurses enabled. Run make test to exercise both resize backends.'
+print -r -- 'Local zdraw enabled. Run make test to exercise both resize backends.'

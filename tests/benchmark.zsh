@@ -82,7 +82,7 @@ benchmark_context_cold() {
 benchmark_measure 'context 1000 x 1KiB cold cache' benchmark_context_cold || exit 1
 benchmark_measure 'context 1000 x 1KiB warm cache' agent_context_bill || exit 1
 
-zcurses() { return 0; }
+zcoder_curses() { return 0; }
 UI_ACTIVE=1; SCREEN_W=80; SCREEN_H=24; SIDE_W=0; INPUT_H=3; UI_FOCUS=input
 transcript_reset
 for benchmark_index in {1..1000}; do ui_append_message assistant "Short assistant text $benchmark_index"; done

@@ -7,7 +7,7 @@ for fixture_lib in util json skills transcript input terminal ui; do source "$fi
 typeset -g ZCODER_NAME=zcoder ZCODER_VERSION=test ZCODER_MODEL=fixture ZCODER_PROFILE=coding REMOTE_MODE=local
 typeset -g ZCODER_WORKSPACE="$fixture_root"
 typeset -gi STATE_ENABLED=0 rendered=0 curses_calls=0 chat_paints=0 i=0
-zcurses() {
+zcoder_curses() {
   (( curses_calls++ ))
   [[ "$1:$2" == clear:chat_win ]] && (( chat_paints++ ))
   return 0

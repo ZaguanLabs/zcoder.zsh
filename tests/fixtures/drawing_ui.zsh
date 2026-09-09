@@ -5,6 +5,13 @@ setopt extendedglob
 typeset -g fixture_root=$1 fixture_base=$2 fixture_backend=$3
 source "$fixture_root/lib/curses.zsh"
 ZCODER_CURSES=$fixture_backend zcoder_curses_load "$fixture_root" || exit 1
+# A loaded but inactive stock module must not affect zdraw dispatch or colors.
+if [[ $ZCODER_CURSES_COMMAND == zdraw ]]; then
+  zmodload -e zsh/curses && exit 14
+  zmodload zsh/curses || exit 1
+  zcoder_curses_load "$fixture_root" || exit 1
+  [[ $ZCODER_CURSES_COMMAND == zdraw ]] || exit 15
+fi
 zmodload zsh/terminfo zsh/datetime zsh/mapfile || exit 1
 for fixture_lib in util json transcript agent input terminal ui; do
   source "$fixture_root/lib/$fixture_lib.zsh"
@@ -38,21 +45,21 @@ ui_theme_init
 typeset -i row col
 typeset -a cell before after
 typeset -a fixture_spans=('bold cyan/black' 'const ' 'magenta/black' 'value ' 'white/black' '= ' 'yellow/black' '"hello"' 'white/black' '        ')
-zcurses addwin sample 3 50 0 0 || exit 1
+zcoder_curses addwin sample 3 50 0 0 || exit 1
 ui_window_background sample
 UI_STYLED_SPANS=0
 ui_draw_row sample 1 1 48 "${fixture_spans[@]}"
 for ((col=1; col<28; col++)); do
-  zcurses move sample 1 $col
-  zcurses querychar sample cell || exit 1
+  zcoder_curses move sample 1 $col
+  zcoder_curses querychar sample cell || exit 1
   before+=("${(j: :)cell}")
 done
-zcurses clear sample
+zcoder_curses clear sample
 [[ $fixture_backend == auto ]] && UI_STYLED_SPANS=1
 ui_draw_row sample 1 1 48 "${fixture_spans[@]}"
 for ((col=1; col<28; col++)); do
-  zcurses move sample 1 $col
-  zcurses querychar sample cell || exit 1
+  zcoder_curses move sample 1 $col
+  zcoder_curses querychar sample cell || exit 1
   after+=("${(j: :)cell}")
 done
 [[ "${(j:|:)before}" == "${(j:|:)after}" ]] || exit 2
@@ -62,11 +69,11 @@ if [[ $fixture_backend == auto ]]; then
   # The batch must reject it; the existing renderer still displays the row.
   ui_draw_row sample 1 1 48 'white/black' e 'white/black' $'\u0301' 'green/black' Z
   (( UI_SPAN_FALLBACKS == 1 )) || exit 3
-  zcurses move sample 1 1
-  zcurses querychar sample cell || exit 1
+  zcoder_curses move sample 1 1
+  zcoder_curses querychar sample cell || exit 1
   [[ $cell[1] == e ]] || exit 4
-  zcurses move sample 1 2
-  zcurses querychar sample cell || exit 1
+  zcoder_curses move sample 1 2
+  zcoder_curses querychar sample cell || exit 1
   [[ $cell[1] == Z ]] || exit 5
   mapfile[$fixture_base.fallback]=1
 fi
@@ -80,22 +87,22 @@ fixture_compare_clipped() {
   local -i UI_STYLED_SPANS UI_CLIPPED_SPANS
   for mode in $modes; do
     UI_STYLED_SPANS=$(( mode > 0 )); UI_CLIPPED_SPANS=$(( mode == 2 ))
-    zcurses clear sample
+    zcoder_curses clear sample
     ui_attr sample -bold -dim -reverse -underline text/surface
-    zcurses move sample 1 0; zcurses string sample '|'
-    zcurses move sample 1 8; zcurses string sample '|'
-    zcurses position sample cursor_before
+    zcoder_curses move sample 1 0; zcoder_curses string sample '|'
+    zcoder_curses move sample 1 8; zcoder_curses string sample '|'
+    zcoder_curses position sample cursor_before
     clip_calls=0
     ui_draw_row sample 1 1 "$budget" "$@"
-    zcurses position sample cursor_after
+    zcoder_curses position sample cursor_after
     if (( mode == 2 && budget > 0 )); then
       (( clip_calls == 0 )) || return 7
       [[ "$cursor_before" == "$cursor_after" ]] || return 8
     fi
     actual=()
     for (( col=0; col<=8; col++ )); do
-      zcurses move sample 1 $col
-      zcurses querychar sample cell || return 1
+      zcoder_curses move sample 1 $col
+      zcoder_curses querychar sample cell || return 1
       actual+=("${(j: :)cell}")
       if (( col == 0 || col == 8 )); then [[ $cell[1] == '|' ]] || return 9; fi
     done
@@ -117,26 +124,26 @@ functions[zcoder_clip]="${functions[fixture_original_clip]}"
 unfunction fixture_original_clip fixture_compare_clipped
 mapfile[$fixture_base.clipped_equivalent]=1
 # A rejected batch must still respect its row budget when falling back.
-zcurses clear sample
-zcurses move sample 1 2; zcurses string sample '|'
+zcoder_curses clear sample
+zcoder_curses move sample 1 2; zcoder_curses string sample '|'
 ui_draw_row sample 1 1 1 'white/black' e 'white/black' $'\u0301' 'green/black' Z
-zcurses move sample 1 1; zcurses querychar sample cell
+zcoder_curses move sample 1 1; zcoder_curses querychar sample cell
 [[ $cell[1] == e ]] || exit 11
-zcurses move sample 1 2; zcurses querychar sample cell
+zcoder_curses move sample 1 2; zcoder_curses querychar sample cell
 [[ $cell[1] == '|' ]] || exit 12
 mapfile[$fixture_base.bounded_fallback]=1
-zcurses delwin sample
+zcoder_curses delwin sample
 ui_invalidate
 ui_refresh_all
 # Export the actual curses cells, including resolved pair spelling, for visual QA.
 typeset window out='' ch pair x y
 typeset -a geometry
 for window in top_win side_win chat_win input_win foot_win; do
-  zcurses position "$window" geometry || exit 1
+  zcoder_curses position "$window" geometry || exit 1
   for ((row=0; row<geometry[5]; row++)); do
     for ((col=0; col<geometry[6]; col++)); do
-      zcurses move "$window" $row $col
-      zcurses querychar "$window" cell || exit 1
+      zcoder_curses move "$window" $row $col
+      zcoder_curses querychar "$window" cell || exit 1
       x=$(( geometry[4]+col )); y=$(( geometry[3]+row ))
       out+="$x"$'\t'"$y"$'\t'"$cell[2]"$'\t'"$cell[1]"$'\n'
     done
