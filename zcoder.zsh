@@ -8,7 +8,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.13.3"
+typeset -gr ZCODER_VERSION="0.13.4"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -420,6 +420,8 @@ handle_slash_command() {
       ;;
     /copy)
       ui_copy_view
+      # Keep this recognized command out of the model fallback on fatal UI loss.
+      (( UI_ACTIVE )) || return 0
       ;;
     /model)
       if [[ "$REMOTE_MODE" == client ]]; then
@@ -705,6 +707,7 @@ main_tui() {
   fi
   agent_warmup_start || true
   while (( RUNNING )); do
+    (( UI_ACTIVE )) || return 1
     ui_poll_resize
     if [[ "$REMOTE_MODE" == client ]]; then
       remote_client_model_poll || true
@@ -744,6 +747,8 @@ main_tui() {
       elif [[ "$INPUT_EVENT_ACTION" == paste && -n "$INPUT_EVENT_TEXT" ]]; then
         input_insert "$INPUT_EVENT_TEXT"
         ui_input_changed
+      elif [[ "$INPUT_EVENT_ACTION" == paste_rejected ]]; then
+        ui_status_notice warning "$INPUT_EVENT_TEXT"
       fi
       continue
     elif [[ "$ch" == $'\x11' || "$ch" == $'\x04' ]]; then

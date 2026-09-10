@@ -3,6 +3,8 @@
 source "${${(%):-%x}:A:h}/drawing.zsh"
 
 typeset -gi UI_ACTIVE=0 UI_ACTIVITY_DEPTH=0
+# 0: ordinary lifecycle; 1: retained zdraw session; 2: ended fallback session.
+typeset -gi UI_SUSPENDED=0
 typeset -gF UI_ACTIVITY_ESCAPE_AT=0.0
 typeset -gi SCREEN_H=24 SCREEN_W=80 TOP_H=3 SIDE_W=24 INPUT_H=3 FOOT_H=1
 typeset -gr INPUT_MAX_ROWS=4
@@ -259,13 +261,67 @@ ui_init() {
 }
 
 ui_end() {
-  (( UI_ACTIVE )) || return 0
+  (( UI_ACTIVE || UI_SUSPENDED )) || return 0
   (( $+functions[agent_context_discovery_cancel] )) && agent_context_discovery_cancel
   UI_ACTIVE=0
-  ui_destroy_windows
+  # Suspended zdraw accepts end but rejects individual window mutations.
+  (( UI_SUSPENDED )) || ui_destroy_windows
+  UI_SUSPENDED=0
   terminal_end
   zcoder_curses end 2>/dev/null
   print -rn -- "${terminfo[cnorm]}" 2>/dev/null
+}
+
+ui_suspend() {
+  emulate -L zsh
+  local -i suspend_result
+  (( UI_ACTIVE && ! UI_SUSPENDED && ! ${UI_MODAL_ACTIVE:-0} )) || return 1
+  if terminal_suspend; then
+    UI_SUSPENDED=1
+    UI_ACTIVE=0
+  else
+    suspend_result=$?
+    (( suspend_result == 2 )) || return "$suspend_result"
+    ui_end
+    UI_SUSPENDED=2
+  fi
+  return 0
+}
+
+ui_resume() {
+  emulate -L zsh
+  local -i rebuild_notice=0
+  local -a dimensions=()
+  (( UI_SUSPENDED )) || return 1
+  if (( UI_SUSPENDED == 1 )); then
+    if terminal_resume; then
+      UI_SUSPENDED=0; UI_ACTIVE=1
+      # zdraw already updated stdscr and repainted its retained frame. Rebuild
+      # layout only if the dimensions changed; keep prepared rows and styles.
+      if zcoder_curses position stdscr dimensions &&
+         (( dimensions[5] != SCREEN_H || dimensions[6] != SCREEN_W )); then
+        ui_setup_windows
+      fi
+      UI_RESIZE_PENDING=1
+      ui_refresh_all
+      return 0
+    fi
+    # A failed native restoration must not leave the event loop using a
+    # suspended session. Release it and attempt the ordinary initialization path.
+    ui_end
+    rebuild_notice=1
+  else
+    UI_SUSPENDED=0
+  fi
+  if ! ui_init; then
+    ui_end
+    print -u2 -r -- 'Error: could not restore the terminal UI after copy view.'
+    return 1
+  fi
+  UI_RESIZE_PENDING=1
+  ui_poll_resize
+  (( rebuild_notice )) && ui_status_notice warning 'Could not resume the retained UI; rebuilt the screen.'
+  return 0
 }
 
 ui_poll_resize() {
@@ -506,25 +562,63 @@ ui_plain_transcript() {
 # screen is not being repainted, the terminal's native mouse selection and
 # clipboard shortcuts work normally without adding a clipboard dependency.
 ui_copy_view() {
-  local transcript="" ignored=""
+  emulate -L zsh
+  setopt localtraps
+  local transcript=""
+  local -i copy_result=0 restore_result=0 copy_interrupted=0
+  # Zsh can run always before EXIT cleanup. Release ownership first on exit
+  # signals so restoration cannot briefly reopen the screen during shutdown.
+  # The foreground helper temporarily replaces INT with its return-to-UI trap.
+  trap 'ui_end; exit 130' INT
+  trap 'ui_end; exit 143' TERM
+  trap 'ui_end; exit 129' HUP
   (( UI_ACTIVE )) || return 1
   (( $+functions[state_save_session] )) && state_save_session
   ui_plain_transcript
   transcript="$REPLY"
   zcoder_terminal_safe "$transcript"; transcript="$REPLY"
-  ui_end
+  if ! ui_suspend; then
+    ui_status_notice warning 'Could not release the terminal for copy view.'
+    return 1
+  fi
+  {
+    _ui_copy_transcript "$transcript"
+    copy_result=$?
+    (( copy_interrupted )) && copy_result=130
+  } always {
+    # Exit cleanup clears UI_SUSPENDED: never reopen a terminating session.
+    if (( UI_SUSPENDED )); then
+      ui_resume || restore_result=$?
+    fi
+  }
+  (( restore_result == 0 )) || return "$restore_result"
+  return "$copy_result"
+}
+
+# A fixed internal foreground action; no command string or model tool is run.
+_ui_copy_transcript() {
+  emulate -L zsh
+  setopt localtraps
+  local ignored=''
+  local -i read_result=0
+  # The caller owns this flag: an interrupted read can return 1 even when the
+  # trap returns 130, and can leave this helper before its following commands.
+  trap 'copy_interrupted=1; return 130' INT
   {
     print -rn -- $'\e[2J\e[H'
     print -r -- "zcoder.zsh transcript copy view"
     print -r -- "Select text with the terminal mouse and use its normal copy shortcut. Scroll as needed."
-    print -r -- "Press Enter when finished to return to zcoder."
+    print -r -- "Press Enter or Ctrl-C when finished to return to zcoder."
     print -r -- ""
-    print -r -- "$transcript"
+    print -r -- "$1"
     print -r -- ""
     print -rn -- "Press Enter to return: "
-  } > /dev/tty
+  } > /dev/tty || return 1
+  (( copy_interrupted )) && return 130
   IFS= read -r ignored < /dev/tty
-  ui_init
+  read_result=$?
+  (( copy_interrupted )) && return 130
+  return "$read_result"
 }
 
 _ui_add_line() {
@@ -1114,6 +1208,7 @@ ui_activity_input() {
   if input_decode_terminal_event "$ch" "$key"; then
     if [[ "$INPUT_EVENT_ACTION" == newline ]]; then input_insert $'\n'; ui_input_changed
     elif [[ "$INPUT_EVENT_ACTION" == paste && -n "$INPUT_EVENT_TEXT" ]]; then input_insert "$INPUT_EVENT_TEXT"; ui_input_changed
+    elif [[ "$INPUT_EVENT_ACTION" == paste_rejected ]]; then ui_status_notice warning "$INPUT_EVENT_TEXT"
     fi
   elif [[ "$UI_FOCUS" == input && -n "${INPUT_QUEUE_TURN_ID:-}${REMOTE_INPUT_TURN_ID:-}" &&
           ( "$ch" == $'\r' || "$ch" == $'\n' || "$key" == ENTER || "$key" == PADENTER || "$ch" == $'\x07' ) ]] && (( $+functions[input_queue_ui_submit] )); then
@@ -1139,6 +1234,19 @@ ui_activity_input() {
 ui_poll_activity() {
   local ch="" key="" mouse=""
   ui_poll_resize
+  if (( TERMINAL_EVENT_POLL )); then
+    local -i count result
+    for (( count=0; count<32; count++ )); do
+      terminal_read_event input_win ch key mouse poll
+      ui_activity_input "$ch" "$key"
+      result=$?
+      (( result == 0 )) || return "$result"
+      [[ -n $ch$key$mouse ]] || break
+      (( TERMINAL_EVENT_POLL )) || break
+    done
+    (( count == 0 && TERMINAL_EVENT_POLL )) && terminal_wait_input "${1:-50}"
+    return 0
+  fi
   zcoder_curses timeout input_win "${1:-50}"
   terminal_read_event input_win ch key mouse
   ui_activity_input "$ch" "$key"

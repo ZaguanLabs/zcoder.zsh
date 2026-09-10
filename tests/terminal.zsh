@@ -167,7 +167,8 @@ terminal_pty_run() {
   exec zsh -f "$TEST_DIR/fixtures/terminal_ui.zsh" "$PROJECT_DIR" "$terminal_pty_base" "$terminal_pty_mode"
 }
 typeset -a terminal_pty_modes=(stock)
-terminal_has_norefresh=$(zsh -dfc 'source "$1/lib/curses.zsh"; source "$1/lib/terminal.zsh"; ZCODER_CURSES=auto zcoder_curses_load "$1" || exit; terminal_detect_input; print -r -- "$TERMINAL_NOREFRESH_INPUT"' zcoder-test "$PROJECT_DIR")
+terminal_input_features=$(zsh -dfc 'source "$1/lib/curses.zsh"; source "$1/lib/terminal.zsh"; ZCODER_CURSES=auto zcoder_curses_load "$1" || exit; terminal_detect_input; print -r -- "$TERMINAL_NOREFRESH_INPUT:$TERMINAL_CAN_PASTE:$TERMINAL_EVENT_POLL"' zcoder-test "$PROJECT_DIR")
+terminal_has_norefresh=${terminal_input_features%%:*}
 [[ $terminal_has_norefresh == 1 ]] && terminal_pty_modes+=(auto)
 for terminal_pty_mode in "${terminal_pty_modes[@]}"; do
   terminal_pty_base="$TEST_TMP/terminal-pty-$terminal_pty_mode"
@@ -184,6 +185,18 @@ for terminal_pty_mode in "${terminal_pty_modes[@]}"; do
   zpty -w -n terminal-ui $'\e[?2026;2$y'
   terminal_pty_wait "$terminal_pty_base.approval" '0:supported'
   assert_success "a real terminal reply enables synchronization without approving or dismissing the dialog" $?
+  terminal_native_paste=${mapfile[$terminal_pty_base.native]:-0:0}
+  terminal_expected_native=0:0
+  [[ $terminal_pty_mode == auto ]] && terminal_expected_native=${terminal_input_features#*:}
+  assert_eq "$terminal_expected_native" "$terminal_native_paste" "$terminal_pty_mode activates only its available paste and polling capabilities"
+  if [[ $terminal_native_paste == 1:* ]]; then
+    zpty -w -n terminal-ui $'\e[200~y\r\x00\x03\e'
+    terminal_pty_wait "$terminal_pty_base.approval_paste" 'PASTE_PENDING:0:4'
+    assert_success 'native paste keeps control bytes and approval keys inside its payload' $?
+    zpty -w -n terminal-ui $'\e[201~'
+    terminal_pty_wait "$terminal_pty_base.approval_paste" 'PASTE:0:0'
+    assert_success 'a completed native paste cannot answer the real approval dialog' $?
+  fi
   zpty -w -n terminal-ui n
   terminal_pty_wait "$terminal_pty_base.answer" n
   assert_success "only the user's explicit denial completes the approval" $?
@@ -193,12 +206,33 @@ for terminal_pty_mode in "${terminal_pty_modes[@]}"; do
   zpty -w -n terminal-ui $'\eOD\eOC!'
   terminal_pty_wait "$terminal_pty_base.draft" $'draftline1\nline2界e\u0301!'
   assert_success "decoded arrow keys remain navigation during activity" $?
+  if [[ $terminal_native_paste == 1:* ]]; then
+    zpty -w -n terminal-ui $'\e[200~\xc3'
+    terminal_pty_wait "$terminal_pty_base.paste_bytes" 1
+    assert_success 'native paste accepts a split UTF-8 prefix without freezing the activity loop' $?
+    assert_eq $'draftline1\nline2界e\u0301!' "${mapfile[$terminal_pty_base.draft]}" 'an unfinished native paste leaves the draft unchanged'
+    zpty -w -n terminal-ui $'\xa9\r'
+    terminal_pty_wait "$terminal_pty_base.paste_bytes" 3
+    assert_success 'native paste retains CR at a chunk boundary' $?
+    zpty -w -n terminal-ui $'\nend\x00\x03\t\e[201~'
+    terminal_pty_wait "$terminal_pty_base.draft" $'draftline1\nline2界e\u0301!é\nend    '
+    assert_success 'native paste reconstructs split UTF-8 and CRLF while filtering raw controls' $?
+    zpty -w -n terminal-ui $'\x03'
+    terminal_pty_wait "$terminal_pty_base.control" cleared
+    assert_success 'Ctrl-C outside native paste still clears the editor without killing the UI' $?
+    assert_eq 'cleared:0:input::normal' "${mapfile[$terminal_pty_base.control]}" 'native raw input preserves application Ctrl-C handling'
+  fi
   assert_contains "$terminal_pty_output" $'\e[?2026h' "supported terminals wrap subsequent curses output"
   assert_contains "$terminal_pty_output" $'\e[?2026l' "synchronized frames end before input waits"
   zpty -w -n terminal-ui $'\x07'
   terminal_pty_wait "$terminal_pty_base.diagnostics" 1
   assert_success "terminal diagnostics opens after background activity" $?
   zpty -w -n terminal-ui $'\e'
+  if [[ $terminal_native_paste == 1:* ]]; then
+    terminal_pty_wait "$terminal_pty_base.abandon" ready
+    assert_success 'native paste can be enabled again after UI lifecycle reentry' $?
+    zpty -w -n terminal-ui $'\e[200~unfinished'
+  fi
   terminal_pty_wait "$terminal_pty_base.done" 1
   assert_success "diagnostics closes and terminal lifecycle reentry completes" $?
   assert_contains "$terminal_pty_output" 'Terminal diagnostics' "terminal inspection renders a real modal"
@@ -208,6 +242,7 @@ for terminal_pty_mode in "${terminal_pty_modes[@]}"; do
   assert_eq 'disabled (invalid setting):0' "${mapfile[$terminal_pty_base.invalid]:-}" "invalid configuration fails closed"
   assert_eq 'no reply:0' "${mapfile[$terminal_pty_base.auto]:-}" "a silent terminal retains normal rendering"
   assert_contains "$terminal_pty_output" $'\e[?2004l' "UI exit restores bracketed paste mode"
+  assert_eq 1 "${mapfile[$terminal_pty_base.restored]:-}" 'UI teardown restores terminal modes even during an unfinished native paste'
   zpty -d terminal-ui
 done
 unfunction terminal_test_feed terminal_pty_wait terminal_pty_run

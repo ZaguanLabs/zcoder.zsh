@@ -113,6 +113,8 @@ _ui_palette_input() {
     if [[ "$INPUT_EVENT_ACTION" == paste ]]; then
       inserted="${INPUT_EVENT_TEXT//[^[:print:]]/ }"
       palette_query+="$inserted"
+    elif [[ "$INPUT_EVENT_ACTION" == paste_rejected ]]; then
+      ui_status_notice warning "$INPUT_EVENT_TEXT"
     fi
   elif _ui_modal_navigate ${#COMMAND_MATCHES}; then return 0
   elif [[ "$modal_key" == BACKSPACE || "$modal_ch" == $'\x7f' || "$modal_ch" == $'\b' ]]; then
@@ -219,6 +221,7 @@ _ui_terminal_draw() {
     1) geometry_state='native (no subprocess)' ;;
   esac
   [[ -n "$TERMINAL_FD" ]] && paste_state=enabled
+  (( TERMINAL_NATIVE_PASTE )) && paste_state='native chunks (1 MiB limit)'
   terminal_poll
   terminal_inspected_state="$TERMINAL_SYNC_STATE"
   if [[ -n ${UI_COLOR_INFO[initialized]:-} ]]; then
@@ -228,6 +231,7 @@ _ui_terminal_draw() {
   (( UI_STYLED_SPANS && UI_CLIPPED_SPANS )) && clipping_state='native cell budget'
   local input_state='curses default'
   (( TERMINAL_NOREFRESH_INPUT )) && input_state='explicit refresh (zdraw)'
+  (( TERMINAL_EVENT_POLL )) && input_state+=' · activity polling'
   local -a lines=("Terminal: ${TERM:-unset}" "Size: ${SCREEN_W} columns × ${SCREEN_H} rows"
     "Curses module: ${ZCODER_CURSES_BACKEND:-preloaded}" "Resize queries: ${geometry_state}"
     "Compiled features: ${features_state}"

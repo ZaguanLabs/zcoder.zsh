@@ -231,12 +231,47 @@ its overlay before restarting a server, then recreates it after connection setup
 ### Optional terminal protocol ownership
 
 `lib/terminal.zsh` owns bracketed paste and optional mode 2026 synchronization.
-All curses refreshes pass through its balanced begin/end wrapper; all UI input
-passes through its bounded CSI decoder before reaching editors or modals. The
-decoder consumes capability replies (including late replies) so their final `y`
-cannot approve a command. Other sequences are queued unchanged, and protocol
-lookalikes inside bracketed paste remain text. Detection shares the existing
-event loop and never adds a startup wait or worker-owned terminal output.
+All curses refreshes pass through its balanced begin/end wrapper. Its bounded
+CSI filter consumes capability replies, including late replies, so their final
+`y` cannot approve a command. Detection shares the existing event loop and adds
+no startup wait or worker-owned terminal output.
+
+When zdraw advertises streaming paste, it owns bracketed-paste delimiters and
+raw terminal input. The adapter accumulates at most 1 MiB of raw payload in
+chunks and delivers one `PASTE` key with an empty character field; only the
+editor decoder reads the separate `TERMINAL_EVENT_TEXT` payload. Approval and
+navigation handlers never receive pasted keystrokes. UTF-8 and CRLF fragments
+are joined before decoding, invalid UTF-8 is replaced, CRLF/CR become newlines,
+tabs become four spaces, and other ASCII controls are removed. Oversized pastes
+are discarded through their end delimiter with no partial insertion. Ctrl-C
+outside paste remains application input. Teardown ends an unfinished paste
+session to restore terminal modes and releases retained chunks. Stock curses
+and older zdraw builds retain the existing Zsh delimiter decoder.
+
+With zdraw polling and input information available, activity waits drain at
+most 32 events before yielding to their worker callback. Empty polls wait on
+terminal readiness through `zselect` for at most 20 ms, then check again even
+without descriptor readiness: curses can hold queued input internally. Polls
+never read the terminal outside curses or change a window's configured timeout.
+Ollama output and worker completion remain timer-polled because their regular
+spool files would be permanently ready under `zselect`. Idle and modal loops
+retain their configured curses timeouts. Native escape decoding can still wait
+beyond the polling tick; this is not a hard real-time guarantee. `/terminal`
+reports native paste and activity polling alongside the selected capabilities.
+
+Transcript copy view uses zdraw's optional suspend/resume commands to release
+terminal input and output while retaining windows, prepared rows, and color
+state. `UI_SUSPENDED` tracks native handoff or the stock teardown fallback;
+`UI_ACTIVE` is false during foreground input so background UI updates cannot
+paint over the copyable transcript. The `always` cleanup restores the UI after
+Enter, Ctrl-C, or a read failure. Ctrl-C is handled locally and the caller's
+signal trap is restored afterward. Exit cleanup clears suspended ownership so
+termination cannot reopen the screen. Native resume relays changed geometry to
+window layout; unchanged geometry retains existing windows. Failed native
+restoration attempts a fresh UI session, and unrecoverable initialization stops
+the interactive loop. Runtime suspension refusal, including an unfinished paste,
+does not fall back to teardown. Copy view runs only a fixed internal print/read
+action; command tools retain their existing approval and worker paths.
 
 ## Agent cycle
 

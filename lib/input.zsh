@@ -170,6 +170,25 @@ input_decode_terminal_event() {
   INPUT_EVENT_ACTION=""
   INPUT_EVENT_TEXT=""
 
+  case "$key" in
+    PASTE_BEGIN|PASTE_PENDING|PASTE_REJECTED|PASTE)
+      INPUT_TERM_STATE=normal; INPUT_ESCAPE_BUF=''
+      if [[ $key == PASTE ]]; then
+        _json_utf8_text "${TERMINAL_EVENT_TEXT:-}"
+        INPUT_EVENT_TEXT=${REPLY//$'\r\n'/$'\n'}
+        INPUT_EVENT_TEXT=${INPUT_EVENT_TEXT//$'\r'/$'\n'}
+        INPUT_EVENT_TEXT=${INPUT_EVENT_TEXT//$'\t'/    }
+        # Prompt text may contain newlines, but no other terminal controls.
+        INPUT_EVENT_TEXT=${INPUT_EVENT_TEXT//[$'\x00'-$'\x09'$'\x0b'-$'\x1f'$'\x7f']/}
+        INPUT_EVENT_ACTION=paste
+      elif [[ $key == PASTE_REJECTED ]]; then
+        INPUT_EVENT_ACTION=paste_rejected
+        INPUT_EVENT_TEXT='Paste exceeds the 1 MiB limit; nothing was inserted.'
+      fi
+      return 0
+      ;;
+  esac
+
   if [[ "$key" == SENTER ]]; then
     INPUT_EVENT_ACTION="newline"
     return 0
