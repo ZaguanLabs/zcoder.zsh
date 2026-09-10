@@ -1,4 +1,4 @@
-.PHONY: check test benchmark model-eval compile clean curses
+.PHONY: check test test-visual benchmark model-eval compile clean curses
 
 check:
 	zsh -fc 'for f in zcoder.zsh chat.sh lib/*.zsh scripts/*.zsh tests/*.zsh tests/fixtures/*.zsh; do zsh -n "$$f" || exit $$?; done'
@@ -9,6 +9,9 @@ curses: check
 
 test: check
 	zsh tests/run.zsh
+
+test-visual: check
+	ZCODER_REQUIRE_VISUALS=1 zsh -df tests/picker.zsh
 
 benchmark: check
 	zsh tests/benchmark.zsh

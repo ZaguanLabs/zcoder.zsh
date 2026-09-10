@@ -1,10 +1,25 @@
 # Modal state is dynamically scoped by ui_modal_run and its callers. Draw and
 # input handlers are internal function names, never model/user-provided code.
 typeset -gi UI_MODAL_ACTIVE=0
+typeset -gi UI_PICKER_HELPERS=0
+# Passive, optional libraries: stock curses can use the pure state/geometry
+# helpers too. Missing vendor sources leave the original picker available.
+() {
+  emulate -L zsh
+  local root="${1:A:h:h}/vendor/zdraw/lib" component
+  for component in layout list help; do
+    [[ -r "$root/zdraw-$component.zsh" ]] || return 0
+  done
+  for component in layout list help; do
+    source "$root/zdraw-$component.zsh" || return 0
+  done
+  UI_PICKER_HELPERS=1
+} "${(%):-%x}"
 
 ui_modal_text() {
   emulate -L zsh
-  local -i row=$1 col=${4:-2} available=$(( modal_w - col - 1 ))
+  local -i row=$1 col=${4:-2} available
+  available=$(( modal_w - col - 1 ))
   local value="$2" attr="${3:-white/black}"
   (( row >= 0 && row < modal_h && available > 0 )) || return 0
   value="${value//$'\n'/ }"
@@ -22,6 +37,8 @@ ui_modal_run() {
   local modal_title="$1" modal_draw="$2" modal_input="$3"
   local -i wanted_h=${4:-20} wanted_w=${5:-78}
   local -i modal_h=0 modal_w=0 modal_rows=1 modal_selected=${modal_initial:-1} modal_scroll=1
+  local -a reply=()
+  local -i modal_y modal_x
   local -i modal_done=0 modal_accepted=0 modal_dirty=1 previous_h=0 previous_w=0
   local modal_result="" modal_ch="" modal_key="" modal_mouse=""
   (( UI_ACTIVE && ! UI_MODAL_ACTIVE )) || { REPLY=""; return 1; }
@@ -40,10 +57,15 @@ ui_modal_run() {
         modal_h=$(( SCREEN_H - 2 )); modal_w=$(( SCREEN_W - 2 ))
         (( modal_h > wanted_h )) && modal_h=$wanted_h
         (( modal_w > wanted_w )) && modal_w=$wanted_w
+        modal_y=$(( (SCREEN_H-modal_h)/2 )); modal_x=$(( (SCREEN_W-modal_w)/2 ))
+        if (( ${modal_picker_helpers:-0} )); then
+          zdraw-layout-center 1 1 "$(( SCREEN_H-2 ))" "$(( SCREEN_W-2 ))" "$wanted_h" "$wanted_w" || return 1
+          modal_y=$reply[1]; modal_x=$reply[2]; modal_h=$reply[3]; modal_w=$reply[4]
+        fi
         # There must be room for a border, title, content, and close hint.
         (( modal_h >= 6 && modal_w >= 24 )) || return 1
         modal_rows=$(( modal_h - 4 ))
-        zcoder_curses addwin overlay_win "$modal_h" "$modal_w" $(( (SCREEN_H-modal_h)/2 )) $(( (SCREEN_W-modal_w)/2 )) || return 1
+        zcoder_curses addwin overlay_win "$modal_h" "$modal_w" "$modal_y" "$modal_x" || return 1
         ui_window_background overlay_win
         previous_h=$SCREEN_H; previous_w=$SCREEN_W; modal_dirty=1
       fi
@@ -80,10 +102,25 @@ ui_modal_run() {
 _ui_modal_list_draw() {
   local -i count=${#modal_items} i row=2
   local item="" attr=""
-  (( modal_selected > count )) && modal_selected=$count
-  (( modal_selected < 1 )) && modal_selected=1
-  (( modal_selected < modal_scroll )) && modal_scroll=$modal_selected
-  (( modal_selected >= modal_scroll + modal_rows )) && modal_scroll=$(( modal_selected-modal_rows+1 ))
+  if (( ${modal_picker_helpers:-0} )); then
+    _ui_picker_update keep || return 1
+  fi
+  if (( ${modal_picker_widgets:-0} )); then
+    _ui_picker_draw 2>/dev/null && return 0
+    # A later native failure can leave a partial paint. The modal owns this
+    # rectangle; clear it and repaint the complete frame through legacy calls.
+    modal_picker_widgets=0
+    zcoder_curses clear overlay_win
+    ui_attr overlay_win -reverse -dim -bold border/surface
+    ui_border overlay_win
+    ui_modal_text 0 " ${modal_title} " "bold white/black"
+  fi
+  if (( ! ${modal_picker_helpers:-0} )); then
+    (( modal_selected > count )) && modal_selected=$count
+    (( modal_selected < 1 )) && modal_selected=1
+    (( modal_selected < modal_scroll )) && modal_scroll=$modal_selected
+    (( modal_selected >= modal_scroll + modal_rows )) && modal_scroll=$(( modal_selected-modal_rows+1 ))
+  fi
   for (( i=modal_scroll; i<=count && row<modal_h-2; i++,row++ )); do
     item="${modal_items[i]}"
     [[ "$item" == "${modal_current:-}" && -n "$item" ]] && item="* ${item}"
@@ -98,6 +135,17 @@ _ui_modal_list_draw() {
 
 _ui_modal_navigate() {
   local -i count=$1
+  if (( ${modal_picker_helpers:-0} )); then
+    local action
+    case "$modal_key" in
+      UP) action=up ;; DOWN) action=down ;; PPAGE) action=page-up ;;
+      NPAGE) action=page-down ;; HOME) action=home ;; END) action=end ;;
+      *) return 1 ;;
+    esac
+    _ui_picker_update "$action" || return 1
+    modal_dirty=1
+    return 0
+  fi
   case "$modal_key" in
     UP) (( modal_selected-- )) ;;
     DOWN) (( modal_selected++ )) ;;
@@ -134,9 +182,65 @@ _ui_modal_list_input() {
 ui_modal_choose() {
   emulate -L zsh
   local title="$1" modal_current="$2"; shift 2
+  local modal_hint='Enter Use  Esc Close  Up/Down Select  PgUp/PgDn Page'
   local -a modal_items=("$@") modal_item_attrs=()
+  (( ${#modal_items} )) || modal_hint='Esc Close'
   local -i modal_initial=${modal_items[(Ie)$modal_current]}
+  local -i modal_picker_helpers=$UI_PICKER_HELPERS modal_picker_widgets=0
+  local -A zdraw_ui_list zdraw_ui_theme
+  local -A picker_colors=(black 0 red 1 green 2 yellow 3 blue 4 magenta 5 cyan 6 white 7)
+  local -a picker_labels=() reply=()
+  local label feature
+  # The toolkit's state has bounded indexes. Larger catalogs use the original
+  # picker instead of becoming unselectable.
+  (( ${#modal_items} <= 32767 )) || modal_picker_helpers=0
+  if (( modal_picker_helpers )) && [[ $ZCODER_CURSES_COMMAND == zdraw ]] &&
+     (( UI_STYLED_SPANS && UI_CLIPPED_SPANS )) && zcoder_curses_features; then
+    modal_picker_widgets=1
+    for feature in region_fill textinfo styled_spans clipped_spans; do
+      (( ${reply[(Ie)$feature]} )) || modal_picker_widgets=0
+    done
+  fi
+  if (( modal_picker_widgets )); then
+    # Sanitize display labels once; selection always returns the original
+    # array index, never a decorated or sanitized model name.
+    for label in "${modal_items[@]}"; do
+      [[ -n $modal_current && $label == "$modal_current" ]] && label="* $label"
+      zcoder_terminal_safe "${label//$'\n'/ }"
+      picker_labels+=("$REPLY")
+    done
+    # Reuse the application's negotiated palette, including direct color.
+    zdraw_ui_theme=(profile "$UI_COLOR_MODE" text "${UI_THEME_COLORS[text]:-default}"
+      surface "${UI_THEME_COLORS[surface]:-default}" canvas "${UI_THEME_COLORS[surface]:-default}"
+      muted "${UI_THEME_COLORS[muted]:-default}" accent "${UI_THEME_COLORS[accent]:-default}"
+      selection "${UI_THEME_COLORS[accent]:-default}" on-selection "${UI_THEME_COLORS[surface]:-default}"
+      inactive "${UI_THEME_COLORS[surface]:-default}" on-inactive "${UI_THEME_COLORS[text]:-default}")
+    for feature in ${(k)zdraw_ui_theme}; do
+      [[ $feature == profile ]] && continue
+      label=$zdraw_ui_theme[$feature]
+      zdraw_ui_theme[$feature]=${picker_colors[$label]:-$label}
+      [[ $UI_COLOR_MODE == mono ]] && zdraw_ui_theme[$feature]=default
+    done
+  fi
   ui_modal_run "$title" _ui_modal_list_draw _ui_modal_list_input
+}
+
+# Caller-owned state is local to ui_modal_choose and ui_modal_run; no widget
+# reads input or presents a frame. Other modal kinds keep their own navigation.
+_ui_picker_update() {
+  emulate -L zsh
+  zdraw_ui_list=(selected "$modal_selected" first "$modal_scroll")
+  zdraw-list-update "${#modal_items}" "$modal_rows" "$1" || return
+  modal_selected=$zdraw_ui_list[selected]; modal_scroll=$zdraw_ui_list[first]
+}
+
+_ui_picker_draw() {
+  emulate -L zsh
+  zdraw-list overlay_win 2 2 "$modal_rows" "$(( modal_w-4 ))" focus empty-text='No entries' -- "${picker_labels[@]}" || return
+  local -a shortcuts=(Esc Close)
+  (( ${#picker_labels} )) && shortcuts=(Enter Use "${shortcuts[@]}" '↑/↓' Select PgUp/PgDn Page)
+  zdraw-help overlay_win "$(( modal_h-2 ))" 2 "$(( modal_w-4 ))" normal bg=surface -- \
+    "${shortcuts[@]}"
 }
 
 _ui_modal_view_draw() {

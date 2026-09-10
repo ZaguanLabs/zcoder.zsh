@@ -44,6 +44,23 @@ assert_eq "unfinished prompt" "$INPUT_BUF" "picker use preserves the editor draf
 assert_eq "6" "$INPUT_POS" "picker use preserves the editor cursor"
 
 overlay_keys
+OVERLAY_KEYS=(END HOME DOWN ENTER)
+UI_PICKER_HELPERS=0 ui_modal_choose "Models" alpha alpha beta gamma
+assert_success "picker remains usable without optional toolkit libraries" $?
+assert_eq "2" "$REPLY" "legacy picker returns the original item index"
+
+overlay_keys
+OVERLAY_KEYS=(END ENTER)
+ui_modal_choose "Models" missing alpha beta gamma
+assert_eq "3" "$REPLY" "picker handles an absent current model and End navigation"
+
+overlay_keys
+OVERLAY_CHARS=($'\r' q)
+ui_modal_choose "Models" ''
+assert_failure "Enter cannot accept an empty picker" $?
+assert_eq "" "$REPLY" "empty picker cancellation returns no index"
+
+overlay_keys
 OVERLAY_CHARS=($'\e')
 ui_modal_choose "Models" alpha alpha beta
 assert_failure "Escape cancels a shared picker" $?

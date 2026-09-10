@@ -3168,6 +3168,8 @@ source "${TEST_DIR}/presentation.zsh"
 source "${TEST_DIR}/curses.zsh"
 source "${TEST_DIR}/resize.zsh"
 source "${TEST_DIR}/drawing.zsh"
+zsh -df "${TEST_DIR}/picker.zsh"
+assert_success "picker widgets and visual baselines pass in real terminals" $?
 source "${TEST_DIR}/status.zsh"
 source "${TEST_DIR}/process.zsh"
 source "${TEST_DIR}/tool_wait.zsh"

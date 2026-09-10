@@ -2,6 +2,7 @@
 .atlas/
 # Precompiled zsh wordcode from `make compile`
 *.zwc
+.build/picker-visuals/
 node_modules/
 .pnpm_store/
 *.log

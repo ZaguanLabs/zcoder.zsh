@@ -7,7 +7,7 @@ headless_probe() {
   for name in curses ui input terminal process overlays commands stream delegate relay; do
     (( ! ${+ZCODER_LOADED_LIBS[$name]} )) || return 10
   done
-  for name in ui_init input_reset ui_command_palette ui_modal_run TRAPWINCH main_tui handle_slash_command; do
+  for name in ui_init input_reset ui_command_palette ui_modal_run TRAPWINCH main_tui handle_slash_command zdraw-list zdraw-layout-center zdraw-help; do
     (( ! $+functions[$name] )) || return 11
   done
   for name in zdraw zsh/curses zsh/terminfo; do
