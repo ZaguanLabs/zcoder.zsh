@@ -93,7 +93,7 @@ resize_pty_wait() {
 }
 resize_pty_run() {
   trap - EXIT INT TERM
-  exec zsh -f "$TEST_DIR/fixtures/resize_ui.zsh" "$PROJECT_DIR" "$resize_base" "$resize_module"
+  exec zsh -f "$TEST_DIR/fixtures/resize_ui.zsh" "$PROJECT_DIR" "$resize_base" "$resize_module" "$resize_phase"
 }
 typeset -a resize_modules=('')
 [[ -n ${ZCODER_TEST_CURSES_PATH:-} ]] && resize_modules+=("$ZCODER_TEST_CURSES_PATH")
@@ -101,8 +101,9 @@ typeset -a resize_modules=('')
 # is enabled; no environment override is needed after `make curses`.
 resize_backend=$(ZCODER_CURSES=auto zsh -dfc 'source "$1/lib/curses.zsh"; zcoder_curses_load "$1" || exit; print -r -- "$ZCODER_CURSES_BACKEND"' zcoder-test "$PROJECT_DIR")
 [[ $resize_backend == bundled ]] && resize_modules+=(auto)
-typeset -g resize_module='' resize_base=''
+typeset -g resize_module='' resize_base='' resize_phase='' resize_restored=''
 for resize_module in "${resize_modules[@]}"; do
+  resize_phase=''
   resize_label=stock; resize_expected=0
   [[ -n $resize_module ]] && { resize_label=fork; resize_expected=1; }
   [[ $resize_module == auto ]] && resize_label=bundled
@@ -122,6 +123,7 @@ for resize_module in "${resize_modules[@]}"; do
   assert_eq 'input:preserved draft:15' "${mapfile[$resize_base.focus]:-}" "$resize_label hiding a focused sidebar returns to the intact prompt"
   assert_eq '1:preserved draf' "${mapfile[$resize_base.backspace]:-}" "$resize_label Ctrl+H still deletes a character without toggling the sidebar"
   assert_eq '1:0' "${mapfile[$resize_base.reentry]:-}" "$resize_label hidden preference survives UI reentry"
+  assert_eq 0 "${mapfile[$resize_base.initial_preference]:-}" "$resize_label a narrow first launch does not save an automatic preference"
   assert_eq "$resize_expected:$resize_expected" "${mapfile[$resize_base.native]:-}" "$resize_label selects geometry backend across UI reentry"
   if (( resize_expected )); then
     assert_eq '' "${mapfile[$resize_base.stty]:-}" 'native resize polling launches no stty processes'
@@ -131,5 +133,14 @@ for resize_module in "${resize_modules[@]}"; do
     assert_eq 2 "${mapfile[$resize_base.probes]:-}" 'stock module is probed only once per UI session'
   fi
   zpty -d resize-ui
+  resize_phase=restore
+  for resize_restored in '1:0' '0:25'; do
+    zf_rm -f -- "$resize_base.done"
+    TERM=xterm-256color zpty -b resize-ui resize_pty_run
+    resize_pty_wait
+    assert_success "$resize_label fresh UI process loads and changes sidebar preferences" $?
+    assert_eq "$resize_restored" "${mapfile[$resize_base.restored]:-}" "$resize_label sidebar choice survives exit and restart after a narrow terminal"
+    zpty -d resize-ui
+  done
 done
 unfunction resize_pty_wait resize_pty_run

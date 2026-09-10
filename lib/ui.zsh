@@ -1,6 +1,7 @@
 # Adaptive curses interface for chat, tools, and prompt editing.
 (( ${+functions[zcoder_curses]} )) || source "${${(%):-%x}:A:h}/curses.zsh"
 source "${${(%):-%x}:A:h}/drawing.zsh"
+source "${${(%):-%x}:A:h}/ui_preferences.zsh"
 
 typeset -gi UI_ACTIVE=0 UI_ACTIVITY_DEPTH=0
 # 0: ordinary lifecycle; 1: retained zdraw session; 2: ended fallback session.
@@ -247,6 +248,7 @@ ui_toggle_sidebar() {
   (( UI_ACTIVE && ! ${UI_MODAL_ACTIVE:-0} )) || return 0
   UI_SIDEBAR_HIDDEN=$(( ! UI_SIDEBAR_HIDDEN ))
   ui_setup_windows
+  ui_preferences_save || ui_status_notice warning 'Could not save the sidebar preference.'
   ui_refresh_all
 }
 
@@ -268,6 +270,7 @@ ui_init() {
   # sequence. Scope the default to initialization; honor a user's longer wait
   # for slow terminal links without changing their shell environment.
   ESCDELAY=${ESCDELAY:-100} zcoder_curses init || return 1
+  ui_preferences_load
   ui_detect_geometry
   ui_theme_init
   UI_ACTIVE=1

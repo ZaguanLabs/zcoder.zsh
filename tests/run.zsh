@@ -3167,6 +3167,7 @@ source "${TEST_DIR}/handoff.zsh"
 source "${TEST_DIR}/presentation.zsh"
 source "${TEST_DIR}/curses.zsh"
 source "${TEST_DIR}/resize.zsh"
+source "${TEST_DIR}/ui_preferences.zsh"
 source "${TEST_DIR}/drawing.zsh"
 zsh -df "${TEST_DIR}/picker.zsh"
 assert_success "picker widgets and visual baselines pass in real terminals" $?

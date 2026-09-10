@@ -83,9 +83,11 @@ private to the current user.
 Press Tab to focus the sidebar, use Up or Down to choose a job, and press Enter
 to return to the prompt. Ctrl+N starts a new job without deleting earlier ones.
 `/sessions` reveals and focuses the same list. Ctrl+B hides or shows the sidebar,
-giving the transcript its full width when hidden. This choice lasts until you
-exit, including across terminal resizes. Terminals narrower than 88 columns
+giving the transcript its full width when hidden. This choice is saved locally
+and restored on your next launch, across projects and remote connections.
+Terminals narrower than 88 columns
 always hide the sidebar, and Tab skips it while hidden. Ctrl+H remains Backspace.
+Automatic hiding on a narrow terminal does not change your saved preference.
 
 Remote sessions use the same sidebar controls but remain stored on the named
 server. See [Remote-agent server](remote.md).

@@ -2,6 +2,7 @@
 emulate -R zsh
 setopt extendedglob
 typeset -g fixture_root=$1 fixture_base=$2
+typeset -g ZCODER_HOME="$fixture_base.home"
 source "$fixture_root/lib/curses.zsh"
 if [[ ${3:-} == auto ]]; then
   ZCODER_CURSES=auto zcoder_curses_load "$fixture_root" || exit 1
@@ -12,7 +13,7 @@ elif [[ -n ${3:-} ]]; then
 else
   ZCODER_CURSES=stock zcoder_curses_load "$fixture_root" || exit 1
 fi
-zmodload zsh/terminfo zsh/datetime zsh/mapfile || exit 1
+zmodload zsh/terminfo zsh/datetime zsh/mapfile zsh/system zsh/files || exit 1
 typeset -gi fixture_geometry_calls=0
 zcoder_curses() {
   [[ $1 == geometry ]] && (( fixture_geometry_calls++ ))
@@ -29,13 +30,26 @@ mkdir -p "$fixture_base.bin"
 print -r -- '#!/bin/sh
 printf "%s\n" "$*" >> "$RESIZE_STTY_LOG"
 exec "$RESIZE_REAL_STTY" "$@"' > "$fixture_base.bin/stty"
-chmod +x "$fixture_base.bin/stty"
+command chmod +x "$fixture_base.bin/stty"
 path=("$fixture_base.bin" $path)
 "$RESIZE_REAL_STTY" rows 24 cols 80 </dev/tty || exit 1
+[[ ${4:-} == restore ]] && "$RESIZE_REAL_STTY" rows 24 cols 120 </dev/tty
 trap 'ui_end' EXIT
 input_insert 'preserved draft'
 ui_append_message assistant "${(pl:220::word :)}"
 ui_init || exit 1
+if [[ ${4:-} == restore ]]; then
+  mapfile[$fixture_base.restored]="$UI_SIDEBAR_HIDDEN:$SIDE_W"
+  ui_toggle_sidebar
+  # Automatic hiding before exit must not replace the explicit choice.
+  "$RESIZE_REAL_STTY" rows 24 cols 60 </dev/tty || exit 1
+  UI_RESIZE_PENDING=1
+  ui_poll_resize
+  ui_end
+  mapfile[$fixture_base.done]=1
+  exit 0
+fi
+mapfile[$fixture_base.initial_preference]="$([[ -e $ZCODER_HOME/ui-preferences ]] && print 1 || print 0)"
 mapfile[$fixture_base.initial]="$UI_NATIVE_GEOMETRY"
 # Read the real shortcut from the PTY, then exercise the busy-input path.
 typeset -g fixture_ch='' fixture_key='' fixture_mouse=''

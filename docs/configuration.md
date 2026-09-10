@@ -32,6 +32,12 @@ Run `./zcoder.zsh --help` for the complete CLI reference.
 
 Command-line values take precedence where an equivalent flag exists.
 
+Sidebar visibility is saved immediately when you use Ctrl+B or reveal the panel
+with `/sessions`. The local `$ZCODER_HOME/ui-preferences` file stores this choice
+across launches, projects, and remote connections. A narrow terminal can hide the
+panel temporarily without changing the saved choice. Delete this file to restore
+the default of showing the sidebar on the next launch.
+
 ## Tool exposure
 
 The default `full` mode preserves the single-phase agent loop. Experimental
