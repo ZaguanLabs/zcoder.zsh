@@ -57,9 +57,22 @@ integration_wait output 'Press Enter to return:'
 assert_success "the transcript copy view releases curses after the recovered turn" $?
 zpty -w -n local-application $'\r'
 zselect -t 20
+# Another session's writer must not delay quitting this one. The final save
+# only needs the current session; a redundant sidebar refresh would wait here.
+typeset -g integration_busy_session="$integration_base.home/sessions/1_1.session"
+typeset -g integration_quit_lock=''
+zf_mkdir -p "$integration_busy_session"
+print -rn -- '' > "$integration_busy_session/save.lock"
+zsystem flock -f integration_quit_lock "$integration_busy_session/save.lock"
+assert_success "quit fixture locks an unrelated session" $?
+typeset -F integration_quit_started=$EPOCHREALTIME integration_quit_elapsed
 zpty -w -n local-application $'/quit\r'
 integration_wait "$integration_base.application_exit" 0
 assert_success "the real application exits cleanly after modal and copy-view re-entry" $?
+integration_quit_elapsed=$(( EPOCHREALTIME-integration_quit_started ))
+assert_success "quit does not wait for an unrelated session writer" $(( integration_quit_elapsed < 1.0 ? 0 : 1 ))
+zsystem flock -u "$integration_quit_lock"
+zf_rm -r -- "$integration_busy_session"
 integration_wait "$integration_base.terminal_restored" 1
 assert_success "the real application restores its original terminal settings" $?
 assert_eq 1 "${mapfile[$integration_base.chat_count]:-}" "inspector, copy, and quit commands never become model prompts"

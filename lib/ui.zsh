@@ -264,7 +264,10 @@ ui_detect_geometry() {
 }
 
 ui_init() {
-  zcoder_curses init || return 1
+  # Curses otherwise waits about a second to distinguish Escape from a key
+  # sequence. Scope the default to initialization; honor a user's longer wait
+  # for slow terminal links without changing their shell environment.
+  ESCDELAY=${ESCDELAY:-100} zcoder_curses init || return 1
   ui_detect_geometry
   ui_theme_init
   UI_ACTIVE=1

@@ -15,6 +15,7 @@ typeset -gi UI_PICKER_HELPERS=0
   done
   UI_PICKER_HELPERS=1
 } "${(%):-%x}"
+source "${${(%):-%x}:A:h}/document_view.zsh"
 
 ui_modal_text() {
   emulate -L zsh
@@ -29,6 +30,13 @@ ui_modal_text() {
   ui_attr overlay_win $=attr
   zcoder_clip "$value" "$available"
   zcoder_curses string overlay_win "$REPLY"
+}
+
+ui_modal_frame() {
+  zcoder_curses clear overlay_win
+  ui_attr overlay_win -reverse -dim -bold border/surface
+  ui_border overlay_win
+  ui_modal_text 0 " ${modal_title} " "bold white/black"
 }
 
 ui_modal_run() {
@@ -70,10 +78,7 @@ ui_modal_run() {
         previous_h=$SCREEN_H; previous_w=$SCREEN_W; modal_dirty=1
       fi
       if (( modal_dirty )); then
-        zcoder_curses clear overlay_win
-        ui_attr overlay_win -reverse -dim -bold border/surface
-        ui_border overlay_win
-        ui_modal_text 0 " ${modal_title} " "bold white/black"
+        ui_modal_frame
         "$modal_draw" || return 1
         terminal_refresh overlay_win
         modal_dirty=0
@@ -110,10 +115,7 @@ _ui_modal_list_draw() {
     # A later native failure can leave a partial paint. The modal owns this
     # rectangle; clear it and repaint the complete frame through legacy calls.
     modal_picker_widgets=0
-    zcoder_curses clear overlay_win
-    ui_attr overlay_win -reverse -dim -bold border/surface
-    ui_border overlay_win
-    ui_modal_text 0 " ${modal_title} " "bold white/black"
+    ui_modal_frame
   fi
   if (( ! ${modal_picker_helpers:-0} )); then
     (( modal_selected > count )) && modal_selected=$count
@@ -188,18 +190,13 @@ ui_modal_choose() {
   local -i modal_initial=${modal_items[(Ie)$modal_current]}
   local -i modal_picker_helpers=$UI_PICKER_HELPERS modal_picker_widgets=0
   local -A zdraw_ui_list zdraw_ui_theme
-  local -A picker_colors=(black 0 red 1 green 2 yellow 3 blue 4 magenta 5 cyan 6 white 7)
-  local -a picker_labels=() reply=()
-  local label feature
+  local -a picker_labels=()
+  local label
   # The toolkit's state has bounded indexes. Larger catalogs use the original
   # picker instead of becoming unselectable.
   (( ${#modal_items} <= 32767 )) || modal_picker_helpers=0
-  if (( modal_picker_helpers )) && [[ $ZCODER_CURSES_COMMAND == zdraw ]] &&
-     (( UI_STYLED_SPANS && UI_CLIPPED_SPANS )) && zcoder_curses_features; then
+  if (( modal_picker_helpers )) && ui_widgets_available; then
     modal_picker_widgets=1
-    for feature in region_fill textinfo styled_spans clipped_spans; do
-      (( ${reply[(Ie)$feature]} )) || modal_picker_widgets=0
-    done
   fi
   if (( modal_picker_widgets )); then
     # Sanitize display labels once; selection always returns the original
@@ -209,18 +206,7 @@ ui_modal_choose() {
       zcoder_terminal_safe "${label//$'\n'/ }"
       picker_labels+=("$REPLY")
     done
-    # Reuse the application's negotiated palette, including direct color.
-    zdraw_ui_theme=(profile "$UI_COLOR_MODE" text "${UI_THEME_COLORS[text]:-default}"
-      surface "${UI_THEME_COLORS[surface]:-default}" canvas "${UI_THEME_COLORS[surface]:-default}"
-      muted "${UI_THEME_COLORS[muted]:-default}" accent "${UI_THEME_COLORS[accent]:-default}"
-      selection "${UI_THEME_COLORS[accent]:-default}" on-selection "${UI_THEME_COLORS[surface]:-default}"
-      inactive "${UI_THEME_COLORS[surface]:-default}" on-inactive "${UI_THEME_COLORS[text]:-default}")
-    for feature in ${(k)zdraw_ui_theme}; do
-      [[ $feature == profile ]] && continue
-      label=$zdraw_ui_theme[$feature]
-      zdraw_ui_theme[$feature]=${picker_colors[$label]:-$label}
-      [[ $UI_COLOR_MODE == mono ]] && zdraw_ui_theme[$feature]=default
-    done
+    ui_widget_theme
   fi
   ui_modal_run "$title" _ui_modal_list_draw _ui_modal_list_input
 }

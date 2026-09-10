@@ -206,7 +206,9 @@ _relay_listener_main() {
   listen_fd="$REPLY"
   mapfile[$ready_file]="${sysparams[pid]:-$$}" || { exec {listen_fd}>&- 2>/dev/null; return 1; }
   while (( listener_running )); do
-    if ! zselect -t 10 -r "$listen_fd" 2>/dev/null; then
+    # Zsh can defer TERM until this builtin returns. Bound an idle shutdown
+    # wait to 20 ms so quitting does not pause on the listener's polling tick.
+    if ! zselect -t 2 -r "$listen_fd" 2>/dev/null; then
       continue
     fi
     zsocket -a -t "$listen_fd" 2>/dev/null || continue

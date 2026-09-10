@@ -158,6 +158,14 @@ preserves the prompt and cursor position. Commands needing an argument prepare
 an editable prompt, keeping your existing draft after the command prefix.
 Slash commands remain available directly.
 
+`/help` or `/?` opens a read-only help view without adding help messages to the
+conversation. Short entries group shortcuts and commands by task, with indented
+continuations for wrapped text. Up/Down or `j`/`k` scroll, Page Up/Page Down move
+by a page, Home/End jump to the beginning/end, and `[`/`]` move between sections. Escape or `q`
+closes the view and preserves the draft. On zdraw, resizing retains the source
+position being read; stock curses retains the current source block. When a
+terminal is too small to open the view, help appears in the transcript.
+
 The palette omits local-only commands in remote mode and editing workers in the
 sysadmin profile. Remote goal and harness entries follow the server's advertised
 capabilities; older servers keep the existing consultation-command fallback.

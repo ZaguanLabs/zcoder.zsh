@@ -120,6 +120,38 @@ ui_border() {
   zcoder_curses border "$1"
 }
 
+# Widget state is owned by the enclosing view, like zdraw's other outputs.
+ui_widget_theme() {
+  emulate -L zsh
+  local role color
+  local -A basic=(black 0 red 1 green 2 yellow 3 blue 4 magenta 5 cyan 6 white 7)
+  zdraw_ui_theme=(profile "$UI_COLOR_MODE" text "${UI_THEME_COLORS[text]:-default}"
+    surface "${UI_THEME_COLORS[surface]:-default}" canvas "${UI_THEME_COLORS[surface]:-default}"
+    muted "${UI_THEME_COLORS[muted]:-default}" accent "${UI_THEME_COLORS[accent]:-default}"
+    border "${UI_THEME_COLORS[border]:-default}"
+    selection "${UI_THEME_COLORS[accent]:-default}" on-selection "${UI_THEME_COLORS[surface]:-default}"
+    inactive "${UI_THEME_COLORS[surface]:-default}" on-inactive "${UI_THEME_COLORS[text]:-default}")
+  for role in ${(k)zdraw_ui_theme}; do
+    [[ $role == profile ]] && continue
+    color=$zdraw_ui_theme[$role]
+    zdraw_ui_theme[$role]=${basic[$color]:-$color}
+    [[ $UI_COLOR_MODE == mono ]] && zdraw_ui_theme[$role]=default
+  done
+  return 0
+}
+
+ui_widgets_available() {
+  emulate -L zsh
+  [[ $ZCODER_CURSES_COMMAND == zdraw ]] && (( UI_STYLED_SPANS && UI_CLIPPED_SPANS )) || return 1
+  local -a reply
+  local feature
+  zcoder_curses_features || return 1
+  for feature in region_fill textinfo styled_spans clipped_spans "$@"; do
+    (( ${reply[(Ie)$feature]} )) || return 1
+  done
+  return 0
+}
+
 # Draw a prefix across all styles within one cell budget. Callers clear the
 # window first and supply padding spans when blank cells need explicit styles.
 # A rejected native clip is repainted using the Zsh clipper and legacy calls.

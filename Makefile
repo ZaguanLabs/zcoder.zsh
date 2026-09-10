@@ -12,6 +12,7 @@ test: check
 
 test-visual: check
 	ZCODER_REQUIRE_VISUALS=1 zsh -df tests/picker.zsh
+	ZCODER_REQUIRE_VISUALS=1 zsh -df tests/document.zsh
 
 benchmark: check
 	zsh tests/benchmark.zsh

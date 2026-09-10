@@ -3,6 +3,7 @@
 # Precompiled zsh wordcode from `make compile`
 *.zwc
 .build/picker-visuals/
+.build/document-visuals/
 node_modules/
 .pnpm_store/
 *.log

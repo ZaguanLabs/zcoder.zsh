@@ -141,6 +141,14 @@ General Unicode clipping remains outside the drawing adapter. The application
 PTY tests compare batched/fallback retained cells and exercise combining-mark
 rejection, indexed and monochrome palettes, and stock/bundled modules.
 
+`make test-visual` runs the picker and help-reader PTY tests and compares retained
+cell fixtures. It requires a matching zdraw build. The regular `make test` runs
+the same interaction checks but permits stock-only hosts to skip captures.
+See the [picker baseline guide](../tests/fixtures/picker/README.md) and
+[document baseline guide](../tests/fixtures/document/README.md) for reviewing
+differences and explicitly regenerating fixtures. Python is only needed for
+optional HTML comparison reports.
+
 When both `structured_events` and `norefresh_events` are advertised, input uses
 `event ... norefresh` so reads cannot present unfinished drawing. Feature
 selection is cached per UI entry. Character, key, resize and supported mouse

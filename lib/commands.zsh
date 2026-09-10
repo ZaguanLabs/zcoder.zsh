@@ -304,6 +304,92 @@ ui_show_context() {
   ui_modal_run "Context usage" _ui_context_draw _ui_modal_view_input 24 92 || true
 }
 
+ui_show_help() {
+  emulate -L zsh
+  local availability=$1 id kind text body=''
+  # One source for the structured reader and plain-text transcript fallback.
+  local -a blocks=(
+    prompt heading 'Prompt editing'
+    send bullet 'Enter: Send a prompt, or steer an active turn.'
+    queue_key bullet 'Ctrl+G: Queue a follow-up while busy.'
+    newline bullet 'Shift+Enter: Insert a newline. Use Alt+Enter if your terminal does not report Shift+Enter separately.'
+    paste bullet 'Paste: Multiline text keeps its formatting.'
+    stop bullet 'Escape: Stop a running Ollama response, local tool wait, or external delegate.'
+    clear bullet 'Ctrl+U: Clear input.'
+    word bullet 'Ctrl+W: Delete a word.'
+    exit bullet 'Ctrl+Q: Exit.'
+
+    navigation heading 'Navigation and copying'
+    sidebar bullet 'Ctrl+B: Hide or show the sidebar.'
+    focus bullet 'Tab: Move focus between the prompt, visible session sidebar, and transcript.'
+    saved_jobs bullet 'Up/Down in the sidebar: Resume another saved job.'
+    copy bullet 'Ctrl+Y or /copy: Open a stable plain-text view for terminal selection and copying.'
+    scroll bullet 'PgUp/PgDn: Scroll.'
+
+    commands heading 'Commands and transcript'
+    suggestions bullet '/ in an idle prompt: Show slash suggestions. Up/Down selects; Tab or Enter completes; Escape closes. Enter on a complete command runs it.'
+    palette bullet 'Ctrl+P or /commands: Open the searchable command palette.'
+    select_entry bullet 'Up/Down or k/j with transcript focus: Select an entry.'
+    first_last bullet 'Home/End with transcript focus: Select the first or last entry.'
+    fold bullet 'Enter/Space with transcript focus: Fold or unfold the entry body.'
+    reasoning bullet 'Ctrl+R: Toggle selected reasoning, or the latest reasoning when editing the prompt.'
+
+    tools heading 'Tools and sessions'
+    goals subheading 'Persistent goals'
+    goal_start bullet '/goal OBJECTIVE: Run a persistent, independently verified goal.'
+    goal_tokens bullet '/goal --tokens N OBJECTIVE: Set a token limit for the goal.'
+    goal_status bullet '/goal: Show goal status.'
+    goal_control bullet '/goal pause | /goal resume | /goal clear: Control the current goal.'
+
+    delegates subheading 'External agents'
+    claude bullet '/claude REQUEST: Ask Claude for a read-only consultation.'
+    codex bullet '/codex REQUEST: Ask Codex for a read-only consultation.'
+    agy bullet '/agy REQUEST: Ask Antigravity for a read-only consultation.'
+    opencode bullet '/opencode REQUEST: Ask OpenCode for a read-only consultation.'
+    workers bullet 'Add ! for a workspace-editing worker, for example /codex! REQUEST.'
+    opencode_model bullet '/opencode with no request: Select its provider/model.'
+    local_agents bullet '/list-agents: List other local zcoder instances.'
+    incoming bullet '/agents pause | /agents resume: Pause or resume incoming work.'
+
+    skills subheading 'Skills and MCP'
+    skill_list bullet '/skills: List installed Agent Skills.'
+    skill_activate bullet '/skill NAME: Activate a skill. You can also prefix a request with $skill-name.'
+    mcp bullet '/mcp: Show configured servers and live status.'
+    mcp_reload bullet '/mcp reload: Reload MCP configuration.'
+
+    models subheading 'Models and environment'
+    model bullet '/model or Ctrl+O: Open the Ollama model picker.'
+    host bullet '/host HOST: Change the Ollama host.'
+    instructions bullet '/instructions: List active AGENTS.md files.'
+    terminal bullet '/terminal: Show terminal capabilities.'
+
+    sessions subheading 'Sessions and context'
+    session_list bullet '/sessions: Focus saved jobs.'
+    new_session bullet '/new or Ctrl+N: Start a new saved session.'
+    compact bullet '/compact: Create a context checkpoint.'
+    context bullet '/context: Open the context usage inspector.'
+    queue bullet '/queue: List pending input.'
+    queue_resume bullet '/queue resume: Restart pending input.'
+    queue_drop bullet '/queue drop ID: Discard a queued message.'
+  )
+  for id kind text in "${blocks[@]}"; do
+    if [[ $kind == (heading|subheading) ]]; then
+      [[ -n $body ]] && body+=$'\n'
+      body+="$text"$'\n'
+    else
+      body+="- $text"$'\n'
+    fi
+  done
+  body=${body%$'\n'}
+  blocks+=(availability heading 'Available agent runtimes' runtimes paragraph "$availability")
+  if (( UI_ACTIVE )) && ui_document_view 'Help' "${blocks[@]}"; then
+    return 0
+  fi
+  # Preserve access to help outside curses or when a terminal cannot fit a view.
+  ui_append_message system "$body"
+  ui_append_message system "$availability"
+}
+
 typeset -ga UI_CONTEXT_LINES=()
 
 _ui_terminal_draw() {
