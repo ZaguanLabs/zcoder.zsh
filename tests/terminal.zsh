@@ -53,6 +53,35 @@ terminal_filter_input '' '' ''
 assert_eq $'\e' "${TERMINAL_INPUT_QUEUE[1]}" "a bare Escape is released on an idle poll"
 TERMINAL_INPUT_QUEUE=()
 
+# A modal can disappear during a fragmented paste. Its remaining payload must
+# still be drained before another owner receives deliberate keyboard input.
+() {
+  local -i TERMINAL_DISCARD_PASTE=1 TERMINAL_PASTE_DISCARDING=0 TERMINAL_PASTE=0
+  local TERMINAL_SEQUENCE='' TERMINAL_PASTE_TAIL=''
+  local -a TERMINAL_INPUT_QUEUE=()
+  terminal_test_feed $'\e[200~y\ra\e'
+  assert_eq 0 "${#TERMINAL_INPUT_QUEUE}" 'legacy modal paste hides its opening Escape and approval characters'
+  terminal_filter_input '' DOWN ''
+  terminal_filter_input '' ENTER ''
+  assert_eq 0 "${#TERMINAL_INPUT_QUEUE}" 'decoded keys inside discarded paste cannot navigate or accept a modal'
+  terminal_test_feed $'\e[20'
+  terminal_filter_input '' DOWN ''
+  terminal_test_feed '1~y'
+  assert_eq 1:0 "$TERMINAL_PASTE:${#TERMINAL_INPUT_QUEUE}" 'decoded payload keys cannot splice fragments into a false paste terminator'
+  terminal_filter_input '' RESIZE ''
+  assert_eq ':RESIZE:' "${(j.:.)TERMINAL_INPUT_QUEUE}" 'resize remains available during discarded paste'
+  TERMINAL_INPUT_QUEUE=()
+  TERMINAL_DISCARD_PASTE=0
+  terminal_test_feed "${(pl:4096::y:)}"
+  assert_eq 0 "${#TERMINAL_INPUT_QUEUE}" 'closing a modal mid-paste cannot leak the rest into the editor'
+  assert_eq 6 "${#TERMINAL_PASTE_TAIL}" 'discarded paste retains only a bounded delimiter tail'
+  terminal_test_feed $'\e[20'
+  terminal_filter_input '' '' ''
+  terminal_test_feed $'1~n'
+  assert_eq 'n::' "${(j.:.)TERMINAL_INPUT_QUEUE}" 'a split closing delimiter releases the next deliberate keystroke'
+  assert_eq 0:0 "$TERMINAL_PASTE:$TERMINAL_PASTE_DISCARDING" 'completed legacy paste releases both stream flags'
+}
+
 
 TERMINAL_SYNC_STATE=pending; TERMINAL_QUERY_DEADLINE=$(( EPOCHREALTIME + 10 ))
 terminal_test_feed $'\e[?2026;'"${(pl:200::0:)}"
@@ -196,6 +225,14 @@ for terminal_pty_mode in "${terminal_pty_modes[@]}"; do
     zpty -w -n terminal-ui $'\e[201~'
     terminal_pty_wait "$terminal_pty_base.approval_paste" 'PASTE:0:0'
     assert_success 'a completed native paste cannot answer the real approval dialog' $?
+  else
+    zpty -w -n terminal-ui $'\e[200~ya\rq\e'
+    terminal_pty_wait "$terminal_pty_base.approval_legacy_paste" '1:1:0'
+    assert_success 'stock paste keeps approval keys, Enter and Escape inside its payload' $?
+    assert_eq 0 "$(( ${+mapfile[$terminal_pty_base.answer]} ))" 'an unfinished stock paste leaves the real approval open'
+    zpty -w -n terminal-ui $'\e[201~'
+    terminal_pty_wait "$terminal_pty_base.approval_legacy_paste" '0:0:0'
+    assert_success 'a completed stock paste cannot answer or dismiss the real approval dialog' $?
   fi
   zpty -w -n terminal-ui n
   terminal_pty_wait "$terminal_pty_base.answer" n

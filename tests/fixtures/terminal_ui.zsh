@@ -19,6 +19,7 @@ _ui_approval_input() {
   _fixture_approval_input
   mapfile[${fixture_base}.approval]="${modal_done}:${TERMINAL_SYNC_STATE}"
   mapfile[${fixture_base}.approval_paste]="$modal_key:$modal_done:$TERMINAL_PASTE_BYTES"
+  mapfile[${fixture_base}.approval_legacy_paste]="$TERMINAL_PASTE:$TERMINAL_PASTE_DISCARDING:$modal_done"
 }
 ui_init || exit 1
 mapfile[${fixture_base}.input]="$TERMINAL_NOREFRESH_INPUT"

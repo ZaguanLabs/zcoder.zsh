@@ -9,6 +9,8 @@ context_accounting_tests() {
   local AGENT_TOOL_PHASE=full ZCODER_MODEL=fixture REMOTE_MODE=local
   local -i GOAL_VERIFIER_ACTIVE=0 UI_ACTIVE=0 SKILL_DISCOVERY_REQUIRED=0
   local -i AGENT_LAST_PROMPT_TOKENS=0 AGENT_LAST_PAYLOAD_BYTES=0 AGENT_ESTIMATED_TOKENS=0
+  local -i AGENT_LAST_OUTPUT_TOKENS=0 RELAY_AVAILABLE=0
+  local GOAL_STATUS=none GOAL_OBJECTIVE='' GOAL_FEEDBACK=''
   local -i baseline=0 reasoning_index=0 resources_index=0 skills_index=0 assistant_index=0 tool_index=0 whole_message=0 schema_calls=0
   local -i AGENT_STREAM_CONTEXT_BASE=0 AGENT_STREAM_CONTEXT_BYTES=0
   local saved_schema="${functions[agent_tools_schema_json]}" payload='' reasoning="${(l:9000::r:)}" body="${(l:6000::s:)}" resource="${(l:3000::f:)}"
@@ -82,6 +84,58 @@ context_accounting_tests() {
     agent_build_payload false "$AGENT_CONTEXT_TOOLS"
     agent_estimate_payload_tokens "$REPLY"
     assert_eq "$baseline" "$AGENT_ESTIMATED_TOKENS" 'calibrated post-answer accounting agrees with the complete next request'
+
+    # Responses without usage must not destroy the last measured ratio or pair
+    # its count with the wrong request. The output counter remains per response.
+    json_parse_ollama_response '{"message":{"content":"Done"},"prompt_eval_count":1200,"eval_count":40}'
+    agent_context_record_usage "$payload"
+    local -i sample_bytes=$AGENT_LAST_PAYLOAD_BYTES
+    agent_estimate_payload_tokens "$payload"
+    assert_eq 1320 "$REPLY" 'a reported prompt count calibrates its request with ten percent headroom'
+    json_parse_ollama_response '{"message":{"content":"Done"},"eval_count":7}'
+    agent_context_record_usage "${payload}${reasoning}"
+    assert_eq "1200:$sample_bytes:7" "$AGENT_LAST_PROMPT_TOKENS:$AGENT_LAST_PAYLOAD_BYTES:$AGENT_LAST_OUTPUT_TOKENS" 'missing prompt usage preserves the matching sample while updating output usage'
+    agent_estimate_payload_tokens "$payload"
+    assert_eq 1320 "$REPLY" 'missing usage cannot make the estimate fall back to a different ratio'
+    json_parse_ollama_response '{"message":{"content":"Done"},"prompt_eval_count":0}'
+    agent_context_record_usage "${payload}${reasoning}"
+    assert_eq "1200:$sample_bytes:0" "$AGENT_LAST_PROMPT_TOKENS:$AGENT_LAST_PAYLOAD_BYTES:$AGENT_LAST_OUTPUT_TOKENS" 'zero prompt usage is unusable calibration and missing output does not reuse an old output count'
+    json_parse_ollama_response '{"message":{"content":"Done"},"prompt_eval_count":2400,"eval_count":9}'
+    agent_context_record_usage "$payload"
+    agent_estimate_payload_tokens "$payload"
+    assert_eq 2640 "$REPLY" 'the next usable prompt count replaces the retained calibration'
+
+    # These blocks already entered model requests but were absent from the bill.
+    AGENT_LAST_PROMPT_TOKENS=0; AGENT_LAST_PAYLOAD_BYTES=0
+    GOAL_STATUS=active; GOAL_OBJECTIVE="goal objective $body"; RELAY_AVAILABLE=1
+    AGENT_LOOP_NUDGE='Use the evidence from the previous tool result.'
+    agent_build_payload false '[]'
+    assert_contains "$REPLY" 'goal objective' 'goal accounting fixture includes its objective in the actual request'
+    assert_contains "$REPLY" 'Local agent relay:' 'relay accounting fixture includes guidance in the actual request'
+    assert_contains "$REPLY" "$AGENT_LOOP_NUDGE" 'loop accounting fixture includes its guidance in the actual request'
+    agent_context_bill
+    local -i goal_index=${AGENT_CONTEXT_COMPONENT_LABELS[(Ie)Goal guidance]}
+    local -i relay_index=${AGENT_CONTEXT_COMPONENT_LABELS[(Ie)Relay guidance]}
+    local -i loop_index=${AGENT_CONTEXT_COMPONENT_LABELS[(Ie)Loop guidance]}
+    assert_success 'the inspector attributes active goal instructions' $(( AGENT_CONTEXT_COMPONENT_VALUES[goal_index] >= 2000 ? 0 : 1 ))
+    assert_success 'the inspector attributes available relay instructions' $(( AGENT_CONTEXT_COMPONENT_VALUES[relay_index] > 0 ? 0 : 1 ))
+    assert_success 'the inspector attributes loop recovery instructions' $(( AGENT_CONTEXT_COMPONENT_VALUES[loop_index] > 0 ? 0 : 1 ))
+
+    AGENT_TOOL_PHASE=routing
+    agent_context_bill
+    assert_eq 0 "$AGENT_CONTEXT_COMPONENT_VALUES[relay_index]" 'routing inspection excludes relay guidance that is absent from its request'
+    baseline=$AGENT_CONTEXT_COMPONENT_VALUES[1]
+    AGENT_SYSTEM_PROMPT+="$reasoning"
+    agent_context_bill
+    assert_success 'routing accounting retains custom system instructions alongside routing guidance' $(( AGENT_CONTEXT_COMPONENT_VALUES[1] >= baseline + 3000 ? 0 : 1 ))
+
+    GOAL_VERIFIER_ACTIVE=1
+    agent_context_bill
+    baseline=$AGENT_CONTEXT_COMPONENT_VALUES[1]
+    goal_verifier_system_prompt
+    agent_context_component_tokens "$REPLY"
+    assert_eq "$REPLY" "$baseline" 'verifier accounting uses its actual system prompt'
+    assert_eq 0:0:0 "$AGENT_CONTEXT_COMPONENT_VALUES[goal_index]:$AGENT_CONTEXT_COMPONENT_VALUES[relay_index]:$AGENT_CONTEXT_COMPONENT_VALUES[loop_index]" 'verifier accounting excludes ordinary worker guidance and avoids counting the goal twice'
   } always {
     functions[agent_tools_schema_json]="$saved_schema"
   }

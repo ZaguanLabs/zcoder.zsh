@@ -131,6 +131,9 @@ minutes, the command is denied.
 
 Press Escape to ask the server to cancel the active turn. The server terminates
 and reaps its worker before accepting another turn.
+Once the client has a turn receipt, cancellation includes its session and turn
+IDs. Updated servers reject a delayed request that names different work. Legacy
+clients and submissions cancelled before a receipt still use unscoped requests.
 
 During interactive turns, HTTP waits keep draft editing, paste, transcript
 folding, and resize handling available. This includes model readiness checks,

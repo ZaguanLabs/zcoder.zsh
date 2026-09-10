@@ -531,7 +531,15 @@ _remote_client_emit_event() {
 
 remote_client_cancel_turn() {
   local -i REMOTE_REQUEST_TIMEOUT=2 REMOTE_REQUEST_CANCELLED=0 acknowledged=0
-  if remote_client_request POST /v1/cancel '{}' >/dev/null 2>&1 &&
+  local cancel_payload='{}' session_json='' turn_json=''
+  # A turn receipt lets the server reject delayed cancellation after another
+  # client starts work. Before a receipt, retain the legacy cancellation path.
+  if [[ -n "$REMOTE_INPUT_TURN_ID" ]]; then
+    json_quote "$CURRENT_SESSION_ID"; session_json=$REPLY
+    json_quote "$REMOTE_INPUT_TURN_ID"; turn_json=$REPLY
+    cancel_payload="{\"session_id\":$session_json,\"turn_id\":$turn_json}"
+  fi
+  if remote_client_request POST /v1/cancel "$cancel_payload" >/dev/null 2>&1 &&
      json_parse_flat_object "$HTTP_BODY" && [[ "${JSON_OBJECT[ok]:-}" == true ]]; then
     acknowledged=1
   fi
@@ -1479,6 +1487,22 @@ _remote_server_handle_connection() {
       _remote_http_send "$fd" 200 '{"ok":true}'
       ;;
     POST:/v1/cancel)
+      if ! json_parse_flat_object "$REMOTE_REQUEST_BODY"; then
+        _remote_http_error "$fd" 400 'invalid cancellation request'; return
+      fi
+      # Both fields are required for a scoped request. An empty legacy object
+      # remains supported, but a malformed scope must never become global.
+      if (( ${+JSON_OBJECT[session_id]} || ${+JSON_OBJECT[turn_id]} )); then
+        if [[ ${JSON_OBJECT_TYPES[session_id]:-} != string || ${JSON_OBJECT_TYPES[turn_id]:-} != string ||
+              -z ${JSON_OBJECT[session_id]} || -z ${JSON_OBJECT[turn_id]} ]]; then
+          _remote_http_error "$fd" 400 'session_id and turn_id must be non-empty strings'; return
+        fi
+        if [[ ${JSON_OBJECT[session_id]} != "$REMOTE_SESSION_ID" || ${JSON_OBJECT[turn_id]} != "$REMOTE_TURN_ID" ]]; then
+          _remote_http_error "$fd" 409 'cancellation does not match the current session and turn'; return
+        fi
+      elif (( ${#JSON_OBJECT} )); then
+        _remote_http_error "$fd" 400 'unscoped cancellation must be an empty object'; return
+      fi
       if _remote_server_cancel_turn; then
         _remote_http_send "$fd" 200 '{"ok":true}'
       else

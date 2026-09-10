@@ -15,6 +15,8 @@ typeset -g AGENT_CONTEXT_PID='' AGENT_CONTEXT_BASE=''
 typeset -g AGENT_CONTEXT_REQUEST_MODEL='' AGENT_CONTEXT_REQUEST_HOST=''
 typeset -gF AGENT_CONTEXT_DEADLINE=0.0
 typeset -gi AGENT_CONTEXT_DISCOVERY_PENDING=0
+# The most recent usable prompt sample and its matching request size. A later
+# response without usage must not replace either half of this calibration.
 typeset -gi AGENT_LAST_PROMPT_TOKENS=0
 typeset -gi AGENT_LAST_OUTPUT_TOKENS=0
 typeset -gi AGENT_LAST_PAYLOAD_BYTES=0
@@ -332,6 +334,20 @@ agent_estimate_payload_tokens() {
   fi
   AGENT_ESTIMATED_TOKENS="$estimate"
   REPLY="$estimate"
+}
+
+agent_context_record_usage() {
+  # Called only after accepting a parsed, non-error response. Output usage is
+  # per response; prompt calibration retains the last positive reported count.
+  AGENT_LAST_OUTPUT_TOKENS=$JSON_RESPONSE_OUTPUT_TOKENS
+  if (( JSON_RESPONSE_PROMPT_TOKENS > 0 )); then
+    _http_byte_length "$1"
+    if (( REPLY > 0 )); then
+      AGENT_LAST_PAYLOAD_BYTES=$REPLY
+      AGENT_LAST_PROMPT_TOKENS=$JSON_RESPONSE_PROMPT_TOKENS
+    fi
+  fi
+  return 0
 }
 
 agent_context_options_json() {

@@ -1983,7 +1983,7 @@ assert_contains "$REPLY" "estimated next prompt:" "context status reports the cu
 assert_contains "$REPLY" "last Ollama prompt: unknown" "context status distinguishes reset usage from a measured prompt"
 assert_contains "$REPLY" "Estimated context bill:" "context status attributes model-visible components"
 assert_eq "${#AGENT_CONTEXT_COMPONENT_LABELS}" "${#AGENT_CONTEXT_COMPONENT_VALUES}" "context component labels align with their estimates"
-assert_eq "11" "${#AGENT_CONTEXT_COMPONENT_VALUES}" "context accounting exposes reasoning and skill resources alongside the original components"
+assert_eq "14" "${#AGENT_CONTEXT_COMPONENT_VALUES}" "context accounting exposes reasoning, skill resources, and runtime guidance alongside the original components"
 assert_contains "$REPLY" "checkpoint=${AGENT_CONTEXT_COMPONENT_VALUES[5]}" "inspector checkpoint accounting matches the context bill"
 
 functions[_test_valid_compaction_chat]="${functions[agent_ollama_chat]}"
@@ -2181,14 +2181,15 @@ assert_eq "The current note says staged evidence." "$AGENT_LAST_RESPONSE" "stage
 ZCODER_TOOL_EXPOSURE=full
 
 typeset -gi MOCK_REASONING_TURNS=0 MOCK_REASONING_DISPATCHES=0
-typeset -g MOCK_REASONING_SECOND_PAYLOAD=""
+typeset -g MOCK_REASONING_SECOND_PAYLOAD="" MOCK_REASONING_FIRST_PAYLOAD=""
 agent_ollama_chat() {
   (( MOCK_REASONING_TURNS++ ))
   if (( MOCK_REASONING_TURNS == 1 )); then
+    MOCK_REASONING_FIRST_PAYLOAD="$1"
     HTTP_BODY='{"message":{"content":"","thinking":"inspect privately","tool_calls":[{"type":"function","function":{"name":"read_file","arguments":{"path":"reasoning.txt"}}}]},"prompt_eval_count":100,"eval_count":12}'
   else
     MOCK_REASONING_SECOND_PAYLOAD="$1"
-    HTTP_BODY='{"message":{"content":"","thinking":"verification complete","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"complete","response":"Reasoning tool turn completed."}}}]},"prompt_eval_count":130,"eval_count":10}'
+    HTTP_BODY='{"message":{"content":"","thinking":"verification complete","tool_calls":[{"type":"function","function":{"name":"finish","arguments":{"status":"complete","response":"Reasoning tool turn completed."}}}]},"eval_count":10}'
   fi
   HTTP_ERROR=""
   return 0
@@ -2209,6 +2210,10 @@ reasoning_turn_status=$?
 assert_success "reasoning and tool-call lifecycle completes" "$reasoning_turn_status"
 assert_eq "2" "$MOCK_REASONING_TURNS" "tool result triggers a new reasoning turn"
 assert_eq "1" "$MOCK_REASONING_DISPATCHES" "structured reasoning tool call dispatches once"
+assert_eq 100 "$AGENT_LAST_PROMPT_TOKENS" "a real tool turn retains prompt calibration when its final response omits usage"
+_http_byte_length "$MOCK_REASONING_FIRST_PAYLOAD"
+assert_eq "$REPLY" "$AGENT_LAST_PAYLOAD_BYTES" "the retained prompt count stays paired with its original request size"
+assert_eq 10 "$AGENT_LAST_OUTPUT_TOKENS" "a final response without prompt usage still updates output usage"
 assert_contains "$MOCK_REASONING_SECOND_PAYLOAD" '"thinking":"inspect privately"' "follow-up payload preserves prior reasoning"
 assert_contains "$MOCK_REASONING_SECOND_PAYLOAD" '"name":"read_file"' "follow-up payload preserves the structured tool call"
 assert_contains "$MOCK_REASONING_SECOND_PAYLOAD" "reasoning fixture contents" "follow-up payload preserves the tool result"
@@ -3188,6 +3193,7 @@ source "${TEST_DIR}/input_queue.zsh"
 source "${TEST_DIR}/hardening_state.zsh"
 source "${TEST_DIR}/hardening_json_tools.zsh"
 source "${TEST_DIR}/hardening_protocol.zsh"
+source "${TEST_DIR}/concurrency.zsh"
 source "${TEST_DIR}/hardening_input.zsh"
 source "${TEST_DIR}/memory_accounting.zsh"
 

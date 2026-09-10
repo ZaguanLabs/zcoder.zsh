@@ -538,58 +538,69 @@ agent_add_assistant_message() {
   agent_context_refresh_estimate
 }
 
-agent_resolve_system_prompt() {
+agent_system_prompt_parts() {
+  # Ordered reply fields: base, project, skills, MCP, relay, checkpoint,
+  # completion rules, goal, loop guidance. Payloads and accounting share this
+  # assembly to keep inspection aligned with the guidance sent to the model.
+  local base="$AGENT_SYSTEM_PROMPT" project='' skills='' mcp='' relay='' checkpoint=''
+  local completion='' goal='' loop='' routing_instructions=''
   if (( ${GOAL_VERIFIER_ACTIVE:-0} )) && (( $+functions[goal_verifier_system_prompt] )); then
     goal_verifier_system_prompt
-    return
+    reply=("$REPLY" '' '' '' '' '' '' '' '')
+    return 0
   fi
-  local prompt="$AGENT_SYSTEM_PROMPT" routing_instructions=""
   if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
     agent_routing_system_prompt
     routing_instructions="$REPLY"
-    if [[ -n "$prompt" ]]; then
-      prompt+=$'\n\n<tool_routing>\n'"${routing_instructions}"$'\n</tool_routing>'
+    if [[ -n "$base" ]]; then
+      base+=$'\n\n<tool_routing>\n'"${routing_instructions}"$'\n</tool_routing>'
     else
-      prompt="$routing_instructions"
+      base="$routing_instructions"
     fi
   else
-    [[ -n "$prompt" ]] || { agent_default_system_prompt; prompt="$REPLY"; }
+    [[ -n "$base" ]] || { agent_default_system_prompt; base="$REPLY"; }
     agent_lfm_prompt_block
-    prompt+="$REPLY"
+    base+="$REPLY"
   fi
   if (( $+functions[instructions_prompt_block] )); then
     instructions_prompt_block
-    prompt+="$REPLY"
+    project="$REPLY"
   fi
   if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]] && (( $+functions[skills_active_prompt_block] )); then
     skills_active_prompt_block
-    prompt+="$REPLY"
+    skills="$REPLY"
   elif (( $+functions[skills_prompt_block] )); then
     skills_prompt_block
-    prompt+="$REPLY"
+    skills="$REPLY"
   fi
   if (( $+functions[mcp_prompt_block] )) && [[ "${AGENT_TOOL_PHASE:-full}" != routing ]]; then
     mcp_prompt_block
-    prompt+="$REPLY"
+    mcp="$REPLY"
   fi
   if (( $+functions[relay_prompt_block] )) && [[ "${AGENT_TOOL_PHASE:-full}" == full || "${AGENT_TOOL_PHASE:-full}" == external ]]; then
     relay_prompt_block
-    prompt+="$REPLY"
+    relay="$REPLY"
   fi
   if (( $+functions[agent_compaction_prompt_block] )); then
     agent_compaction_prompt_block
-    prompt+="$REPLY"
+    checkpoint="$REPLY"
   fi
   if (( $+functions[instructions_completion_block] )); then
     instructions_completion_block
-    prompt+="$REPLY"
+    completion="$REPLY"
   fi
   if (( $+functions[goal_prompt_block] )); then
     goal_prompt_block
-    prompt+="$REPLY"
+    goal="$REPLY"
   fi
-  [[ -n "$AGENT_LOOP_NUDGE" ]] && prompt+=$'\n\n'"$AGENT_LOOP_NUDGE"
-  REPLY="$prompt"
+  [[ -n "$AGENT_LOOP_NUDGE" ]] && loop=$'\n\n'"$AGENT_LOOP_NUDGE"
+  reply=("$base" "$project" "$skills" "$mcp" "$relay" "$checkpoint" "$completion" "$goal" "$loop")
+}
+
+agent_resolve_system_prompt() {
+  local -a reply=()
+  agent_system_prompt_parts
+  REPLY="${(j::)reply}"
 }
 
 # Preserve connection cancellation through payload preparation. Serializers
@@ -673,7 +684,10 @@ agent_context_component_byte_tokens() {
 # operational estimate for finding bloat, not provider billing evidence.
 agent_context_bill() {
   local base="" instructions="" skills="" mcp="" compacted="" tools="" message=""
+  local relay='' goal='' loop=''
+  local -a reply=()
   local -i base_tokens=0 instruction_tokens=0 skill_tokens=0 mcp_tokens=0
+  local -i relay_tokens=0 goal_tokens=0 loop_tokens=0
   local -i compacted_tokens=0 tool_schema_tokens=0 user_tokens=0 assistant_tokens=0 tool_result_tokens=0 reasoning_tokens=0 skill_resource_tokens=0 message_tokens=0
   # Inspector parsing must not overwrite a response still owned by the turn.
   local JSON_SOURCE='' JSON_TOKEN_TYPE='' JSON_TOKEN_VALUE='' JSON_ERROR=''
@@ -682,31 +696,9 @@ agent_context_bill() {
   local -i JSON_POS=1 JSON_LEN=0 JSON_TOKEN_START=1 JSON_RESPONSE_DONE=-1 JSON_RESPONSE_PROMPT_TOKENS=0 JSON_RESPONSE_OUTPUT_TOKENS=0
   local -i index=0 reasoning_bytes=0 message_bytes=0 removed=0
 
-  if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
-    agent_routing_system_prompt; base="$REPLY"
-  elif [[ -n "$AGENT_SYSTEM_PROMPT" ]]; then
-    base="$AGENT_SYSTEM_PROMPT"
-  else
-    agent_default_system_prompt; base="$REPLY"
-  fi
-  if [[ "${AGENT_TOOL_PHASE:-full}" != routing ]]; then
-    agent_lfm_prompt_block; base+="$REPLY"
-  fi
-  if (( $+functions[instructions_prompt_block] )); then
-    instructions_prompt_block; instructions="$REPLY"
-    if (( $+functions[instructions_completion_block] )); then
-      instructions_completion_block; instructions+="$REPLY"
-    fi
-  fi
-  if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]] && (( $+functions[skills_active_prompt_block] )); then
-    skills_active_prompt_block; skills="$REPLY"
-  elif (( $+functions[skills_prompt_block] )); then
-    skills_prompt_block; skills="$REPLY"
-  fi
-  if (( $+functions[mcp_prompt_block] )) && [[ "${AGENT_TOOL_PHASE:-full}" != routing ]]; then
-    mcp_prompt_block; mcp="$REPLY"
-  fi
-  (( $+functions[agent_compaction_prompt_block] )) && { agent_compaction_prompt_block; compacted="$REPLY"; }
+  agent_system_prompt_parts
+  base=$reply[1]; instructions="$reply[2]$reply[7]"; skills=$reply[3]
+  mcp=$reply[4]; relay=$reply[5]; compacted=$reply[6]; goal=$reply[8]; loop=$reply[9]
   if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
     agent_route_schema_json; tools="$REPLY"
   else
@@ -720,6 +712,9 @@ agent_context_bill() {
   agent_context_component_tokens "$skills"; skill_tokens=$REPLY
   agent_context_component_tokens "$mcp"; mcp_tokens=$REPLY
   agent_context_component_tokens "$compacted"; compacted_tokens=$REPLY
+  agent_context_component_tokens "$relay"; relay_tokens=$REPLY
+  agent_context_component_tokens "$goal"; goal_tokens=$REPLY
+  agent_context_component_tokens "$loop"; loop_tokens=$REPLY
   agent_context_component_tokens "$tools"; tool_schema_tokens=$REPLY
   for message in "${AGENT_MESSAGES[@]}"; do
     (( index++ ))
@@ -759,9 +754,9 @@ agent_context_bill() {
     AGENT_ACCOUNTING_BYTES[index+1,-1]=()
     AGENT_ACCOUNTING_REASONING_BYTES[index+1,-1]=()
   fi
-  AGENT_CONTEXT_COMPONENT_LABELS=("Base guidance" "Project instructions" "Skills" "MCP guidance" "Checkpoint" "Tool schemas" "User/context" "Assistant" "Tool results" "Reasoning" "Skill resources")
-  AGENT_CONTEXT_COMPONENT_VALUES=("$base_tokens" "$instruction_tokens" "$skill_tokens" "$mcp_tokens" "$compacted_tokens" "$tool_schema_tokens" "$user_tokens" "$assistant_tokens" "$tool_result_tokens" "$reasoning_tokens" "$skill_resource_tokens")
-  REPLY="Estimated context bill: base=${base_tokens}; project=${instruction_tokens}; skills=${skill_tokens}; mcp=${mcp_tokens}; checkpoint=${compacted_tokens}; tool schemas=${tool_schema_tokens}; user/context=${user_tokens}; assistant=${assistant_tokens}; tool results=${tool_result_tokens}; reasoning=${reasoning_tokens}; skill resources=${skill_resource_tokens}."
+  AGENT_CONTEXT_COMPONENT_LABELS=("Base guidance" "Project instructions" "Skills" "MCP guidance" "Checkpoint" "Tool schemas" "User/context" "Assistant" "Tool results" "Reasoning" "Skill resources" "Relay guidance" "Goal guidance" "Loop guidance")
+  AGENT_CONTEXT_COMPONENT_VALUES=("$base_tokens" "$instruction_tokens" "$skill_tokens" "$mcp_tokens" "$compacted_tokens" "$tool_schema_tokens" "$user_tokens" "$assistant_tokens" "$tool_result_tokens" "$reasoning_tokens" "$skill_resource_tokens" "$relay_tokens" "$goal_tokens" "$loop_tokens")
+  REPLY="Estimated context bill: base=${base_tokens}; project=${instruction_tokens}; skills=${skill_tokens}; mcp=${mcp_tokens}; checkpoint=${compacted_tokens}; tool schemas=${tool_schema_tokens}; user/context=${user_tokens}; assistant=${assistant_tokens}; tool results=${tool_result_tokens}; reasoning=${reasoning_tokens}; skill resources=${skill_resource_tokens}; relay=${relay_tokens}; goal=${goal_tokens}; loop=${loop_tokens}."
 }
 
 # Build a disposable request whose prefix matches a normal agent request while
@@ -1408,10 +1403,7 @@ _agent_run_turn_body() {
       return 1
     fi
 
-    _http_byte_length "$payload"
-    AGENT_LAST_PAYLOAD_BYTES="$REPLY"
-    AGENT_LAST_PROMPT_TOKENS="$JSON_RESPONSE_PROMPT_TOKENS"
-    AGENT_LAST_OUTPUT_TOKENS="$JSON_RESPONSE_OUTPUT_TOKENS"
+    agent_context_record_usage "$payload"
     agent_context_refresh_after_response
     (( goal_turn )) && goal_account_tokens "$JSON_RESPONSE_PROMPT_TOKENS" "$JSON_RESPONSE_OUTPUT_TOKENS"
 

@@ -26,6 +26,7 @@ then runs the shell-level suite. The suite covers:
 - loop detection and completion recovery
 - sessions, Skills, and project instructions
 - interrupted session publication, immutable record reuse, reader leases, and generation collection
+- stale session writers, unavailable-skill reloads, and session/turn-scoped remote cancellation
 - Ollama, delegate, and remote cancellation
 - command approval, denial, and safety guards
 - authenticated remote events and approvals
@@ -57,6 +58,16 @@ transcript check counts layout and curses operations: idle refreshes and draft
 editing must not re-render history, while stream updates lay out only the
 changed entry. These are deterministic regression checks, not terminal-emulator
 latency benchmarks or measurements of live Ollama inference.
+
+The [overlapping-operation audit](test-gap-audit.md) records two reproduced
+test gaps, the regression cases added for them, and remaining limitations.
+The [TUI review](tui-review.md) assesses event-loop and overlay complexity and
+records the stock-curses modal paste regression and its coverage.
+
+`tests/context_accounting.zsh` checks retained reasoning and Skill content,
+interrupted stream previews, missing usage reports, and attribution of runtime,
+routing, and verifier guidance. The agent-loop tests also cover a tool response
+with measured usage followed by a final response without a prompt count.
 
 `tests/input_queue.zsh` exercises the real agent loop with controlled responses:
 all tool results must precede steering, and follow-ups must wait for completion.

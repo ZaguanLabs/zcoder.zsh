@@ -16,6 +16,9 @@ typeset -ga SESSION_MODELS=()
 typeset -g STATE_SAVED_SESSION_ID=""
 typeset -g STATE_SAVED_REASONING=""
 typeset -g STATE_SAVED_SNAPSHOT="" STATE_ERROR=""
+# Ownership is separate from append-cache validity: even a lossy load must not
+# overwrite a generation published later by another process.
+typeset -g STATE_OBSERVED_BASE="" STATE_OBSERVED_SNAPSHOT=""
 typeset -gi STATE_SAVED_AGENT_COUNT=0 STATE_SAVED_UI_COUNT=0
 typeset -gi STATE_SAVED_USER_COUNT=0 STATE_SAVED_SKILL_COUNT=0
 typeset -gi STATE_SAVED_COMPACTIONS=-1
@@ -252,6 +255,10 @@ state_save_session() {
     zsystem flock -t 5 -f lock_fd "$base/save.lock" || { STATE_ERROR='session save is busy'; return 1; }
     state_snapshot_dir "$base" || { STATE_ERROR='invalid session commit marker'; return 1; }
     previous="$REPLY"
+    if [[ "$STATE_OBSERVED_BASE" == "$base" && "$STATE_OBSERVED_SNAPSHOT" != "$previous" ]]; then
+      STATE_ERROR='session changed by another process; unsaved work remains in memory'
+      return 1
+    fi
     if [[ "$previous" != "$base" && "$previous" == "$STATE_SAVED_SNAPSHOT" ]]; then
       state_record_paths "$previous" agent_messages "$STATE_SAVED_AGENT_COUNT" || return 1
       agent_refs=("${(@)reply#${base}/generations/}")
@@ -289,6 +296,8 @@ state_save_session() {
         zcoder_debug session_collection_failed "session=$CURRENT_SESSION_ID"
     fi
     STATE_SAVED_SNAPSHOT="$session_dir"
+    STATE_OBSERVED_BASE="$base"
+    STATE_OBSERVED_SNAPSHOT="$session_dir"
     STATE_SAVED_SESSION_ID="$CURRENT_SESSION_ID"
     STATE_SAVED_COMPACTIONS=$AGENT_COMPACTION_COUNT
     STATE_SAVED_AGENT_COUNT=${#AGENT_MESSAGES}
@@ -516,6 +525,8 @@ _state_load_snapshot() {
   UI_SCROLL=0
   UI_AUTO_SCROLL=1
   STATE_LOADING=0
+  STATE_OBSERVED_BASE="$ZCODER_SESSIONS_DIR/$id.session"
+  STATE_OBSERVED_SNAPSHOT="$session_dir"
   # When every on-disk record loaded, the arrays mirror the session directory
   # exactly and the next save can append from these counts. A lossy load
   # (missing files, failed skill activation) forces that save to rewrite all

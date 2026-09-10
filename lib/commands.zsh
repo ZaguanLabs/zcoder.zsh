@@ -267,7 +267,7 @@ ui_context_lines() {
   (( ${AGENT_LAST_PROMPT_TOKENS:-0} > 0 )) && last_prompt="$AGENT_LAST_PROMPT_TOKENS tokens"
   agent_compaction_limit; limit=$REPLY
   UI_CONTEXT_LINES=("Estimated next prompt: ${estimate} tokens"
-    "Context window: ${capacity} (${window_note})" "Last Ollama prompt: ${last_prompt}"
+    "Context window: ${capacity} (${window_note})" "Last reported Ollama prompt: ${last_prompt}"
     "Last Ollama output: ${AGENT_LAST_OUTPUT_TOKENS:-0} tokens" ""
     "Component estimates (not an exact additive breakdown):")
   for (( i=1; i<=${#AGENT_CONTEXT_COMPONENT_VALUES}; i++ )); do

@@ -3,6 +3,10 @@ typeset -g TERMINAL_FD='' TERMINAL_SYNC_STATE=inactive TERMINAL_SYNC_POLICY=auto
 typeset -gi TERMINAL_SYNC_ENABLED=0 TERMINAL_FRAME_ACTIVE=0 TERMINAL_PASTE=0 TERMINAL_CSI_DISCARD=0
 typeset -gF TERMINAL_QUERY_DEADLINE=0.0 TERMINAL_ESCAPE_AT=0.0
 typeset -g TERMINAL_SEQUENCE='' TERMINAL_PASTE_TAIL=''
+# Input owners may locally request discard. Once a legacy paste begins, its
+# disposition belongs to the stream until the closing delimiter, even if the
+# modal exits (for example after a resize makes the window too small).
+typeset -gi TERMINAL_DISCARD_PASTE=0 TERMINAL_PASTE_DISCARDING=0
 typeset -ga TERMINAL_INPUT_QUEUE=()
 typeset -gi TERMINAL_NOREFRESH_INPUT=0
 typeset -ga TERMINAL_EVENT_FLAGS=()
@@ -91,6 +95,7 @@ terminal_end() {
   TERMINAL_INPUT_FD=-1; TERMINAL_WAIT_MS=20
   TERMINAL_PASTE_BYTES=0; TERMINAL_PASTE_REJECTED=0; TERMINAL_PASTE_CHUNKS=(); TERMINAL_EVENT_TEXT=''
   TERMINAL_SEQUENCE=''; TERMINAL_INPUT_QUEUE=(); TERMINAL_PASTE=0; TERMINAL_PASTE_TAIL=''; TERMINAL_CSI_DISCARD=0
+  TERMINAL_PASTE_DISCARDING=0
   return 0
 }
 
@@ -158,6 +163,13 @@ terminal_filter_input() {
   local byte="$1" event_key="$2" event_mouse="$3" queued_byte=''
   terminal_poll
   if [[ -n "$event_key" ]]; then
+    # Stock curses can decode keys within paste. They are payload too; resize
+    # remains an out-of-band event needed by the current screen owner.
+    if (( TERMINAL_PASTE_DISCARDING )) && [[ "$event_key" != RESIZE ]]; then
+      # Its consumed bytes also interrupt any partial closing delimiter.
+      TERMINAL_PASTE_TAIL=''
+      return 0
+    fi
     # Decoded keys may arrive between reply fragments. Deliver the key without
     # losing the CSI prefix, or its eventual final byte could reach a dialog.
     if [[ "$event_key" == RESIZE || "$TERMINAL_SEQUENCE" == $'\e['* ]]; then
@@ -182,10 +194,12 @@ terminal_filter_input() {
     return 0
   fi
   if (( TERMINAL_PASTE )); then
-    TERMINAL_INPUT_QUEUE+=("$byte" '' "$event_mouse")
+    (( TERMINAL_PASTE_DISCARDING )) || TERMINAL_INPUT_QUEUE+=("$byte" '' "$event_mouse")
     TERMINAL_PASTE_TAIL="${TERMINAL_PASTE_TAIL}${byte}"
     TERMINAL_PASTE_TAIL="${TERMINAL_PASTE_TAIL[-6,-1]}"
-    [[ "$TERMINAL_PASTE_TAIL" == $'\e[201~' ]] && TERMINAL_PASTE=0
+    if [[ "$TERMINAL_PASTE_TAIL" == $'\e[201~' ]]; then
+      TERMINAL_PASTE=0; TERMINAL_PASTE_DISCARDING=0
+    fi
     return 0
   fi
   if [[ -z "$TERMINAL_SEQUENCE" ]]; then
@@ -222,7 +236,14 @@ terminal_filter_input() {
       TERMINAL_SEQUENCE=''
       return 0
     fi
-    [[ "$TERMINAL_SEQUENCE" == $'\e[200~' ]] && { TERMINAL_PASTE=1; TERMINAL_PASTE_TAIL=''; }
+    if [[ "$TERMINAL_SEQUENCE" == $'\e[200~' ]]; then
+      TERMINAL_PASTE=1; TERMINAL_PASTE_TAIL=''
+      TERMINAL_PASTE_DISCARDING=$TERMINAL_DISCARD_PASTE
+      if (( TERMINAL_PASTE_DISCARDING )); then
+        TERMINAL_SEQUENCE=''
+        return 0
+      fi
+    fi
   fi
   for queued_byte in "${(@s::)TERMINAL_SEQUENCE}"; do
     TERMINAL_INPUT_QUEUE+=("$queued_byte" '' '')

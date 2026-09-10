@@ -44,6 +44,16 @@ assert_eq "unfinished prompt" "$INPUT_BUF" "picker use preserves the editor draf
 assert_eq "6" "$INPUT_POS" "picker use preserves the editor cursor"
 
 overlay_keys
+overlay_paste=$'\e[200~jj\rq\e[201~'
+OVERLAY_CHARS=("${(@s::)overlay_paste}" $'\r')
+ui_modal_choose "Models" alpha alpha beta gamma
+assert_success "a picker ignores a bracketed paste and accepts the subsequent deliberate Enter" $?
+assert_eq 1 "$REPLY" "pasted navigation and Escape cannot change or dismiss a picker"
+assert_eq 0 "${#TERMINAL_INPUT_QUEUE}" "picker paste leaves no delimiter bytes for the next input owner"
+assert_eq 'unfinished prompt:6' "$INPUT_BUF:$INPUT_POS" "discarding picker paste preserves the editor draft and cursor"
+assert_eq 0 "$TERMINAL_DISCARD_PASTE" "modal paste policy is restored when the input owner returns"
+
+overlay_keys
 OVERLAY_KEYS=(END HOME DOWN ENTER)
 UI_PICKER_HELPERS=0 ui_modal_choose "Models" alpha alpha beta gamma
 assert_success "picker remains usable without optional toolkit libraries" $?
@@ -169,7 +179,7 @@ AGENT_CONTEXT_COMPONENT_VALUES=(0 2000)
 AGENT_LAST_PROMPT_TOKENS=123; AGENT_LAST_OUTPUT_TOKENS=27
 ui_context_lines
 assert_contains "${(F)UI_CONTEXT_LINES}" "Estimated next prompt: 350" "context inspector labels the next-prompt estimate"
-assert_contains "${(F)UI_CONTEXT_LINES}" "Last Ollama prompt: 123" "context inspector distinguishes reported prompt usage"
+assert_contains "${(F)UI_CONTEXT_LINES}" "Last reported Ollama prompt: 123" "context inspector distinguishes reported prompt usage"
 assert_contains "${(F)UI_CONTEXT_LINES}" "fallback estimate" "unknown allocations are labelled as fallback estimates"
 assert_contains "${(F)UI_CONTEXT_LINES}" '2000  [################]' "context bars are bounded even when a component exceeds capacity"
 assert_contains "${(F)UI_CONTEXT_LINES}" "threshold: 900" "context inspector uses the effective compaction threshold including rearming"

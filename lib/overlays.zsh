@@ -49,6 +49,9 @@ ui_modal_run() {
   local -i modal_y modal_x
   local -i modal_done=0 modal_accepted=0 modal_dirty=1 previous_h=0 previous_w=0
   local modal_result="" modal_ch="" modal_key="" modal_mouse=""
+  # Native paste is already a non-character event. Stock curses must discard
+  # both delimiters and payload before Escape/Enter/approval callbacks see it.
+  local -i TERMINAL_DISCARD_PASTE=1
   (( UI_ACTIVE && ! UI_MODAL_ACTIVE )) || { REPLY=""; return 1; }
   (( $+functions[$modal_draw] && $+functions[$modal_input] )) || { REPLY=""; return 1; }
   UI_MODAL_ACTIVE=1

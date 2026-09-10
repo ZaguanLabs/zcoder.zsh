@@ -159,7 +159,7 @@ bill.
 
 zcoder uses continuation checkpoints rather than silently discarding old turns:
 
-1. `prompt_eval_count` calibrates a conservative token estimate. Before the first sample, zcoder estimates three bytes per token plus template headroom.
+1. `prompt_eval_count` calibrates a conservative token estimate with 10% headroom. Before the first sample, zcoder estimates three bytes per token plus template headroom. Responses that omit a positive prompt count retain the last usable count and its matching request size; a newer positive count replaces that pair.
 2. Automatic compaction begins at 85% of the allocated context by default.
 3. A non-thinking Ollama request reuses the normal system/tool prefix, instructs the model not to call tools, and creates a schema-validated JSON checkpoint capped at 2,048 tokens or 10% of the active context, whichever is smaller.
 4. The initial request and latest correction are pinned verbatim, while additional recent user turns fill a soft token budget.
@@ -169,6 +169,20 @@ zcoder uses continuation checkpoints rather than silently discarding old turns:
 
 The visible transcript is not discarded. `/compact` creates a checkpoint
 manually; `/context` reports checkpoint count and current estimates.
+
+The inspector labels the calibration sample as the **last reported Ollama
+prompt**, which may precede the latest response if that response omitted usage.
+Its component breakdown includes relay, active-goal, and loop-recovery guidance,
+using the same system-prompt assembly as actual model requests. Routing retains
+custom system instructions in the breakdown; verifier requests use the verifier's
+own prompt. Inspection does not discover tools or make additional model requests.
+
+These remain estimates of the next request, not an exact tokenizer. Wire JSON,
+model-specific templates, and changes in the mix of code, prose, or Unicode can
+affect accuracy. Ollama's [usage metrics](https://docs.ollama.com/api/usage)
+provide measured counts for completed requests; they do not tokenize a future
+request locally. Cumulative goal usage continues to use reported per-response
+counts, so retaining calibration never charges an earlier prompt again.
 
 After compaction, the automatic threshold rearms above the new checkpoint size.
 Repeated checkpoints summarize the previous one plus newer detailed history.
