@@ -9,6 +9,9 @@ typeset -gF UI_ACTIVITY_ESCAPE_AT=0.0
 typeset -gi SCREEN_H=24 SCREEN_W=80 TOP_H=3 SIDE_W=24 INPUT_H=3 FOOT_H=1
 typeset -gr INPUT_MAX_ROWS=4
 typeset -gi UI_RESIZE_PENDING=0
+# Keep the user's preference separate from automatic hiding on narrow terminals.
+typeset -gi UI_SIDEBAR_HIDDEN=0
+typeset -gi UI_SLASH_ROWS=0 UI_SLASH_SELECTED=1
 # -1 probes older modules once, 0 uses stty, 1 uses native geometry.
 typeset -gi UI_NATIVE_GEOMETRY=-1
 typeset -gF UI_NEXT_RESIZE_CHECK=0.0
@@ -50,7 +53,7 @@ _ui_window_key() {
     sidebar) fields+=("$UI_FOCUS" "$ZCODER_WORKSPACE" "$ZCODER_PROFILE" "$ZCODER_COMMAND_POLICY" "${TOOL_PATCH_RETRY_REQUIRED:-0}" "${#INSTRUCTION_SOURCES}" "$CURRENT_SESSION_ID"
       "${(j: :)${(@q)SESSION_IDS}}" "${(j: :)${(@q)SESSION_TITLES}}" "${(j: :)${(@q)SKILL_DISCOVERABLE_NAMES}}" "${(j: :)${(@q)SKILL_ACTIVE_NAMES}}") ;;
     chat) fields+=("$UI_FOCUS" "$UI_TRANSCRIPT_GENERATION" "${#UI_ROLES}" "$UI_RENDER_CACHE_KEY" "$ZCODER_MODEL" "$UI_SELECTED_EVENT" "$UI_SCROLL" "$UI_AUTO_SCROLL") ;;
-    input) fields+=("$UI_FOCUS" "$INPUT_BUF" "$INPUT_POS" "$INPUT_VIEW_TOP" "$(( UI_ACTIVITY_DEPTH > 0 ))") ;;
+    input) fields+=("$UI_FOCUS" "$INPUT_BUF" "$INPUT_POS" "$INPUT_VIEW_TOP" "$(( UI_ACTIVITY_DEPTH > 0 ))" "$UI_SLASH_ROWS" "$UI_SLASH_SELECTED" "${UI_SLASH_CACHE_KEY:-}") ;;
     footer) fields+=("$UI_FOCUS" "$(( UI_ACTIVITY_DEPTH > 0 ))") ;;
   esac
   # Quoting each field preserves boundaries even in multiline drafts/titles.
@@ -203,13 +206,14 @@ ui_input_width() {
 }
 
 ui_calculate_input_height() {
+  (( $+functions[ui_slash_update] )) && ui_slash_update
   local -i max_rows=$INPUT_MAX_ROWS
-  local -i available=$(( SCREEN_H - TOP_H - FOOT_H - 5 ))
+  local -i available=$(( SCREEN_H - TOP_H - FOOT_H - 5 - UI_SLASH_ROWS ))
   (( available < 1 )) && available=1
   (( max_rows > available )) && max_rows=$available
   ui_input_width
   input_layout "$REPLY" "$max_rows"
-  INPUT_H=$(( INPUT_VISIBLE_ROWS + 2 ))
+  INPUT_H=$(( INPUT_VISIBLE_ROWS + UI_SLASH_ROWS + 2 ))
 }
 
 ui_setup_windows() {
@@ -221,7 +225,8 @@ ui_setup_windows() {
   zcoder_curses position stdscr pos 2>/dev/null
   SCREEN_H=${pos[5]:-${LINES:-24}}
   SCREEN_W=${pos[6]:-${COLUMNS:-80}}
-  (( SCREEN_W < 88 )) && SIDE_W=0 || SIDE_W=25
+  (( UI_SIDEBAR_HIDDEN || SCREEN_W < 88 )) && SIDE_W=0 || SIDE_W=25
+  (( SIDE_W == 0 )) && [[ "$UI_FOCUS" == sidebar ]] && UI_FOCUS=input
   ui_calculate_input_height
   local -i main_h=$(( SCREEN_H - TOP_H - INPUT_H - FOOT_H ))
   (( main_h < 3 )) && main_h=3
@@ -235,6 +240,14 @@ ui_setup_windows() {
   for window in top_win chat_win input_win foot_win; do ui_window_background "$window"; done
   (( SIDE_W > 0 )) && ui_window_background side_win
   return 0
+}
+
+ui_toggle_sidebar() {
+  emulate -L zsh
+  (( UI_ACTIVE && ! ${UI_MODAL_ACTIVE:-0} )) || return 0
+  UI_SIDEBAR_HIDDEN=$(( ! UI_SIDEBAR_HIDDEN ))
+  ui_setup_windows
+  ui_refresh_all
 }
 
 ui_detect_geometry() {
@@ -1078,7 +1091,7 @@ _ui_paint_chat() {
 _ui_paint_input() {
   (( UI_ACTIVE )) || return 0
   local -i defer_refresh="${1:-0}"
-  local -i max_rows=$(( INPUT_H - 2 )) row visual_row cursor_y cursor_x total
+  local -i max_rows=$(( INPUT_H - UI_SLASH_ROWS - 2 )) row visual_row cursor_y cursor_x total
   local visible="" marker="" title=" Prompt (Enter sends · Shift-Enter newline) "
   ui_input_width
   input_layout "$REPLY" "$max_rows"
@@ -1093,6 +1106,7 @@ _ui_paint_input() {
   if (( total > INPUT_VISIBLE_ROWS && UI_ACTIVITY_DEPTH == 0 )); then
     title=" Prompt (Enter sends · Shift-Enter newline · ${INPUT_VIEW_TOP}-$(( INPUT_VIEW_TOP + INPUT_VISIBLE_ROWS - 1 ))/${total}) "
   fi
+  (( UI_SLASH_ROWS > 0 )) && title=" Prompt (slash commands) "
   zcoder_curses move input_win 0 2
   ui_attr input_win bold white/black
   zcoder_clip "$title" $(( SCREEN_W - 4 )); zcoder_curses string input_win "$REPLY"
@@ -1109,6 +1123,7 @@ _ui_paint_input() {
     ui_attr input_win white/black
     zcoder_curses string input_win "$visible"
   done
+  (( UI_SLASH_ROWS > 0 )) && ui_slash_draw
   cursor_y=$(( INPUT_CURSOR_ROW - INPUT_VIEW_TOP + 1 ))
   cursor_x=$(( 4 + INPUT_CURSOR_COL ))
   (( cursor_y < 1 )) && cursor_y=1
@@ -1136,9 +1151,9 @@ ui_input_changed() {
 _ui_paint_footer() {
   (( UI_ACTIVE )) || return 0
   local -i defer_refresh="${1:-0}"
-  local text=" ^P Commands  Enter Send  S/M-Enter Newline  ^Q Quit  Tab Focus  ^Y Copy  Esc Stop  ^O Model  ^R Reason  PgUp/Dn Scroll"
-  [[ "$UI_FOCUS" == chat ]] && text=" ^P Commands  ↑/↓ Select  Enter/Space Fold  ^R Reasoning  Home/End First/Last  PgUp/Dn Scroll  Tab Prompt  ^Y Copy"
-  (( UI_ACTIVITY_DEPTH > 0 )) && text=" Esc Stop  Tab Prompt/Transcript  ↑/↓ Navigate  Enter Fold in Transcript  ^R Reasoning  PgUp/Dn Scroll"
+  local text=" ^P Commands  ^B Sidebar  Enter Send  S/M-Enter Newline  ^Q Quit  Tab Focus  ^Y Copy  Esc Stop  ^O Model  ^R Reason  PgUp/Dn Scroll"
+  [[ "$UI_FOCUS" == chat ]] && text=" ^P Commands  ^B Sidebar  ↑/↓ Select  Enter/Space Fold  ^R Reasoning  Home/End First/Last  PgUp/Dn Scroll  Tab Prompt  ^Y Copy"
+  (( UI_ACTIVITY_DEPTH > 0 )) && text=" Esc Stop  ^B Sidebar  Tab Prompt/Transcript  ↑/↓ Navigate  Enter Fold in Transcript  ^R Reasoning  PgUp/Dn Scroll"
   zcoder_clip "$text" "$SCREEN_W"; text="$REPLY"
   zcoder_curses clear foot_win; ui_attr foot_win reverse dim white/black
   zcoder_pad "$text" "$SCREEN_W"; zcoder_curses move foot_win 0 0; zcoder_curses string foot_win "$REPLY"
@@ -1147,6 +1162,12 @@ _ui_paint_footer() {
 
 ui_refresh_all() {
   (( UI_ACTIVE )) || return 0
+  # Focus and activity transitions can open/close inline completion too.
+  if (( ! ${UI_MODAL_ACTIVE:-0} && $+functions[ui_slash_update] )); then
+    local -i previous_slash_rows=$UI_SLASH_ROWS
+    ui_slash_update
+    (( UI_SLASH_ROWS != previous_slash_rows )) && ui_setup_windows
+  fi
   ui_draw_header 1
   (( SIDE_W > 0 )) && ui_draw_sidebar 1
   ui_draw_chat 1
@@ -1210,6 +1231,7 @@ ui_activity_input() {
     elif [[ "$INPUT_EVENT_ACTION" == paste && -n "$INPUT_EVENT_TEXT" ]]; then input_insert "$INPUT_EVENT_TEXT"; ui_input_changed
     elif [[ "$INPUT_EVENT_ACTION" == paste_rejected ]]; then ui_status_notice warning "$INPUT_EVENT_TEXT"
     fi
+  elif [[ "$ch" == $'\x02' ]]; then ui_toggle_sidebar
   elif [[ "$UI_FOCUS" == input && -n "${INPUT_QUEUE_TURN_ID:-}${REMOTE_INPUT_TURN_ID:-}" &&
           ( "$ch" == $'\r' || "$ch" == $'\n' || "$key" == ENTER || "$key" == PADENTER || "$ch" == $'\x07' ) ]] && (( $+functions[input_queue_ui_submit] )); then
     if [[ "$ch" == $'\x07' ]]; then input_queue_ui_submit follow_up || return $?

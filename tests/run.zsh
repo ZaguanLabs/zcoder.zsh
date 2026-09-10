@@ -3120,6 +3120,7 @@ zcoder_curses() {
 
 source "${TEST_DIR}/transcript.zsh"
 source "${TEST_DIR}/overlays.zsh"
+source "${TEST_DIR}/slash.zsh"
 
 UI_ACTIVE=1
 SCREEN_H=30; SCREEN_W=100; SIDE_W=0; TOP_H=3; INPUT_H=3; FOOT_H=1

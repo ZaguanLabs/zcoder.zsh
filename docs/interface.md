@@ -82,7 +82,10 @@ private to the current user.
 
 Press Tab to focus the sidebar, use Up or Down to choose a job, and press Enter
 to return to the prompt. Ctrl+N starts a new job without deleting earlier ones.
-`/sessions` focuses the same list.
+`/sessions` reveals and focuses the same list. Ctrl+B hides or shows the sidebar,
+giving the transcript its full width when hidden. This choice lasts until you
+exit, including across terminal resizes. Terminals narrower than 88 columns
+always hide the sidebar, and Tab skips it while hidden. Ctrl+H remains Backspace.
 
 Remote sessions use the same sidebar controls but remain stored on the named
 server. See [Remote-agent server](remote.md).
@@ -138,6 +141,15 @@ OSC hyperlinks, clipboard writes, truecolor, and enhanced keyboard negotiation
 are not enabled.
 
 ## Command palette and context inspector
+
+Type `/` at the start of an idle prompt to see slash commands and their
+descriptions. Keep typing to filter by command prefix. Up/Down cycles through
+the list, wrapping at either end; Tab or Enter fills the selected command into
+the prompt. Press Enter again to run it, or add arguments first. An already
+complete command still runs with one Enter. Escape closes the suggestions
+without changing your text. Suggestions close while you edit arguments, move
+the cursor inside the command, or focus another panel. During an active response,
+the prompt keeps its ordinary draft and steering controls.
 
 Ctrl+P or `/commands` opens the command palette. Type a command name or a few
 letters, such as `ctx` for context, then use Up/Down and Enter to choose. Matching
@@ -282,7 +294,8 @@ Window resizing and changing the prompt's height rebuild the layout as needed.
 | Enter | Send the prompt; fold the selected entry when transcript has focus |
 | Shift+Enter | Insert a newline; Alt+Enter is the fallback |
 | Escape | Stop the active response, local tool wait, external delegate, or remote turn |
-| Tab | Move focus between prompt, sidebar, and transcript |
+| Tab | Complete the selected slash command; otherwise move focus between prompt, sidebar, and transcript |
+| Ctrl+B | Hide/show the sidebar and resize the transcript |
 | Ctrl+P | Open the command palette |
 | Ctrl+O | Open the Ollama model picker |
 | Ctrl+R | Toggle selected reasoning in the transcript, otherwise latest reasoning |
@@ -293,7 +306,7 @@ Window resizing and changing the prompt's height rebuild the layout as needed.
 | Page Up / Page Down | Scroll the transcript |
 | Ctrl+U | Clear the input |
 | Ctrl+W | Delete the previous word |
-| Up / Down | Move inside input/history, or select an entry when transcript has focus |
+| Up / Down | Cycle slash suggestions; otherwise move inside input/history, or select a transcript entry |
 | Ctrl+Q / Ctrl+D | Exit |
 
 ## Slash commands

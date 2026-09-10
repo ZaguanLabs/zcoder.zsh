@@ -2,7 +2,7 @@
 emulate -R zsh
 zmodload zsh/mapfile
 typeset -g fixture_root="$1" fixture_base="$2"
-command stty rows 24 cols 80 < /dev/tty
+command stty rows 24 cols 120 < /dev/tty
 typeset -g terminal_before="$(command stty -g < /dev/tty)"
 ZCODER_HOME="$fixture_base.home" ZCODER_RELAY=off ZCODER_DEBUG_LOG='' \
   ZCODER_USER_SKILLS_DIR="$fixture_base.workspace" ZCODER_CONFIG_SKILLS_DIR="$fixture_base.workspace" \

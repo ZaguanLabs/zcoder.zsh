@@ -109,12 +109,19 @@ for resize_module in "${resize_modules[@]}"; do
   resize_base="$TEST_TMP/resize-$resize_label"
   TERM=xterm-256color zpty -b resize-ui resize_pty_run
   assert_success "$resize_label resize fixture starts" $?
+  zpty -w -n resize-ui $'\x02'
   resize_pty_wait
   assert_success "$resize_label UI completes repeated resize and reentry" $?
   if [[ $resize_module == auto ]]; then
     assert_eq 1 "${mapfile[$resize_base.initial]:-}" 'bundled UI selects advertised geometry before its first poll'
   fi
   assert_eq '40:120:20:60:40:120' "${mapfile[$resize_base.sizes]:-}" "$resize_label UI layout follows terminal grow, shrink, and grow"
+  assert_eq '1:0:preserved draft:15' "${mapfile[$resize_base.hidden]:-}" "$resize_label Ctrl+B hides the sidebar during activity without changing the draft"
+  assert_eq '0:120:0:60:0:120' "${mapfile[$resize_base.widths]:-}" "$resize_label hidden sidebar stays hidden through resizes and gives chat the full width"
+  assert_eq '25:95:1' "${mapfile[$resize_base.shown]:-}" "$resize_label showing the sidebar restores its width and rewraps the transcript"
+  assert_eq 'input:preserved draft:15' "${mapfile[$resize_base.focus]:-}" "$resize_label hiding a focused sidebar returns to the intact prompt"
+  assert_eq '1:preserved draf' "${mapfile[$resize_base.backspace]:-}" "$resize_label Ctrl+H still deletes a character without toggling the sidebar"
+  assert_eq '1:0' "${mapfile[$resize_base.reentry]:-}" "$resize_label hidden preference survives UI reentry"
   assert_eq "$resize_expected:$resize_expected" "${mapfile[$resize_base.native]:-}" "$resize_label selects geometry backend across UI reentry"
   if (( resize_expected )); then
     assert_eq '' "${mapfile[$resize_base.stty]:-}" 'native resize polling launches no stty processes'

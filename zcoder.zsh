@@ -8,7 +8,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.13.4"
+typeset -gr ZCODER_VERSION="0.13.5"
 
 0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
 0="${${(M)0:#/*}:-$PWD/$0}"
@@ -368,6 +368,9 @@ handle_slash_command() {
         ui_append_message error "Remote session browsing is not supported by this server."
         return 0
       fi
+      if (( UI_SIDEBAR_HIDDEN && SCREEN_W >= 88 )); then
+        ui_toggle_sidebar
+      fi
       if (( SIDE_W > 0 )); then
         UI_FOCUS="sidebar"
       else
@@ -654,7 +657,7 @@ handle_slash_command() {
       fi
       ;;
     /help|/\?)
-      ui_append_message system $'Enter sends a prompt or steers an active turn. Ctrl+G queues a follow-up while busy. /queue lists pending input; /queue resume restarts it; /queue drop ID discards a message. Shift+Enter inserts a newline; Alt+Enter is the fallback for terminals that do not report Shift+Enter separately. Pasted multiline text keeps its formatting. Escape stops a running Ollama response, local tool wait, or external delegate.\nTab moves focus between the prompt, session sidebar, and transcript. Use Up/Down in the sidebar to resume another job. Ctrl+Y or /copy opens a stable plain-text view for native terminal selection and copying.\nCtrl+P or /commands opens the searchable command palette. Ctrl+O selects an Ollama model. With transcript focus, Up/Down or k/j selects an entry, Home/End selects the first/last entry, and Enter/Space folds its body. Ctrl+R toggles the selected reasoning, or the latest reasoning when editing the prompt. Ctrl+N starts a new saved session. PgUp/PgDn scroll. Ctrl+U clears input. Ctrl+W deletes a word. Ctrl+Q exits.\n/goal OBJECTIVE runs a persistent, independently verified goal; /goal shows status, and /goal pause, /goal resume, or /goal clear control it. Add --tokens N before the objective for a token limit. /claude REQUEST, /codex REQUEST, /agy REQUEST, and /opencode REQUEST run read-only consultations. Add ! to run an explicitly workspace-editing worker, for example /codex! REQUEST. /opencode with no request selects its provider/model. /list-agents lists other local zcoder instances; /agents pause or /agents resume controls incoming work. /mcp shows configured servers and live status; /mcp reload reloads configuration. /skills lists installed Agent Skills; /skill NAME activates one. Prefix a request with $skill-name for explicit activation. /model opens the Ollama picker; /host HOST changes Ollama; /instructions lists active AGENTS.md files; /compact creates a context checkpoint; /context opens the context usage inspector; /terminal shows terminal capabilities; /sessions focuses saved jobs; /new starts a saved job.'
+      ui_append_message system $'Enter sends a prompt or steers an active turn. Ctrl+G queues a follow-up while busy. /queue lists pending input; /queue resume restarts it; /queue drop ID discards a message. Shift+Enter inserts a newline; Alt+Enter is the fallback for terminals that do not report Shift+Enter separately. Pasted multiline text keeps its formatting. Escape stops a running Ollama response, local tool wait, or external delegate.\nCtrl+B hides or shows the sidebar to give the transcript more space. Tab moves focus between the prompt, visible session sidebar, and transcript. Use Up/Down in the sidebar to resume another job. Ctrl+Y or /copy opens a stable plain-text view for native terminal selection and copying.\nType / in an idle prompt for slash suggestions; Up/Down selects, Tab or Enter completes, and Escape closes the list. Enter on a complete command runs it. Ctrl+P or /commands opens the searchable command palette. Ctrl+O selects an Ollama model. With transcript focus, Up/Down or k/j selects an entry, Home/End selects the first/last entry, and Enter/Space folds its body. Ctrl+R toggles the selected reasoning, or the latest reasoning when editing the prompt. Ctrl+N starts a new saved session. PgUp/PgDn scroll. Ctrl+U clears input. Ctrl+W deletes a word. Ctrl+Q exits.\n/goal OBJECTIVE runs a persistent, independently verified goal; /goal shows status, and /goal pause, /goal resume, or /goal clear control it. Add --tokens N before the objective for a token limit. /claude REQUEST, /codex REQUEST, /agy REQUEST, and /opencode REQUEST run read-only consultations. Add ! to run an explicitly workspace-editing worker, for example /codex! REQUEST. /opencode with no request selects its provider/model. /list-agents lists other local zcoder instances; /agents pause or /agents resume controls incoming work. /mcp shows configured servers and live status; /mcp reload reloads configuration. /skills lists installed Agent Skills; /skill NAME activates one. Prefix a request with $skill-name for explicit activation. /model opens the Ollama picker; /host HOST changes Ollama; /instructions lists active AGENTS.md files; /compact creates a context checkpoint; /context opens the context usage inspector; /terminal shows terminal capabilities; /sessions focuses saved jobs; /new starts a saved job.'
       zcoder_delegate_availability_summary
       ui_append_message system "$REPLY"
       ;;
@@ -739,6 +742,7 @@ main_tui() {
       ui_poll_resize
       continue
     fi
+    ui_slash_input "$ch" "$key" && continue
     [[ -z "$ch" && -z "$key" ]] && continue
     if input_decode_terminal_event "$ch" "$key"; then
       if [[ "$INPUT_EVENT_ACTION" == newline ]]; then
@@ -773,6 +777,8 @@ main_tui() {
       fi
     elif [[ "$ch" == $'\x12' ]]; then
       ui_toggle_reasoning
+    elif [[ "$ch" == $'\x02' ]]; then
+      ui_toggle_sidebar
     elif [[ "$ch" == $'\t' || "$key" == TAB ]]; then
       case "$UI_FOCUS" in
         input) (( SIDE_W > 0 )) && UI_FOCUS="sidebar" || UI_FOCUS="chat" ;;

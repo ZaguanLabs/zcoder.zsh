@@ -33,22 +33,45 @@ chmod +x "$fixture_base.bin/stty"
 path=("$fixture_base.bin" $path)
 "$RESIZE_REAL_STTY" rows 24 cols 80 </dev/tty || exit 1
 trap 'ui_end' EXIT
+input_insert 'preserved draft'
+ui_append_message assistant "${(pl:220::word :)}"
 ui_init || exit 1
 mapfile[$fixture_base.initial]="$UI_NATIVE_GEOMETRY"
-typeset -a fixture_sizes=() fixture_native=()
+# Read the real shortcut from the PTY, then exercise the busy-input path.
+typeset -g fixture_ch='' fixture_key='' fixture_mouse=''
+zcoder_curses timeout input_win 2000
+terminal_read_event input_win fixture_ch fixture_key fixture_mouse
+ui_activity_begin
+ui_activity_input "$fixture_ch" "$fixture_key"
+mapfile[$fixture_base.hidden]="$UI_SIDEBAR_HIDDEN:$SIDE_W:$INPUT_BUF:$INPUT_POS"
+typeset -a fixture_sizes=() fixture_native=() fixture_widths=() fixture_position=()
 typeset -i fixture_h fixture_w
 for fixture_h fixture_w in 40 120 20 60 40 120; do
   "$RESIZE_REAL_STTY" rows "$fixture_h" cols "$fixture_w" </dev/tty || exit 1
   UI_RESIZE_PENDING=1
   ui_poll_resize
   fixture_sizes+=("$SCREEN_H" "$SCREEN_W")
+  zcoder_curses position chat_win fixture_position
+  fixture_widths+=("$SIDE_W" "${fixture_position[6]}")
 done
+mapfile[$fixture_base.widths]="${(j.:.)fixture_widths}"
+typeset -i fixture_full_lines=${#UI_LINES}
+ui_activity_input $'\x02' ''
+zcoder_curses position chat_win fixture_position
+mapfile[$fixture_base.shown]="$SIDE_W:${fixture_position[6]}:$(( ${#UI_LINES} > fixture_full_lines ))"
+ui_activity_end
+UI_FOCUS=sidebar
+ui_toggle_sidebar
+mapfile[$fixture_base.focus]="$UI_FOCUS:$INPUT_BUF:$INPUT_POS"
+ui_editor_input $'\b' ''
+mapfile[$fixture_base.backspace]="$UI_SIDEBAR_HIDDEN:$INPUT_BUF"
 # Polling unchanged dimensions still queries the selected backend.
 UI_RESIZE_PENDING=1
 ui_poll_resize
 fixture_native+=("$UI_NATIVE_GEOMETRY")
 ui_end
 ui_init || exit 1
+mapfile[$fixture_base.reentry]="$UI_SIDEBAR_HIDDEN:$SIDE_W"
 UI_RESIZE_PENDING=1
 ui_poll_resize
 fixture_native+=("$UI_NATIVE_GEOMETRY")

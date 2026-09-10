@@ -32,7 +32,7 @@ zpty -w -n local-application $'preserved draft\e'
 integration_wait "$integration_base.cancel_eof" 5
 assert_success "Escape closes the startup context request in the actual application" $?
 assert_eq $'/api/ps\n' "${mapfile[$integration_base.requests]:-}" "startup cancellation does not send a warm-up chat"
-zpty -w -n local-application $'\r'
+zpty -w -n local-application $'\x02\r'
 integration_wait "$integration_base.chat_count" 1
 assert_success "Enter after cancellation submits the preserved draft from the idle loop" $?
 assert_contains "${mapfile[$integration_base.prompt]:-}" '"content":"preserved draft"' "the resumed local turn receives the exact preserved draft"
@@ -40,12 +40,19 @@ assert_contains "${mapfile[$integration_base.prompt]:-}" '"num_ctx":98304' "the 
 assert_contains "${mapfile[$integration_base.prompt]:-}" '"stream":true' "the actual ordinary local turn retains streaming"
 integration_wait output 'Integration complete.'
 assert_success "the actual entrypoint displays its completed streamed answer" $?
-zpty -w -n local-application $'/context\r'
+zpty -w -n local-application '/'
+integration_wait output 'Tab/Enter Complete'
+assert_success "typing slash in the actual entrypoint displays command suggestions" $?
+zpty -w -n local-application $'co\eOB\eOA\t\r'
 integration_wait output 'Context usage'
 assert_success "the context inspector opens after the recovered turn" $?
 zpty -w -n local-application $'\e'
 zselect -t 20
-zpty -w -n local-application $'/copy\r'
+integration_output=''
+zpty -w -n local-application $'/sessions\r'
+integration_wait output 'Sessions (1)'
+assert_success "sessions command reveals the sidebar hidden by the idle Ctrl+B shortcut" $?
+zpty -w -n local-application $'\x02/copy\r'
 integration_wait output 'Press Enter to return:'
 assert_success "the transcript copy view releases curses after the recovered turn" $?
 zpty -w -n local-application $'\r'
