@@ -293,6 +293,7 @@ ui_init() {
   ui_theme_init
   UI_ACTIVE=1
   terminal_start
+  input_detect_boundaries
   ui_setup_windows
   ui_refresh_all
 }

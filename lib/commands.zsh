@@ -423,6 +423,8 @@ _ui_terminal_draw() {
     frame_state='Zsh frame markers'
   fi
   (( TERMINAL_NATIVE_QUERY )) && query_state='native event queue'
+  local editing_state='character offsets (fallback)'
+  (( INPUT_GRAPHEME )) && editing_state='grapheme boundaries (native)'
   local -a lines=("Terminal: ${TERM:-unset}" "Size: ${SCREEN_W} columns × ${SCREEN_H} rows"
     "Curses module: ${ZCODER_CURSES_BACKEND:-preloaded}" "Resize queries: ${geometry_state}"
     "Compiled features: ${features_state}"
@@ -434,6 +436,7 @@ _ui_terminal_draw() {
     "Color pairs used/free: ${UI_COLOR_INFO[pairs_used]:-unknown}/${UI_COLOR_INFO[pairs_free]:-unknown}"
     "Synchronized output: ${TERMINAL_SYNC_STATE}" "Policy: ${TERMINAL_SYNC_POLICY}"
     "Frame presentation: ${frame_state}" "Reply decoder: ${query_state}"
+    "Prompt editing: ${editing_state}"
     "Bracketed paste: ${paste_state}")
   local -A terminal_caps=() terminal_resources=()
   local capability=''

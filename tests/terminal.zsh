@@ -268,6 +268,26 @@ for terminal_pty_mode in "${terminal_pty_modes[@]}"; do
   fi
   assert_contains "$terminal_pty_output" $'\e[?2026h' "supported terminals wrap subsequent curses output"
   assert_contains "$terminal_pty_output" $'\e[?2026l' "synchronized frames end before input waits"
+  if [[ ${mapfile[$terminal_pty_base.grapheme]:-0} == 1 ]]; then
+    zpty -w -n terminal-ui $'\x15A👩‍💻B'
+    terminal_pty_wait "$terminal_pty_base.draft" 'A👩‍💻B'
+    assert_success 'native prompt receives a joined emoji through real keyboard input' $?
+    zpty -w -n terminal-ui $'\eOD\x7f'
+    terminal_pty_wait "$terminal_pty_base.draft" AB
+    assert_success 'real Left and Backspace remove one whole joined emoji' $?
+    zpty -w -n terminal-ui $'\x15A👩‍💻B'
+    terminal_pty_wait "$terminal_pty_base.draft" 'A👩‍💻B'
+    zpty -w -n terminal-ui $'\eOH\eOC\e[3~'
+    terminal_pty_wait "$terminal_pty_base.draft" AB
+    assert_success 'real forward Delete preserves both neighbors of a joined emoji' $?
+    zpty -w -n terminal-ui $'\x15👩💻'
+    terminal_pty_wait "$terminal_pty_base.draft" '👩💻'
+    zpty -w -n terminal-ui $'\eOD\u200d'
+    terminal_pty_wait "$terminal_pty_base.draft" '👩‍💻'
+    assert_success 'real text insertion can join neighboring emoji' $?
+    terminal_pty_wait "$terminal_pty_base.cursor" 3
+    assert_success 'the real editor moves its caret past a newly joined emoji' $?
+  fi
   zpty -w -n terminal-ui $'\x07'
   terminal_pty_wait "$terminal_pty_base.diagnostics" 1
   assert_success "terminal diagnostics opens after background activity" $?

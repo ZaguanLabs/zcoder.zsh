@@ -20,6 +20,15 @@ character, but does not promise whole-grapheme clipping for joined emoji.
 
 ## Layout
 
+With a compatible zdraw build and UTF-8 locale, prompt arrows, Backspace and
+Delete move across or remove complete grapheme units: combining marks, emoji
+modifiers, flags and joined emoji stay together. Vertical movement and Ctrl+W
+also respect those boundaries, including after edits that join two units.
+Newlines remain separate editing units. `/terminal` shows the selected editing
+mode. Stock curses and unavailable native queries retain character editing.
+This changes editing boundaries only; wrapping and cursor columns still follow
+the system's cell widths, which can differ from an emulator's emoji shaping.
+
 The interface includes:
 
 - a header with the model, Ollama host or remote server, workspace, and status

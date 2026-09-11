@@ -14,6 +14,72 @@ typeset -ga INPUT_PASTE_CHUNKS=()
 typeset -g INPUT_LAYOUT_BUFFER=""
 typeset -gi INPUT_LAYOUT_WIDTH=-1 INPUT_LAYOUT_POS=-1
 typeset -g INPUT_EVENT_ACTION="" INPUT_EVENT_TEXT=""
+typeset -gi INPUT_GRAPHEME=0
+
+# Headless-safe discovery: only an already selected drawing backend can opt in.
+input_detect_boundaries() {
+  INPUT_GRAPHEME=0
+  [[ -o multibyte ]] || return 0
+  local -a reply=()
+  local -A input_probe=()
+  if (( $+functions[zcoder_curses_features] )) && zcoder_curses_features &&
+     (( ${reply[(Ie)grapheme_boundaries]} )) &&
+     zcoder_curses textpos input_probe x byte 0 grapheme 2>/dev/null; then
+    INPUT_GRAPHEME=1
+  fi
+  return 0
+}
+
+# Return the containing unit as character offsets, even though the native API
+# uses bytes. Query only the logical line: newlines remain individual units.
+_input_grapheme_bounds() {
+  (( INPUT_GRAPHEME )) && [[ -o multibyte ]] || return 1
+  emulate -L zsh
+  local -i at=$1 line_start byte_offset unit_start unit_end
+  (( at >= 0 && at < ${#INPUT_BUF} )) || return 1
+  [[ ${INPUT_BUF[at+1]} != $'\n' ]] || return 1
+  if [[ ${INPUT_BUF[at+1]} == [\ -~] ]] &&
+     { (( at == 0 )) || [[ ${INPUT_BUF[at]} == [\ -~] ]]; } &&
+     { (( at+1 == ${#INPUT_BUF} )) || [[ ${INPUT_BUF[at+2]} == [\ -~] ]]; }; then
+    return 1
+  fi
+  local prefix="${INPUT_BUF[1,at]}" suffix="${INPUT_BUF[at+1,-1]}" line
+  prefix=${prefix##*$'\n'}
+  line_start=$(( at - ${#prefix} ))
+  line="$prefix${suffix%%$'\n'*}"
+  # ASCII keystrokes need no native query. A space sentinel gives leading
+  # combining marks a printable base without changing the original buffer.
+  [[ $line == *[^\ -~]* ]] || return 1
+  prefix=" $prefix"; line=" $line"
+  setopt nomultibyte
+  byte_offset=${#prefix}
+  setopt multibyte
+  local -A input_hit=()
+  zcoder_curses textpos input_hit "$line" byte "$byte_offset" grapheme 2>/dev/null || return 1
+  unit_start=$(( line_start + ${#input_hit[prefix]} - 1 ))
+  unit_end=$(( unit_start + ${#input_hit[text]} ))
+  (( unit_start < line_start )) && unit_start=$line_start
+  reply=("$unit_start" "$unit_end")
+  return 0
+}
+
+# A splice can join units across the caret (for example, removing a newline
+# between a letter and a combining mark). Keep the caret after the joined unit.
+_input_snap_forward() {
+  local -a reply=()
+  if _input_grapheme_bounds "$INPUT_POS" && (( reply[1] < INPUT_POS )); then
+    INPUT_POS=$reply[2]
+  fi
+  return 0
+}
+
+_input_remove_range() {
+  local -i first=$1 last=$2
+  INPUT_BUF="${INPUT_BUF[1,first]}${INPUT_BUF[last+1,-1]}"
+  INPUT_POS=$first
+  _input_snap_forward
+  INPUT_GOAL_COL=-1
+}
 
 input_reset() {
   INPUT_BUF=""
@@ -43,34 +109,48 @@ input_insert() {
     INPUT_BUF="${INPUT_BUF[1,INPUT_POS]}${ch}${INPUT_BUF[INPUT_POS+1,-1]}"
   fi
   (( INPUT_POS += ${#ch} ))
+  _input_snap_forward
   INPUT_GOAL_COL=-1
 }
 
 input_backspace() {
   (( INPUT_POS > 0 )) || return 0
-  if (( INPUT_POS == 1 )); then
-    INPUT_BUF="${INPUT_BUF[2,-1]}"
-  elif (( INPUT_POS >= ${#INPUT_BUF} )); then
-    INPUT_BUF="${INPUT_BUF[1,-2]}"
+  local -a reply=()
+  if _input_grapheme_bounds "$(( INPUT_POS-1 ))"; then
+    _input_remove_range "$reply[1]" "$reply[2]"
   else
-    INPUT_BUF="${INPUT_BUF[1,INPUT_POS-1]}${INPUT_BUF[INPUT_POS+1,-1]}"
+    _input_remove_range "$(( INPUT_POS-1 ))" "$INPUT_POS"
   fi
-  (( INPUT_POS-- ))
-  INPUT_GOAL_COL=-1
 }
 
 input_delete() {
   (( INPUT_POS < ${#INPUT_BUF} )) || return 0
-  if (( INPUT_POS == 0 )); then
-    INPUT_BUF="${INPUT_BUF[2,-1]}"
+  local -a reply=()
+  if _input_grapheme_bounds "$INPUT_POS"; then
+    _input_remove_range "$reply[1]" "$reply[2]"
   else
-    INPUT_BUF="${INPUT_BUF[1,INPUT_POS]}${INPUT_BUF[INPUT_POS+2,-1]}"
+    _input_remove_range "$INPUT_POS" "$(( INPUT_POS+1 ))"
   fi
-  INPUT_GOAL_COL=-1
 }
 
-input_left() { (( INPUT_POS > 0 )) && (( INPUT_POS-- )); INPUT_GOAL_COL=-1; return 0; }
-input_right() { (( INPUT_POS < ${#INPUT_BUF} )) && (( INPUT_POS++ )); INPUT_GOAL_COL=-1; return 0; }
+input_left() {
+  local -a reply=()
+  if (( INPUT_POS > 0 )); then
+    if _input_grapheme_bounds "$(( INPUT_POS-1 ))"; then INPUT_POS=$reply[1]
+    else (( INPUT_POS-- )); fi
+  fi
+  INPUT_GOAL_COL=-1
+  return 0
+}
+input_right() {
+  local -a reply=()
+  if (( INPUT_POS < ${#INPUT_BUF} )); then
+    if _input_grapheme_bounds "$INPUT_POS"; then INPUT_POS=$reply[2]
+    else (( INPUT_POS++ )); fi
+  fi
+  INPUT_GOAL_COL=-1
+  return 0
+}
 input_home() { INPUT_POS=0; INPUT_GOAL_COL=-1; }
 input_end() { INPUT_POS=${#INPUT_BUF}; INPUT_GOAL_COL=-1; }
 input_clear() { INPUT_BUF=""; INPUT_POS=0; INPUT_GOAL_COL=-1; }
@@ -78,15 +158,17 @@ input_clear() { INPUT_BUF=""; INPUT_POS=0; INPUT_GOAL_COL=-1; }
 input_kill_word() {
   emulate -L zsh
   setopt extendedglob
-  local left right
+  local left
+  local -a reply=()
+  local -i first last=$INPUT_POS
   (( INPUT_POS > 0 )) || return 0
   left="${INPUT_BUF[1,INPUT_POS]}"
-  right="${INPUT_BUF[INPUT_POS+1,-1]}"
   left="${left%%[[:space:]]#}"
   left="${left%%[^[:space:]]#}"
-  INPUT_BUF="${left}${right}"
-  INPUT_POS=${#left}
-  INPUT_GOAL_COL=-1
+  first=${#left}
+  if _input_grapheme_bounds "$first"; then first=$reply[1]; fi
+  if _input_grapheme_bounds "$(( last-1 ))"; then last=$reply[2]; fi
+  _input_remove_range "$first" "$last"
 }
 
 # Split the buffer into terminal-width visual rows. Starts are zero-based
@@ -158,6 +240,10 @@ input_move_vertical() {
   local -i target_col=$INPUT_GOAL_COL
   zcoder_clip "${INPUT_VISUAL_LINES[target]}" "$target_col"
   INPUT_POS=$(( INPUT_VISUAL_STARTS[target] + ${#REPLY} ))
+  # Cell-based layout may hit the middle of a joined emoji. Choose its start
+  # while retaining the requested column for the next vertical move.
+  local -a reply=()
+  if _input_grapheme_bounds "$INPUT_POS"; then INPUT_POS=$reply[1]; fi
   return 0
 }
 

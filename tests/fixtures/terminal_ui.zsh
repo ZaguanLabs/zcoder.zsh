@@ -24,6 +24,7 @@ _ui_approval_input() {
 ui_init || exit 1
 mapfile[${fixture_base}.input]="$TERMINAL_NOREFRESH_INPUT"
 mapfile[${fixture_base}.native]="$TERMINAL_NATIVE_PASTE:$TERMINAL_EVENT_POLL"
+mapfile[${fixture_base}.grapheme]="$INPUT_GRAPHEME"
 ui_confirm_command 'This fixture only records the choice; it never runs commands.'
 mapfile[${fixture_base}.answer]="$REPLY"
 mapfile[${fixture_base}.sync]="$TERMINAL_NATIVE_QUERY:$TERMINAL_NATIVE_SYNC"
@@ -36,6 +37,7 @@ ui_activity_input() {
   _fixture_activity_input "$@"
   local -i result=$?
   mapfile[${fixture_base}.draft]="$INPUT_BUF"
+  mapfile[${fixture_base}.cursor]="$INPUT_POS"
   mapfile[${fixture_base}.paste_bytes]="$TERMINAL_PASTE_BYTES"
   [[ $fixture_ch == $'\x03' ]] && mapfile[${fixture_base}.control]="cleared:${#INPUT_BUF}:$UI_FOCUS:$fixture_key:$INPUT_TERM_STATE"
   return "$result"

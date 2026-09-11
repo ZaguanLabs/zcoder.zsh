@@ -64,6 +64,12 @@ _hardening_input_tests() {
   unfunction _hardening_real_wrap
   input_reset
 
+  local backend=''
+  for backend in stock auto; do
+    output=$(LC_ALL=C.UTF-8 zsh -df "$TEST_DIR/fixtures/grapheme_input.zsh" "$PROJECT_DIR" "$backend" 2>&1)
+    assert_success "$backend grapheme editing checks: $output" $?
+  done
+
   # The real curses fixture checks cursor coordinates and retained glyphs.
   zmodload zsh/zpty
   _hardening_input_pty_start() {
