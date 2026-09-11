@@ -1,11 +1,13 @@
 #!/usr/bin/env zsh
 emulate -R zsh
 setopt extendedglob
-zmodload zsh/curses zsh/terminfo zsh/datetime zsh/mapfile || exit 1
+zmodload zsh/curses zsh/terminfo zsh/datetime zsh/mapfile zsh/files || exit 1
 typeset -g fixture_root="$1" fixture_base="$2"
 for fixture_lib in util json transcript input terminal ui overlays; do source "$fixture_root/lib/${fixture_lib}.zsh"; done
 typeset -g ZCODER_NAME=zcoder ZCODER_VERSION=test ZCODER_MODEL=fixture ZCODER_SYNC_OUTPUT=false
-typeset -g ZCODER_WORKSPACE="$fixture_root" OLLAMA_HOST=fixture ZCODER_PROFILE=coding REMOTE_MODE=local
+typeset -g ZCODER_WORKSPACE="${fixture_base}.workspace" OLLAMA_HOST=fixture ZCODER_PROFILE=coding REMOTE_MODE=local
+zf_mkdir -p "$ZCODER_WORKSPACE/.git"
+print -r -- 'ref: refs/heads/main' > "$ZCODER_WORKSPACE/.git/HEAD"
 typeset -gi fixture_header=0 fixture_chat=0 fixture_input=0 fixture_notified=0 fixture_modal_header=0
 functions[_fixture_header]="${functions[_ui_paint_header]}"
 functions[_fixture_chat]="${functions[_ui_paint_chat]}"

@@ -20,6 +20,8 @@ typeset -g REMOTE_IDLE_PID='' REMOTE_IDLE_BASE='' REMOTE_IDLE_ENDPOINT=''
 typeset -gF REMOTE_IDLE_DEADLINE=0.0
 typeset -g REMOTE_MODEL_STATUS="unknown"
 typeset -g REMOTE_MODEL_ERROR=""
+typeset -g REMOTE_GIT_STATUS='Git: unavailable'
+typeset -gi REMOTE_GIT_SUPPORTED=0
 typeset -g REMOTE_HARNESSES=""
 typeset -gi REMOTE_SESSIONS_SUPPORTED=0
 typeset -gi REMOTE_HARNESS_DISCOVERY_SUPPORTED=0
@@ -185,6 +187,9 @@ remote_client_handshake() {
   # Keep those servers usable and let their first real turn load the model.
   REMOTE_MODEL_STATUS="${JSON_OBJECT[model_status]:-unmanaged}"
   REMOTE_MODEL_ERROR="${JSON_OBJECT[model_error]:-}"
+  REMOTE_GIT_SUPPORTED=0
+  [[ "${JSON_OBJECT_TYPES[git_status]:-}" == string ]] && REMOTE_GIT_SUPPORTED=1
+  REMOTE_GIT_STATUS="${JSON_OBJECT[git_status]:-Git: unavailable}"
   if (( ${+JSON_OBJECT[harnesses]} )) && [[ "${JSON_OBJECT_TYPES[harnesses]:-}" == string ]]; then
     harnesses="${JSON_OBJECT[harnesses]}"
     REMOTE_HARNESSES="$harnesses"
@@ -371,6 +376,7 @@ _remote_client_parse_model_status() {
   fi
   REMOTE_MODEL_STATUS="${JSON_OBJECT[model_status]:-unknown}"
   REMOTE_MODEL_ERROR="${JSON_OBJECT[model_error]:-}"
+  [[ "${JSON_OBJECT_TYPES[git_status]:-}" == string ]] && REMOTE_GIT_STATUS="${JSON_OBJECT[git_status]}"
   [[ "$REMOTE_MODEL_STATUS" == ready || "$REMOTE_MODEL_STATUS" == warming || "$REMOTE_MODEL_STATUS" == error ]] || {
     REMOTE_ERROR="invalid remote model status: ${REMOTE_MODEL_STATUS}"
     return 1
@@ -388,13 +394,16 @@ remote_client_idle_cancel() {
 }
 
 remote_client_idle_poll() {
-  if [[ "$REMOTE_MODEL_STATUS" != warming || ( -n "$REMOTE_IDLE_PID" && "$REMOTE_IDLE_ENDPOINT" != "$REMOTE_ENDPOINT" ) ]]; then
+  if [[ ( "$REMOTE_MODEL_STATUS" != warming && "$REMOTE_GIT_SUPPORTED" == 0 ) || ( -n "$REMOTE_IDLE_PID" && "$REMOTE_IDLE_ENDPOINT" != "$REMOTE_ENDPOINT" ) ]]; then
     remote_client_idle_cancel
     return 0
   fi
   local HTTP_ASYNC_PID="$REMOTE_IDLE_PID" HTTP_ASYNC_BASE="$REMOTE_IDLE_BASE" HTTP_ASYNC_STREAM_FD='' HTTP_ACTIVE_FD=''
   local HTTP_BODY='' HTTP_ERROR='' HTTP_ASYNC_EXTRA_HEADERS=''
+  local previous_model_status="$REMOTE_MODEL_STATUS" previous_model_error="$REMOTE_MODEL_ERROR"
   local -i HTTP_STREAM_REQUEST=0 HTTP_READ_TIMEOUT=$REMOTE_REQUEST_TIMEOUT request_status=0
+  local -i warming_poll=0
+  [[ "$REMOTE_MODEL_STATUS" == warming ]] && warming_poll=1
   [[ "$HTTP_READ_TIMEOUT" == <1-3600> ]] || HTTP_READ_TIMEOUT=30
   {
     if [[ -z "$HTTP_ASYNC_PID" ]]; then
@@ -413,6 +422,11 @@ remote_client_idle_poll() {
       request_status=$?
       REMOTE_CLIENT_NEXT_MODEL_POLL=$(( EPOCHREALTIME + REMOTE_CLIENT_MODEL_POLL_INTERVAL ))
       if (( request_status == 0 )) && _remote_client_parse_model_status; then
+        # Idle branch refreshes must not replace an unrelated foreground status.
+        if (( ! warming_poll )); then
+          REMOTE_CLIENT_NEXT_MODEL_POLL=$(( EPOCHREALTIME + 2.0 ))
+          return 0
+        fi
         case "$REMOTE_MODEL_STATUS" in
           ready) agent_set_status Ready; return 0 ;;
           warming) agent_set_status 'Warming Up'; return 0 ;;
@@ -420,6 +434,13 @@ remote_client_idle_poll() {
         esac
       fi
       REMOTE_MODEL_ERROR="${HTTP_ERROR:-$REMOTE_ERROR}"
+    fi
+    if (( ! warming_poll )); then
+      REMOTE_MODEL_STATUS="$previous_model_status"
+      REMOTE_MODEL_ERROR="$previous_model_error"
+      REMOTE_GIT_STATUS='Git: unavailable'
+      REMOTE_CLIENT_NEXT_MODEL_POLL=$(( EPOCHREALTIME + 2.0 ))
+      return 0
     fi
     REMOTE_MODEL_STATUS=error
     agent_set_status 'Warm-up Failed'
@@ -635,6 +656,7 @@ _remote_client_user_turn() {
       return 1
     fi
     event="${JSON_OBJECT[event]:-}"
+    [[ "${JSON_OBJECT_TYPES[git_status]:-}" == string ]] && REMOTE_GIT_STATUS="${JSON_OBJECT[git_status]}"
     if [[ "${JSON_OBJECT[seq]:-}" == <0-> ]]; then
       REMOTE_CLIENT_EVENT_CURSOR="${JSON_OBJECT[seq]}"
     fi
@@ -874,6 +896,16 @@ _remote_server_model_status_json() {
   json_quote "$REMOTE_MODEL_STATUS"; status_json="$REPLY"
   json_quote "$REMOTE_MODEL_ERROR"; error_json="$REPLY"
   REPLY="{\"model_status\":${status_json},\"model_error\":${error_json}}"
+  _remote_server_git_json
+}
+
+# Add current server workspace metadata to a flat protocol-1 response. Older
+# peers ignore the optional field; new clients never inspect local remote paths.
+_remote_server_git_json() {
+  local response="$REPLY"
+  zcoder_git_status "$ZCODER_WORKSPACE"
+  json_quote "$REPLY"
+  REPLY="${response%\}},\"git_status\":${REPLY}}"
 }
 
 _remote_server_model_poll() {
@@ -1330,6 +1362,7 @@ _remote_server_hello_json() {
   json_quote "$REMOTE_MODEL_ERROR"; model_error_json="$REPLY"
   json_quote "$harnesses"; harnesses_json="$REPLY"
   REPLY="{\"protocol\":1,\"server_name\":${name_json},\"workspace\":${workspace_json},\"model\":${model_json},\"profile\":${profile_json},\"command_policy\":${policy_json},\"model_status\":${model_status_json},\"model_error\":${model_error_json},\"harnesses\":${harnesses_json},\"sessions\":true,\"goals\":true,\"input_queue\":true}"
+  _remote_server_git_json
 }
 
 _remote_server_handle_connection() {
@@ -1411,6 +1444,7 @@ _remote_server_handle_connection() {
       [[ "$after" == <0-> ]] || { _remote_http_error "$fd" 400 "after must be a non-negative integer"; return; }
       _remote_server_progress_pending_turn "$fd" || true
       _remote_server_next_event "$after"
+      _remote_server_git_json
       _remote_http_send "$fd" 200 "$REPLY"
       ;;
     GET:/v1/sessions\?after=*)

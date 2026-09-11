@@ -22,6 +22,8 @@ typeset -g UI_STATUS_KIND=success UI_STATUS_DISPLAY='' UI_STATUS_ATTR='bold gree
 typeset -g UI_NOTICE_TEXT='' UI_NOTICE_KIND=''
 typeset -gF UI_STATUS_SINCE=0.0 UI_NOTICE_UNTIL=0.0
 typeset -gi UI_NOTICE_GENERATION=0
+typeset -g UI_GIT_DISPLAY='' UI_GIT_WORKSPACE=''
+typeset -gF UI_NEXT_GIT_CHECK=0.0
 typeset -gi UI_SCROLL=0 UI_AUTO_SCROLL=1
 typeset -g UI_FOCUS="input"
 # Rendering the whole transcript is linear in its size, so scrolling and tool
@@ -50,7 +52,7 @@ ui_invalidate() {
 _ui_window_key() {
   local -a fields=("$SCREEN_H" "$SCREEN_W" "$SIDE_W" "$INPUT_H" "$TOP_H" "$FOOT_H")
   case "$1" in
-    header) fields+=("$UI_STATUS_DISPLAY" "$UI_STATUS_ATTR" "$ZCODER_NAME" "$ZCODER_VERSION" "$ZCODER_MODEL" "$OLLAMA_HOST" "$ZCODER_WORKSPACE" "${REMOTE_MODE:-local}" "$REMOTE_SERVER_NAME" "$REMOTE_ENDPOINT") ;;
+    header) fields+=("$UI_STATUS_DISPLAY" "$UI_STATUS_ATTR" "$UI_GIT_DISPLAY" "$ZCODER_NAME" "$ZCODER_VERSION" "$ZCODER_MODEL" "$OLLAMA_HOST" "$ZCODER_WORKSPACE" "${REMOTE_MODE:-local}" "$REMOTE_SERVER_NAME" "$REMOTE_ENDPOINT") ;;
     sidebar) fields+=("$UI_FOCUS" "$ZCODER_WORKSPACE" "$ZCODER_PROFILE" "$ZCODER_COMMAND_POLICY" "${TOOL_PATCH_RETRY_REQUIRED:-0}" "${#INSTRUCTION_SOURCES}" "$CURRENT_SESSION_ID"
       "${(j: :)${(@q)SESSION_IDS}}" "${(j: :)${(@q)SESSION_TITLES}}" "${(j: :)${(@q)SKILL_DISCOVERABLE_NAMES}}" "${(j: :)${(@q)SKILL_ACTIVE_NAMES}}") ;;
     chat) fields+=("$UI_FOCUS" "$UI_TRANSCRIPT_GENERATION" "${#UI_ROLES}" "$UI_RENDER_CACHE_KEY" "$ZCODER_MODEL" "$UI_SELECTED_EVENT" "$UI_SCROLL" "$UI_AUTO_SCROLL") ;;
@@ -142,6 +144,7 @@ ui_status_notice() {
 
 ui_status_update() {
   emulate -L zsh
+  ui_git_update
   local text="$UI_STATUS" kind="$UI_STATUS_KIND" extra=''
   local -i elapsed=0 frame=1 percent=0 ticks=0
   local -a frames=('|' '/' '-' $'\\')
@@ -189,6 +192,21 @@ ui_status_update() {
     esac
   fi
   UI_STATUS_DISPLAY="$text"
+}
+
+# Poll only the tiny repository metadata once a second; the window key prevents
+# unchanged results from repainting. Workspace switches bypass the timer.
+ui_git_update() {
+  emulate -L zsh
+  if [[ "${REMOTE_MODE:-local}" == client ]]; then
+    UI_GIT_DISPLAY="${REMOTE_GIT_STATUS:-Git: unavailable}"
+    UI_GIT_WORKSPACE=''
+  elif [[ "$UI_GIT_WORKSPACE" != "$ZCODER_WORKSPACE" ]] || (( EPOCHREALTIME >= UI_NEXT_GIT_CHECK )); then
+    zcoder_git_status "$ZCODER_WORKSPACE"
+    UI_GIT_DISPLAY="$REPLY"
+    UI_GIT_WORKSPACE="$ZCODER_WORKSPACE"
+    UI_NEXT_GIT_CHECK=$(( EPOCHREALTIME + 1.0 ))
+  fi
 }
 
 ui_destroy_windows() {
@@ -418,6 +436,21 @@ _ui_paint_header() {
     zcoder_curses move top_win 1 $badge_x
     ui_attr top_win -bold -dim $=UI_STATUS_ATTR
     zcoder_curses string top_win "$badge"
+  fi
+  # The lower border keeps workspace context visible without taking a chat row
+  # or competing with the model identity and foreground activity above it.
+  local git_label='' git_attr='bold green/black'
+  local -i git_limit=$(( SCREEN_W - 6 ))
+  if (( git_limit > 0 )); then
+    [[ "$UI_GIT_DISPLAY" == 'No Git' || "$UI_GIT_DISPLAY" == 'Git: unavailable' ]] && git_attr='dim white/black'
+    [[ "$UI_GIT_DISPLAY" == 'Git: detached '* ]] && git_attr='bold yellow/black'
+    zcoder_terminal_safe "$UI_GIT_DISPLAY"; git_label="${REPLY//$'\n'/ }"
+    if (( ${(m)#git_label} > git_limit )); then
+      zcoder_clip "$git_label" $(( git_limit - 1 )); git_label="${REPLY}…"
+    fi
+    zcoder_curses move top_win 2 2
+    ui_attr top_win -bold -dim $=git_attr
+    zcoder_curses string top_win " ${git_label} "
   fi
   (( defer_refresh )) || terminal_refresh top_win
 }

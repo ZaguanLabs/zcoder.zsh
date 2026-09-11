@@ -8,6 +8,44 @@ typeset -gi ZCODER_DEBUG_FD=-1
 typeset -g ZCODER_RUNTIME_PARENT="" ZCODER_RUNTIME_DIR=""
 typeset -gi ZCODER_RUNTIME_SEQUENCE=0
 
+# Display-only repository metadata, independent of Git, curses, and tool access.
+# Walk from the workspace (not $PWD); gitfiles cover worktrees and submodules.
+# Only read HEAD: never evaluate repository contents or traverse the work tree.
+zcoder_git_status() {
+  emulate -L zsh
+  setopt extendedglob
+  local directory="${1:A}" gitdir='' line='' head=''
+  REPLY='No Git'
+  [[ -n "$1" && -d "$directory" ]] || return 0
+  while true; do
+    if [[ -d "$directory/.git" ]]; then
+      gitdir="$directory/.git"
+      break
+    elif [[ -f "$directory/.git" ]]; then
+      REPLY='Git: unavailable'
+      { IFS= read -r line < "$directory/.git"; } 2>/dev/null
+      [[ "$line" == 'gitdir: '?* ]] || return 0
+      gitdir="${line#gitdir: }"
+      [[ "$gitdir" == /* ]] || gitdir="$directory/$gitdir"
+      break
+    elif [[ -f "$directory/HEAD" && -d "$directory/objects" && -d "$directory/refs" ]]; then
+      gitdir="$directory"
+      break
+    fi
+    [[ "$directory" == / ]] && return 0
+    directory="${directory:h}"
+  done
+  REPLY='Git: unavailable'
+  [[ -f "$gitdir/HEAD" && -r "$gitdir/HEAD" ]] || return 0
+  { IFS= read -r head < "$gitdir/HEAD"; } 2>/dev/null
+  if [[ "$head" == 'ref: refs/heads/'?* ]]; then
+    REPLY="Git: ${head#ref: refs/heads/}"
+  elif [[ "$head" == [[:xdigit:]]## ]] && (( ${#head} == 40 || ${#head} == 64 )); then
+    REPLY="Git: detached ${head[1,8]}"
+  fi
+  return 0
+}
+
 # syswrite(1) may successfully write only part of its input. Keep the byte
 # boundary explicit so large HTTP payloads and files cannot be silently
 # truncated. Callers own and close the descriptor.

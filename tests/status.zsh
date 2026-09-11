@@ -40,9 +40,13 @@ status_header_identity_test() {
   assert_contains "${(F)MOCK_ZCURSES_CALLS}" 'remote-fixture@192.168.1.48:7337' "remote headers identify the connected server"
   SCREEN_W=40; ZCODER_MODEL='模型模型模型模型模型模型'
   ui_invalidate header; MOCK_ZCURSES_CALLS=(); ui_draw_header
-  local -i identity_cells=0 badge_column=0
+  local -i identity_cells=0 badge_column=0 header_row=1
   for call in "${MOCK_ZCURSES_CALLS[@]}"; do
-    if [[ "$call" == 'string top_win '* && "$call" != 'string top_win [ '* ]]; then
+    if [[ "$call" == 'move top_win '* ]]; then
+      local -a position=(${=call})
+      header_row=$position[3]
+    fi
+    if [[ "$call" == 'string top_win '* && "$call" != 'string top_win [ '* ]] && (( header_row == 1 )); then
       header_text="${call#string top_win }"
       (( identity_cells += ${(m)#header_text} ))
     elif [[ "$call" == 'move top_win 1 '* ]]; then badge_column="${call##* }"
@@ -117,6 +121,7 @@ assert_success "status fixture starts with real curses" $?
 status_pty_wait "$status_pty_base.animated" 1
 assert_success "the existing activity loop animates while awaiting input" $?
 assert_contains "$status_pty_output" 'zcoder vtest' "real curses displays the application name and version in the header"
+assert_contains "$status_pty_output" 'Git: main' "real curses displays the branch on a narrow terminal without a sidebar"
 assert_eq '1:1' "${mapfile[$status_pty_base.underlay]:-}" "animation never repaints unchanged transcript or editor windows"
 zpty -w -n status-ui draft
 status_pty_wait "$status_pty_base.draft" draft
