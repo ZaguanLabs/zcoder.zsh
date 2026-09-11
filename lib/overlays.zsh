@@ -83,7 +83,7 @@ ui_modal_run() {
       if (( modal_dirty )); then
         ui_modal_frame
         "$modal_draw" || return 1
-        terminal_refresh overlay_win
+        terminal_refresh overlay_win || return 1
         modal_dirty=0
       fi
       modal_ch=""; modal_key=""; modal_mouse=""

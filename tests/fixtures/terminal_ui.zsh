@@ -26,6 +26,7 @@ mapfile[${fixture_base}.input]="$TERMINAL_NOREFRESH_INPUT"
 mapfile[${fixture_base}.native]="$TERMINAL_NATIVE_PASTE:$TERMINAL_EVENT_POLL"
 ui_confirm_command 'This fixture only records the choice; it never runs commands.'
 mapfile[${fixture_base}.answer]="$REPLY"
+mapfile[${fixture_base}.sync]="$TERMINAL_NATIVE_QUERY:$TERMINAL_NATIVE_SYNC"
 typeset -g fixture_ch='' fixture_key='' fixture_mouse=''
 typeset -gi fixture_activity_done=0
 functions[_fixture_activity_input]="${functions[ui_activity_input]}"
@@ -48,6 +49,7 @@ functions[ui_activity_input]="${functions[_fixture_activity_input]}"
 functions[_fixture_terminal_draw]="${functions[_ui_terminal_draw]}"
 _ui_terminal_draw() {
   _fixture_terminal_draw
+  mapfile[${fixture_base}.diagnostic_lines]="${(F)modal_lines}"
   mapfile[${fixture_base}.diagnostics]=1
 }
 ui_show_terminal
@@ -59,8 +61,16 @@ mapfile[${fixture_base}.closed]="${TERMINAL_FD}:${TERMINAL_SYNC_ENABLED}:${TERMI
 for ZCODER_SYNC_OUTPUT in false true invalid auto; do
   ui_init || exit 1
   if [[ "$ZCODER_SYNC_OUTPUT" == auto ]]; then
-    TERMINAL_QUERY_DEADLINE=$(( EPOCHREALTIME - 1 ))
-    terminal_poll
+    if (( TERMINAL_NATIVE_QUERY )); then
+      # Native deadlines use a monotonic clock and are delivered as events.
+      while [[ $TERMINAL_SYNC_STATE == pending ]]; do
+        zcoder_curses timeout input_win 50
+        terminal_read_event input_win fixture_ch fixture_key fixture_mouse
+      done
+    else
+      TERMINAL_QUERY_DEADLINE=$(( EPOCHREALTIME - 1 ))
+      terminal_poll
+    fi
   fi
   mapfile[${fixture_base}.${ZCODER_SYNC_OUTPUT}]="$TERMINAL_SYNC_STATE:$TERMINAL_SYNC_ENABLED"
   ui_end

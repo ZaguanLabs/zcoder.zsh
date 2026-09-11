@@ -239,6 +239,12 @@ tail -f /tmp/zcoder-debug-${UID}.log
 Use `--debug-log PATH` or `ZCODER_DEBUG_LOG` for another location.
 `ZCODER_DEBUG_MAX_CHARS` changes the per-record limit.
 
+When zdraw is available, its component diagnostics share this log descriptor.
+Toolkit records report the failing function and validation or drawing operation;
+they use zdraw's own format and are not subject to `ZCODER_DEBUG_MAX_CHARS`.
+An explicitly configured `ZDRAW_UI_DEBUG_FD` takes precedence. Closing the debug
+log releases the toolkit mapping created by zcoder.
+
 The log records session and exit state, Ollama request status, bounded raw
 responses, parsed content and tool-call counts, continuation decisions, and
 bounded tool-result summaries. It can contain prompts, assistant text, paths,

@@ -94,7 +94,7 @@ ui_flush() {
   # Refreshing an unchanged input window restores its cursor without repainting
   # its contents. Keep it last in the one physical update.
   windows+=(input_win)
-  terminal_refresh "${windows[@]}"
+  terminal_refresh "${windows[@]}" || return $?
   UI_PENDING_WINDOWS=()
 }
 

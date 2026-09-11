@@ -445,6 +445,27 @@ zcoder_debug_init
 assert_success "debug log initializes" $?
 zcoder_debug unit_test $'first line\nsecond line'
 assert_contains "${mapfile[$ZCODER_DEBUG_LOG]}" 'unit_test first line\nsecond line' "debug log escapes multiline records"
+assert_eq "$ZCODER_DEBUG_FD" "${ZDRAW_UI_DEBUG_FD:-}" 'toolkit diagnostics reuse the protected debug descriptor'
+(
+  source "$PROJECT_DIR/vendor/zdraw/lib/zdraw-ui.zsh"
+  typeset -A zdraw_ui_style
+  zdraw-ui-style normal not-a-style
+) 2> "$TEST_TMP/zdraw-debug.stderr"
+assert_failure 'invalid toolkit styles preserve their error status with logging enabled' $?
+assert_contains "${mapfile[$ZCODER_DEBUG_LOG]}" 'not-a-style' 'toolkit failures reach the application debug log'
+assert_eq '' "${mapfile[$TEST_TMP/zdraw-debug.stderr]}" 'toolkit diagnostics never write over curses stderr'
+zcoder_debug_close
+assert_eq 0 "${+ZDRAW_UI_DEBUG_FD}" 'closing the log removes the owned toolkit mapping'
+exec {test_toolkit_fd}> "$TEST_TMP/separate-toolkit.log"
+ZDRAW_UI_DEBUG_FD=$test_toolkit_fd
+zcoder_debug_init
+assert_eq "$test_toolkit_fd" "$ZDRAW_UI_DEBUG_FD" 'an explicit toolkit log descriptor takes precedence'
+zcoder_debug_close
+print -r -u "$test_toolkit_fd" -- still-open
+assert_eq still-open "${mapfile[$TEST_TMP/separate-toolkit.log]%$'\n'}" 'closing application diagnostics preserves an independently owned toolkit sink'
+unset ZDRAW_UI_DEBUG_FD
+exec {test_toolkit_fd}>&-
+zcoder_debug_init
 
 quote_sample=$'quote " and slash \\\nline\ttab æøå'
 json_quote "$quote_sample"; fast_quoted="$REPLY"

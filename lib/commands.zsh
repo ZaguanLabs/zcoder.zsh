@@ -399,6 +399,7 @@ _ui_terminal_draw() {
     features_state="${(j:, :)reply}"
     [[ -n $features_state ]] || features_state=none
   fi
+  local -a terminal_features=("${reply[@]}")
   case $UI_NATIVE_GEOMETRY in
     0) geometry_state='stty fallback' ;;
     1) geometry_state='native (no subprocess)' ;;
@@ -415,6 +416,13 @@ _ui_terminal_draw() {
   local input_state='curses default'
   (( TERMINAL_NOREFRESH_INPUT )) && input_state='explicit refresh (zdraw)'
   (( TERMINAL_EVENT_POLL )) && input_state+=' · activity polling'
+  local frame_state='ordinary refresh' query_state='Zsh decoder'
+  if (( TERMINAL_NATIVE_SYNC )); then
+    frame_state='native stage/present'
+  elif (( TERMINAL_SYNC_ENABLED )); then
+    frame_state='Zsh frame markers'
+  fi
+  (( TERMINAL_NATIVE_QUERY )) && query_state='native event queue'
   local -a lines=("Terminal: ${TERM:-unset}" "Size: ${SCREEN_W} columns × ${SCREEN_H} rows"
     "Curses module: ${ZCODER_CURSES_BACKEND:-preloaded}" "Resize queries: ${geometry_state}"
     "Compiled features: ${features_state}"
@@ -425,9 +433,39 @@ _ui_terminal_draw() {
     "RGB supported/enabled: ${UI_COLOR_INFO[truecolor_supported]:-unknown}/${UI_COLOR_INFO[truecolor_enabled]:-unknown}"
     "Color pairs used/free: ${UI_COLOR_INFO[pairs_used]:-unknown}/${UI_COLOR_INFO[pairs_free]:-unknown}"
     "Synchronized output: ${TERMINAL_SYNC_STATE}" "Policy: ${TERMINAL_SYNC_POLICY}"
-    "Bracketed paste: ${paste_state}" ""
+    "Frame presentation: ${frame_state}" "Reply decoder: ${query_state}"
+    "Bracketed paste: ${paste_state}")
+  local -A terminal_caps=() terminal_resources=()
+  local capability=''
+  if (( ${terminal_features[(Ie)capability_evidence]} )); then
+    if zcoder_curses capabilities terminal_caps 2>/dev/null; then
+      lines+=("" 'Capability evidence (support / enabled / source):')
+      for capability in colors truecolor wide_text norefresh_events suspend_resume streaming_paste focus_events synchronized_output keyboard_events; do
+        lines+=("${capability}: ${terminal_caps[$capability,support]:-unknown} / ${terminal_caps[$capability,enabled]:-unknown} / ${terminal_caps[$capability,source]:-none}")
+      done
+      lines+=("Sync report/query: ${terminal_caps[synchronized_output,reported]:-unknown} / ${terminal_caps[synchronized_output,query]:-unknown}")
+    else
+      lines+=('Capability evidence: unavailable')
+    fi
+  fi
+  if (( ${terminal_features[(Ie)resource_info]} )); then
+    if zcoder_curses resourceinfo terminal_resources 2>/dev/null; then
+      lines+=("" "Resources (${terminal_resources[session]:-unknown}):"
+        "Windows / owned / shared: ${terminal_resources[windows]:-unknown} / ${terminal_resources[owned_windows]:-unknown} / ${terminal_resources[child_windows]:-unknown}"
+        "Backing cells: ${terminal_resources[backing_cells]:-unknown}"
+        "Pads / cells / input pads: ${terminal_resources[pads]:-unknown} / ${terminal_resources[pad_cells]:-unknown} / ${terminal_resources[private_input_pads]:-unknown}"
+        "Prepared rows / bytes: ${terminal_resources[prepared_rows]:-unknown} / ${terminal_resources[prepared_bytes]:-unknown}"
+        "Prepared created / draws: ${terminal_resources[prepared_created]:-unknown} / ${terminal_resources[prepared_draws]:-unknown}"
+        "Retired tree handles: ${terminal_resources[retired_tree_windows]:-unknown}"
+        'Counts describe toolkit resources, not process memory.')
+    else
+      lines+=('Resource inspection: unavailable')
+    fi
+  fi
+  lines+=(""
     "ZCODER_SYNC_OUTPUT=auto queries terminal support once on UI entry."
     "No reply within one second keeps ordinary curses updates."
+    "Native sync requires a reset reply; an already-set mode stays untouched."
     "Use false to disable, or true to force support for a known terminal."
     "" "Detection uses the terminal's reply, including through a multiplexer.")
   modal_lines=()

@@ -180,6 +180,8 @@ unfunction _terminal_saved_curses
   }
 }
 
+source "$TEST_DIR/native_sync.zsh"
+
 typeset -g terminal_pty_base="$TEST_TMP/terminal-pty" terminal_pty_output='' terminal_pty_chunk=''
 terminal_pty_wait() {
   local file="$1" expected="$2"
@@ -237,6 +239,11 @@ for terminal_pty_mode in "${terminal_pty_modes[@]}"; do
   zpty -w -n terminal-ui n
   terminal_pty_wait "$terminal_pty_base.answer" n
   assert_success "only the user's explicit denial completes the approval" $?
+  terminal_expected_sync=0:0
+  # Older zdraw builds still exercise the legacy path.
+  if [[ $terminal_pty_mode == auto ]]; then
+    terminal_expected_sync=$(zsh -dfc 'source "$1/lib/curses.zsh"; source "$1/lib/terminal.zsh"; ZCODER_CURSES=auto zcoder_curses_load "$1" || exit; terminal_detect_input; print -r -- "$TERMINAL_CAN_SYNC:$TERMINAL_CAN_SYNC"' zcoder-test "$PROJECT_DIR")
+  fi
   zpty -w -n terminal-ui $'draft\e[200~line1\nline2界e\u0301\e[201~'
   terminal_pty_wait "$terminal_pty_base.draft" $'draftline1\nline2界e\u0301'
   assert_success "real curses preserves Unicode multiline paste after capability detection" $?
@@ -264,6 +271,12 @@ for terminal_pty_mode in "${terminal_pty_modes[@]}"; do
   zpty -w -n terminal-ui $'\x07'
   terminal_pty_wait "$terminal_pty_base.diagnostics" 1
   assert_success "terminal diagnostics opens after background activity" $?
+  assert_eq "$terminal_expected_sync" "${mapfile[$terminal_pty_base.sync]}" 'negotiated synchronization uses the selected backend'
+  if [[ $terminal_expected_sync == 1:1 ]]; then
+    assert_contains "${mapfile[$terminal_pty_base.diagnostic_lines]}" 'native stage/present' 'native frame ownership is visible in diagnostics'
+    assert_contains "${mapfile[$terminal_pty_base.diagnostic_lines]}" 'Capability evidence' 'native diagnostics include passive terminal evidence'
+    assert_contains "${mapfile[$terminal_pty_base.diagnostic_lines]}" 'Prepared rows / bytes:' 'native diagnostics include resource counts'
+  fi
   zpty -w -n terminal-ui $'\e'
   if [[ $terminal_native_paste == 1:* ]]; then
     terminal_pty_wait "$terminal_pty_base.abandon" ready

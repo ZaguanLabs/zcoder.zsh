@@ -11,6 +11,7 @@ typeset -ga TERMINAL_INPUT_QUEUE=()
 typeset -gi TERMINAL_NOREFRESH_INPUT=0
 typeset -ga TERMINAL_EVENT_FLAGS=()
 typeset -gi TERMINAL_CAN_PASTE=0 TERMINAL_NATIVE_PASTE=0 TERMINAL_EVENT_POLL=0
+typeset -gi TERMINAL_CAN_SYNC=0 TERMINAL_NATIVE_QUERY=0 TERMINAL_NATIVE_SYNC=0
 typeset -gi TERMINAL_INPUT_FD=-1 TERMINAL_WAIT_MS=20
 typeset -gi TERMINAL_PASTE_BYTES=0 TERMINAL_PASTE_REJECTED=0 TERMINAL_PASTE_LIMIT=1048576
 typeset -ga TERMINAL_PASTE_CHUNKS=()
@@ -23,7 +24,7 @@ terminal_detect_input() {
   emulate -L zsh
   local -a reply=()
   TERMINAL_NOREFRESH_INPUT=0; TERMINAL_EVENT_FLAGS=()
-  TERMINAL_CAN_PASTE=0; TERMINAL_EVENT_POLL=0
+  TERMINAL_CAN_PASTE=0; TERMINAL_EVENT_POLL=0; TERMINAL_CAN_SYNC=0
   if zcoder_curses_features &&
      (( ${reply[(Ie)structured_events]} && ${reply[(Ie)norefresh_events]} )); then
     TERMINAL_NOREFRESH_INPUT=1
@@ -31,6 +32,8 @@ terminal_detect_input() {
     (( ${reply[(Ie)mouse]} )) && TERMINAL_EVENT_FLAGS+=(mouse)
     (( ${reply[(Ie)streaming_paste]} )) && TERMINAL_CAN_PASTE=1
     (( ${reply[(Ie)event_poll]} && ${reply[(Ie)input_info]} )) && TERMINAL_EVENT_POLL=1
+    (( ${reply[(Ie)capability_queries]} && ${reply[(Ie)synchronized_output]} &&
+       ${reply[(Ie)staged_refresh]} )) && TERMINAL_CAN_SYNC=1
   fi
   return 0
 }
@@ -63,13 +66,30 @@ terminal_start() {
       TERMINAL_EVENT_POLL=0
     fi
   fi
+  _terminal_sync_start
+  return 0
+}
+
+_terminal_sync_start() {
+  emulate -L zsh
   case "$TERMINAL_SYNC_POLICY" in
     true) TERMINAL_SYNC_ENABLED=1; TERMINAL_SYNC_STATE=forced ;;
     false) TERMINAL_SYNC_STATE=disabled ;;
     auto)
       TERMINAL_SYNC_STATE=pending
-      TERMINAL_QUERY_DEADLINE=$(( EPOCHREALTIME + 1.0 ))
-      _terminal_write $'\e[?2026$p' || TERMINAL_SYNC_STATE=unavailable
+      if (( TERMINAL_CAN_SYNC )); then
+        if zcoder_curses query on 2>/dev/null; then
+          # Retain reply decoding until teardown, including after a timeout.
+          # Never retry a sent query through a second decoder.
+          TERMINAL_NATIVE_QUERY=1
+          zcoder_curses query request synchronized_output 1000 2>/dev/null || TERMINAL_SYNC_STATE=unavailable
+        else
+          TERMINAL_SYNC_STATE=unavailable
+        fi
+      else
+        TERMINAL_QUERY_DEADLINE=$(( EPOCHREALTIME + 1.0 ))
+        _terminal_write $'\e[?2026$p' || TERMINAL_SYNC_STATE=unavailable
+      fi
       ;;
     *) TERMINAL_SYNC_STATE='disabled (invalid setting)' ;;
   esac
@@ -78,6 +98,8 @@ terminal_start() {
 
 terminal_end() {
   emulate -L zsh
+  (( TERMINAL_NATIVE_SYNC )) && zcoder_curses sync off 2>/dev/null
+  (( TERMINAL_NATIVE_QUERY )) && zcoder_curses query off 2>/dev/null
   if (( TERMINAL_NATIVE_PASTE )); then
     # An unfinished paste cannot be disabled. End the session to abandon its
     # queued bytes and restore raw mode; normal UI teardown also calls end.
@@ -92,6 +114,7 @@ terminal_end() {
   TERMINAL_SYNC_STATE=inactive
   TERMINAL_NOREFRESH_INPUT=0; TERMINAL_EVENT_FLAGS=()
   TERMINAL_CAN_PASTE=0; TERMINAL_NATIVE_PASTE=0; TERMINAL_EVENT_POLL=0
+  TERMINAL_CAN_SYNC=0; TERMINAL_NATIVE_QUERY=0; TERMINAL_NATIVE_SYNC=0
   TERMINAL_INPUT_FD=-1; TERMINAL_WAIT_MS=20
   TERMINAL_PASTE_BYTES=0; TERMINAL_PASTE_REJECTED=0; TERMINAL_PASTE_CHUNKS=(); TERMINAL_EVENT_TEXT=''
   TERMINAL_SEQUENCE=''; TERMINAL_INPUT_QUEUE=(); TERMINAL_PASTE=0; TERMINAL_PASTE_TAIL=''; TERMINAL_CSI_DISCARD=0
@@ -111,6 +134,9 @@ terminal_suspend() {
     TERMINAL_FRAME_ACTIVE=0
   fi
   zcoder_curses suspend 2>/dev/null || return $?
+  if (( TERMINAL_NATIVE_QUERY )) && [[ $TERMINAL_SYNC_STATE == pending ]]; then
+    TERMINAL_SYNC_STATE=cancelled
+  fi
   # zdraw restores only the protocols it owns. Older builds may still use our
   # Zsh paste decoder, whose mode must be disabled during foreground input.
   if (( ! TERMINAL_NATIVE_PASTE )) && [[ -n $TERMINAL_FD ]]; then
@@ -130,10 +156,21 @@ terminal_resume() {
 
 terminal_refresh() { _terminal_present refresh "$@"; }
 
-# Resume also presents a frame; share the same balanced synchronization policy.
+# Native synchronization belongs only to present. Resume repaints through its
+# own native lifecycle; its next ordinary frame resumes synchronized updates.
 _terminal_present() {
   emulate -L zsh
   local -i refresh_result=0
+  if (( TERMINAL_NATIVE_SYNC )); then
+    if [[ $1 == refresh ]]; then
+      shift
+      zcoder_curses stage "$@" || return $?
+      zcoder_curses present
+    else
+      zcoder_curses "$@"
+    fi
+    return $?
+  fi
   {
     if (( TERMINAL_SYNC_ENABLED )) && _terminal_write $'\e[?2026h'; then
       TERMINAL_FRAME_ACTIVE=1
@@ -150,9 +187,28 @@ _terminal_present() {
 }
 
 terminal_poll() {
-  if [[ "$TERMINAL_SYNC_STATE" == pending ]] && (( EPOCHREALTIME >= TERMINAL_QUERY_DEADLINE )); then
+  if (( ! TERMINAL_NATIVE_QUERY )) && [[ "$TERMINAL_SYNC_STATE" == pending ]] && (( EPOCHREALTIME >= TERMINAL_QUERY_DEADLINE )); then
     TERMINAL_SYNC_STATE='no reply'
   fi
+}
+
+# Called only for structured capability records from the single input owner.
+_terminal_capability_event() {
+  emulate -L zsh
+  (( TERMINAL_NATIVE_QUERY )) && [[ $1 == synchronized_output && $TERMINAL_SYNC_STATE == pending ]] || return 0
+  case $2 in
+    timeout) TERMINAL_SYNC_STATE='no reply' ;;
+    reply)
+      if [[ $3 != 2 ]]; then
+        TERMINAL_SYNC_STATE=unsupported
+      elif zcoder_curses sync on 2>/dev/null; then
+        TERMINAL_NATIVE_SYNC=1; TERMINAL_SYNC_ENABLED=1; TERMINAL_SYNC_STATE=supported
+      else
+        TERMINAL_SYNC_STATE=unavailable
+      fi
+      ;;
+  esac
+  return 0
 }
 
 # Queue complete ordinary escape sequences unchanged. Consume DECRPM replies
@@ -226,7 +282,7 @@ terminal_filter_input() {
       return 0
     fi
     if [[ "$TERMINAL_SEQUENCE" == $'\e[?2026;'* ]]; then
-      if [[ "$TERMINAL_SYNC_STATE" == pending ]]; then
+      if (( ! TERMINAL_NATIVE_QUERY )) && [[ "$TERMINAL_SYNC_STATE" == pending ]]; then
         case "$TERMINAL_SEQUENCE" in
           $'\e[?2026;1$y'|$'\e[?2026;2$y')
             TERMINAL_SYNC_ENABLED=1; TERMINAL_SYNC_STATE=supported ;;
@@ -323,6 +379,9 @@ terminal_read_event() {
           character) terminal_byte=${terminal_event[text]} ;;
           key) terminal_key=${terminal_event[key]} ;;
           resize) terminal_key=RESIZE ;;
+          capability)
+            _terminal_capability_event "${terminal_event[name]}" "${terminal_event[phase]}" "${terminal_event[report]}"
+            ;;
           paste)
             _terminal_paste_event "${terminal_event[phase]}" "${terminal_event[text]}"
             terminal_key=$REPLY
@@ -338,8 +397,8 @@ terminal_read_event() {
         local -i terminal_read_result=$?
         # Status 2 guarantees no input was consumed. Other failures (including
         # timeouts) must not cause a second read or replay an old record.
-        if (( terminal_read_result == 2 && TERMINAL_NATIVE_PASTE )); then
-          # Legacy input is forbidden while zdraw owns paste. Retry structured
+        if (( terminal_read_result == 2 && (TERMINAL_NATIVE_PASTE || TERMINAL_NATIVE_QUERY) )); then
+          # Legacy input is forbidden while zdraw owns a protocol. Retry structured
           # input on the next call without the optional polling flag.
           TERMINAL_EVENT_POLL=0
         elif (( terminal_read_result == 2 )); then

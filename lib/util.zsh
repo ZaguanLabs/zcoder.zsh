@@ -5,6 +5,7 @@ typeset -g ZCODER_DEBUG_LOG="${ZCODER_DEBUG_LOG:-}"
 typeset -gi ZCODER_DEBUG_ACTIVE=0
 typeset -gi ZCODER_DEBUG_MAX_CHARS="${ZCODER_DEBUG_MAX_CHARS:-16000}"
 typeset -gi ZCODER_DEBUG_FD=-1
+typeset -gi ZCODER_DEBUG_ZDRAW=0
 typeset -g ZCODER_RUNTIME_PARENT="" ZCODER_RUNTIME_DIR=""
 typeset -gi ZCODER_RUNTIME_SEQUENCE=0
 
@@ -187,6 +188,12 @@ zcoder_debug_init() {
       return 1
     }
     ZCODER_DEBUG_ACTIVE=1
+    # Reuse the protected, close-on-exec log descriptor. Respect a separately
+    # configured toolkit sink and never load terminal code in headless modes.
+    if (( ! ${+ZDRAW_UI_DEBUG_FD} )); then
+      typeset -g ZDRAW_UI_DEBUG_FD=$ZCODER_DEBUG_FD
+      ZCODER_DEBUG_ZDRAW=1
+    fi
   fi
   umask "$old_umask"
   (( ZCODER_DEBUG_ACTIVE ))
@@ -205,6 +212,10 @@ zcoder_debug() {
 }
 
 zcoder_debug_close() {
+  if (( ZCODER_DEBUG_ZDRAW )) && [[ ${ZDRAW_UI_DEBUG_FD:-} == $ZCODER_DEBUG_FD ]]; then
+    unset ZDRAW_UI_DEBUG_FD
+  fi
+  ZCODER_DEBUG_ZDRAW=0
   (( ZCODER_DEBUG_FD >= 0 )) && exec {ZCODER_DEBUG_FD}>&-
   ZCODER_DEBUG_FD=-1
   ZCODER_DEBUG_ACTIVE=0

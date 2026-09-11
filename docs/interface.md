@@ -125,16 +125,26 @@ remain local to the current view.
 ## Optional terminal modes
 
 `/terminal` (also in the command palette) shows synchronized-output detection,
-bracketed paste, and current terminal geometry. The default
-`ZCODER_SYNC_OUTPUT=auto` queries mode 2026 once on each UI entry. A positive
-reply enables synchronized refreshes; an unsupported or absent reply keeps
+bracketed paste, and current terminal geometry. With a recent zdraw build it also
+shows capability evidence and live window, pad and prepared-row counts. These
+queries are passive: opening the inspector enables no additional protocols.
+
+The default `ZCODER_SYNC_OUTPUT=auto` queries mode 2026 once on each UI entry.
+Recent zdraw builds own the query through the normal curses event queue. A reset
+reply enables native synchronized presentation; an already-set mode is left
+untouched. Older builds and stock curses retain the Zsh query and frame wrapper.
+An unsupported or absent reply keeps
 ordinary curses updates. Detection never blocks startup and stops accepting
 replies after one second. Late replies are still consumed as protocol input.
 Set `ZCODER_SYNC_OUTPUT=false` to disable the query and synchronization, or
 `true` to force synchronization on a terminal whose support you already know.
 Multiplexers use the same query; terminal names alone do not enable support.
 
-Each batch of changed windows, including a modal, gets one synchronized frame.
+Each batch of changed windows, including a modal, gets one synchronized frame
+when enabled. The native path stages the batch and calls `present` once, letting
+zdraw own marker cleanup. Native resume performs its own ordinary repaint, with
+synchronization continuing at the next presented frame. Forced synchronization
+retains the Zsh wrapper because native activation requires negotiated evidence.
 The frame ends before waiting for input or network activity. Terminal modes and
 the private output descriptor are released on exit and when entering the plain
 text copy view. Headless modes do not load this layer. This follows the
