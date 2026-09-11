@@ -19,6 +19,7 @@ External tools are used where they are the actual capability: `rg` for search,
 - **Local by default.** Use any Ollama model with tool-calling support.
 - **Useful on real projects.** Search, edit, patch, test, and iterate from one conversation.
 - **Steer work as it runs.** Send corrections at the next tool boundary or queue a follow-up for later.
+- **Run a command with `!`.** See its output in chat, then ask about it when you are ready. The agent waits for your next request.
 - **Bounded and reviewable.** File tools stay inside the workspace; shell commands ask first.
 - **Project-aware.** Hierarchical `AGENTS.md`, Agent Skills, and stdio MCP tools are built in.
 - **Warm on arrival.** The interactive TUI loads the model and stable project context while you type.
@@ -83,6 +84,7 @@ capabilities, and remote deployment.
 - [Getting started](docs/getting-started.md)
 - [Interface and sessions](docs/interface.md)
 - [Steering and queued follow-ups](docs/queued-input.md)
+- [User shell commands](docs/user-shell-commands.md)
 - [Remote-agent server](docs/remote.md)
 - [Agent Client Protocol](docs/acp.md)
 - [Safety and permissions](docs/safety.md)

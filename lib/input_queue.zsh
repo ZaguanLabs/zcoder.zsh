@@ -3,6 +3,7 @@
 typeset -g INPUT_QUEUE_TURN_ID='' INPUT_QUEUE_ERROR=''
 typeset -g REMOTE_INPUT_TURN_ID='' REMOTE_INPUT_SUPPORTED=false
 typeset -g INPUT_QUEUE_DRAFT_ID='' INPUT_QUEUE_DRAFT_KEY=''
+typeset -gi INPUT_QUEUE_MODEL_PENDING=0
 
 input_queue_has_steer() {
   emulate -L zsh
@@ -14,7 +15,10 @@ input_queue_has_steer() {
     for file in "$queue_dir/items/"*.json(N.on); do
       id="${${file:t:r}#*-}"
       [[ -f "$queue_dir/consumed/$id" ]] && continue
-      [[ "${mapfile[$file]}" == '{"turn_id":"'"$INPUT_QUEUE_TURN_ID"'",'*'","mode":"steer",'* ]] && return 0
+      [[ "${mapfile[$file]}" == '{"turn_id":"'"$INPUT_QUEUE_TURN_ID"'",'* ]] || continue
+      # A pending shell command is an ordering barrier for later requests.
+      [[ "${mapfile[$file]}" == *',"text":"!'* ]] && break
+      [[ "${mapfile[$file]}" == *'","mode":"steer",'* ]] && return 0
     done
     return 1
   } always { zsystem flock -u "$queue_lock"; }
@@ -79,6 +83,8 @@ input_queue_submit() {
   INPUT_QUEUE_ERROR=''
   [[ -n "$id" && ${#id} -le 64 && "$id" != *[^A-Za-z0-9_-]* ]] || { INPUT_QUEUE_ERROR='invalid message ID'; return 1; }
   [[ "$mode" == steer || "$mode" == follow_up ]] || { INPUT_QUEUE_ERROR='mode must be steer or follow_up'; return 1; }
+  # Shell commands never steer a model that is already working.
+  [[ "$body" == \!* ]] && mode=follow_up
   _http_byte_length "$body"; bytes=$REPLY
   (( bytes > 0 && bytes <= 65536 )) || { INPUT_QUEUE_ERROR='input must contain 1 to 65536 bytes'; return 1; }
   _input_queue_lock "$session" || return 1
@@ -118,9 +124,11 @@ input_queue_drain() {
   emulate -L zsh
   setopt extendedglob
   local mode="${1:-steer}" queue_dir='' queue_lock='' file='' id='' text='' message='' selected=''
-  local -i count=0 found=0 message_index=0
+  local -i count=0 found=0 message_index=0 shell_result=0
+  local interrupted=''
   local seq=''
   INPUT_QUEUE_ERROR=''
+  INPUT_QUEUE_MODEL_PENDING=0
   [[ -n "$INPUT_QUEUE_TURN_ID" ]] || return 1
   local JSON_SOURCE='' JSON_TOKEN_TYPE='' JSON_TOKEN_VALUE='' JSON_ERROR=''
   local -a JSON_CHARS=()
@@ -133,8 +141,9 @@ input_queue_drain() {
       [[ -f "$queue_dir/consumed/$id" ]] && continue
       json_parse_flat_object "${mapfile[$file]}" || { INPUT_QUEUE_ERROR='invalid queued input'; return 1; }
       [[ "$mode" == recovery || "${JSON_OBJECT[turn_id]}" == "$INPUT_QUEUE_TURN_ID" ]] || continue
-      [[ "$mode" == all || "$mode" == recovery || "${JSON_OBJECT[mode]}" == "$mode" ]] || continue
       text="${JSON_OBJECT[text]}"
+      [[ "$mode" == steer && "$text" == \!* ]] && break
+      [[ "$mode" == all || "$mode" == recovery || "${JSON_OBJECT[mode]}" == "$mode" ]] || continue
       selected='"input_id":"'"$id"'"'
       found=0
       message_index=0
@@ -143,23 +152,41 @@ input_queue_drain() {
         [[ "$message" == *,"$selected"'}' ]] && { found=1; break; }
       done
       if (( ! found )); then
-        skills_activate_explicit_from_text "$text" || true
-        agent_add_message user "$text"
+        if [[ "$text" == \!* ]]; then
+          # Publish a claim before releasing the queue lock for approvals and
+          # execution. A restart must never replay possible command effects.
+          interrupted=''
+          if [[ -f "$queue_dir/shell-$id.started" ]]; then
+            interrupted='Command execution was interrupted before its result was saved. It was not rerun; side effects may have occurred. Submit the command again explicitly if needed.'
+          else
+            _input_queue_write "$queue_dir/shell-$id.started" started || return 1
+          fi
+          zsystem flock -u "$queue_lock"; queue_lock=''
+          agent_emit user "$text"
+          agent_user_shell "$text" "$interrupted"
+          shell_result=$?
+          _input_queue_lock "$CURRENT_SESSION_ID" || return 1
+        else
+          skills_activate_explicit_from_text "$text" || true
+          agent_add_message user "$text"
+          agent_emit user "$text"
+        fi
         AGENT_MESSAGES[-1]="${AGENT_MESSAGES[-1]%\}},$selected}"
         message_index=${#AGENT_MESSAGES}
         state_note_user "$text"
-        agent_emit user "$text"
       fi
       state_save_session || { INPUT_QUEUE_ERROR='could not persist consumed input'; return 1; }
       if ! state_saved_message_matches "$CURRENT_SESSION_ID" "$message_index" "${AGENT_MESSAGES[message_index]}" "${#AGENT_MESSAGES}"; then
         INPUT_QUEUE_ERROR='queued input was not saved; delivery remains pending'; return 1
       fi
       _input_queue_write "$queue_dir/consumed/$id" consumed || { INPUT_QUEUE_ERROR='could not save input receipt'; return 1; }
+      [[ "$text" != \!* ]] && INPUT_QUEUE_MODEL_PENDING=1
+      (( shell_result == 130 )) && return 130
       (( count++ ))
       [[ "$mode" == all || "$mode" == recovery ]] && break
     done
     (( count > 0 ))
-  } always { zsystem flock -u "$queue_lock"; }
+  } always { [[ -z "$queue_lock" ]] || zsystem flock -u "$queue_lock"; }
 }
 
 # Returns 1 while accepted messages remain, otherwise closes admission
@@ -194,6 +221,7 @@ input_queue_ui_submit() {
   else INPUT_QUEUE_DRAFT_ID="$id"; INPUT_QUEUE_DRAFT_KEY="$key"
   fi
   [[ -n "$text" ]] || return 0
+  [[ "$text" == \!* ]] && mode=follow_up
   # Slash commands have control effects owned by the idle loop.
   [[ "$text" != /* ]] || { ui_append_message error 'Send slash commands after the active turn finishes.'; return 0; }
   if [[ "${REMOTE_MODE:-local}" == client ]]; then

@@ -226,8 +226,11 @@ input_queue_pty_tests() {
     assert_success 'Enter queues pasted multiline input during generation' $?
     assert_eq '' "${mapfile[$base.draft]:-}" 'acceptance clears the live editor'
     assert_not_contains "${mapfile[$base.request_1]:-}" 'Steering' 'queued text does not alter an in-flight model request'
+    zpty -w -n input-queue $'! print -r -- bang-evidence\r'
+    input_queue_wait "$base.pending" 'bang-evidence'
+    assert_success 'Enter queues a shell command during generation' $?
     zpty -w -n input-queue $'Next task\x07'
-    input_queue_wait "$base.pending" follow_up
+    input_queue_wait "$base.pending" 'Next task'
     assert_success 'Ctrl+G queues a follow-up while the response is still running' $?
     mapfile[$base.release_deliver]=1
     input_queue_wait "$base.result" 0:3:
@@ -235,7 +238,10 @@ input_queue_pty_tests() {
     assert_contains "${mapfile[$base.request_2]:-}" 'file evidence' 'the next request includes completed tool evidence'
     assert_contains "${mapfile[$base.request_2]:-}" 'Steering 世界\nline two' 'the next request receives the exact steering text'
     assert_not_contains "${mapfile[$base.request_2]:-}" 'Next task' 'the PTY keeps follow-ups out of the active task'
+    assert_not_contains "${mapfile[$base.request_2]:-}" 'bang-evidence' 'shell output waits until the active task finishes'
     assert_contains "${mapfile[$base.request_3]:-}" 'Next task' 'the follow-up is submitted after task completion'
+    assert_contains "${mapfile[$base.request_3]:-}" 'bang-evidence' 'the subsequent request sees queued shell output'
+    assert_contains "${mapfile[$base.shell_visible]:-}" '1:Exit code: 0' 'user shell output appears in an expanded transcript block'
     input_queue_wait "$base.started" cancel:
     zpty -w -n input-queue $'Keep this pending\rUnsent draft\e'
     input_queue_wait "$base.cancelled" '130:Unsent draft'

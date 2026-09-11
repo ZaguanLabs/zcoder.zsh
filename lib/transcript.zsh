@@ -124,6 +124,14 @@ transcript_tool_event() {
     UI_TOOL_SUMMARIES[index]="$REPLY"
     UI_TOOL_ARGS[index]="$args"
     UI_TOOL_STATES[index]=pending
+    # User shell output opens immediately, including on remote clients and
+    # when the transcript is later restored from a saved session.
+    if [[ "$name" == run_command ]]; then
+      local -A JSON_OBJECT=()
+      if json_parse_flat_object "$args" && [[ "${JSON_OBJECT[user_initiated]:-}" == true ]]; then
+        UI_BLOCK_OPEN[index]=1
+      fi
+    fi
     return 0
   fi
   [[ -n "$id" ]] && index=${UI_IDS[(Ie)$id]}

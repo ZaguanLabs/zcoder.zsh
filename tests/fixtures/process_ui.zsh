@@ -61,5 +61,9 @@ ZCODER_PROFILE=coding
 ZCODER_COMMAND_POLICY=deny; fixture_processes=0
 tool_dispatch run_command '{"command":"print denied"}'
 mapfile[${fixture_base}.denied]="${TOOL_RESULT_OK}:${fixture_processes}"
+ZCODER_COMMAND_POLICY=allow
+agent_user_turn "! print bang-started > ${(q)fixture_base}.bang_started; sleep 30"
+mapfile[${fixture_base}.bang_cancelled]="$?:${fixture_requests}:${UI_ACTIVITY_DEPTH}:${TOOL_PROCESS_NAME}:${UI_CURRENT_TOOL}"
+mapfile[${fixture_base}.bang_history]="${(F)AGENT_MESSAGES}"
 ui_end
 mapfile[${fixture_base}.done]=1

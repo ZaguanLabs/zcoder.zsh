@@ -6,6 +6,7 @@ Starting in 0.12.0, you can send another message while zcoder works.
 | --- | --- |
 | Enter during an active turn | After the current response and its complete tool batch, before the next model request |
 | Ctrl+G during an active turn | After the current task finishes |
+| `! command` with Enter or Ctrl+G | Executes after the current task finishes; output enters context without a model response |
 | Shift+Enter or Alt+Enter | Inserts a newline without sending |
 
 The interface confirms acceptance and clears the editor. The message appears
@@ -14,6 +15,11 @@ response, cancel a command, or skip an outstanding tool call. A completed
 response without tools can also receive steering before the agent returns.
 Input arriving during goal verification is held until that verification returns;
 pending steering defers acceptance of the candidate completion.
+
+A queued `!` command also holds later requests behind it, including messages
+submitted with Enter. Those requests can then use its output. Shell commands
+follow the same approval policy as `run_command`; see
+[user shell commands](user-shell-commands.md).
 
 Slash commands remain idle controls. Standalone model loading, compaction,
 consultations, and other activity without an active conversation turn retain
@@ -37,6 +43,10 @@ Listing shows each pending message's ID, delivery mode, and text. Resume
 processes pending messages in arrival order. Drop discards an unconsumed
 message; it cannot undo a message already added to history or any tool effects.
 There is no automatic retry of a cancelled model request.
+
+Shell execution is claimed before starting the command. If the process stops
+before its result is saved, resuming reports the interruption and possible
+side effects without repeating the command. Submit it again explicitly to retry.
 
 ## Remote HTTP API
 

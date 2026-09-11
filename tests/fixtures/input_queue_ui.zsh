@@ -3,12 +3,12 @@ emulate -R zsh
 setopt extendedglob no_monitor no_notify
 zmodload zsh/curses zsh/terminfo zsh/datetime zsh/mapfile zsh/files zsh/system zsh/zselect || exit 1
 typeset -g fixture_root="$1" fixture_base="$2"
-for fixture_lib in util json mcp http instructions skills transcript tools compact goal agent state input_queue input terminal ui; do
+for fixture_lib in util json mcp http instructions skills transcript tools process compact goal agent state input_queue input terminal ui; do
   source "$fixture_root/lib/${fixture_lib}.zsh"
 done
 typeset -g ZCODER_NAME=zcoder ZCODER_VERSION=test ZCODER_MODEL=fixture ZCODER_PROFILE=coding REMOTE_MODE=local
 typeset -g ZCODER_WORKSPACE="${fixture_base:h}" ZCODER_SESSIONS_DIR="$fixture_base.sessions"
-typeset -g ZCODER_TOOL_EXPOSURE=full ZCODER_COMMAND_POLICY=deny ZCODER_STREAM=false
+typeset -g ZCODER_TOOL_EXPOSURE=full ZCODER_COMMAND_POLICY=allow ZCODER_STREAM=false
 typeset -gi AGENT_REQUIRE_FINISH_TOOL=0 fixture_request=0
 typeset -g fixture_phase=deliver
 agent_prepare_payload() { agent_history_payload_json; REPLY='{"messages":['"$REPLY"']}'; }
@@ -47,6 +47,11 @@ agent_user_turn 'Initial request'
 mapfile[$fixture_base.result]="$?:$fixture_request:$INPUT_BUF"
 agent_history_payload_json
 mapfile[$fixture_base.history]="$REPLY"
+for (( fixture_i=1; fixture_i<=${#UI_ROLES}; fixture_i++ )); do
+  if [[ "${UI_TOOL_ARGS[fixture_i]}" == *bang-evidence* ]]; then
+    mapfile[$fixture_base.shell_visible]="${UI_BLOCK_OPEN[fixture_i]}:${UI_TOOL_RESULTS[fixture_i]}"
+  fi
+done
 state_new_session
 fixture_phase=cancel
 agent_user_turn 'Cancelled request'

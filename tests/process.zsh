@@ -99,6 +99,12 @@ process_pty_wait "$process_pty_base.sysadmin_denied" '0:0'
 assert_success "denied sysadmin commands never start a worker" $?
 process_pty_wait "$process_pty_base.denied" '0:0'
 assert_success "the deny policy never starts a process" $?
+process_pty_wait "$process_pty_base.bang_started" bang-started
+assert_success 'an idle bang command starts through the responsive process path' $?
+zpty -w -n process-ui $'\e'
+process_pty_wait "$process_pty_base.bang_cancelled" '130:1:0::0'
+assert_success 'Escape cancels a user shell command without making a model request' $?
+assert_contains "${mapfile[$process_pty_base.bang_history]:-}" 'not rolled back' 'cancelled user shell output remains available as context'
 process_pty_wait "$process_pty_base.done" 1
 assert_success "tool cancellation leaves curses and process state clean" $?
 process_child="${mapfile[$process_pty_base.child]:-}"
