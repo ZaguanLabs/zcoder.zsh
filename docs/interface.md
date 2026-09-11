@@ -15,8 +15,24 @@ direct-color terminal description. `COLORTERM=truecolor` alone does not enable
 it; zcoder never rewrites `TERM`. The 256-color palette also provides the new
 appearance on ordinary `xterm-256color` sessions. `/terminal` reports the chosen
 palette, border mode, batching support, row-clipping path, RGB state and
-color-pair usage. Native clipping retains combining marks with their base
-character, but does not promise whole-grapheme clipping for joined emoji.
+color-pair usage. General row clipping retains combining marks with their base
+character. Markdown has an additional whole-grapheme path described below.
+
+With locally built zmdown and compatible zdraw modules, assistant replies render
+tables, nested lists, task lists, quotations, links, headings and inline styles.
+Fenced code retains syntax highlighting. Copying a reply or transcript preserves
+the original Markdown. Streaming and terminal resizing lay it out again at the
+available width.
+
+This optional renderer keeps grapheme units together using the system's summed
+character widths. Terminal emoji shaping can still differ from those logical
+columns. Text that exceeds native cell storage or fails layout checks falls back
+to readable Unicode escapes for that message; the saved content is unchanged.
+`/terminal` shows the Markdown backend and any fallbacks.
+
+Missing or incompatible modules use the existing Zsh renderer automatically.
+`ZCODER_MARKDOWN=zsh` forces that renderer; `ZCODER_SPANS=false` also disables
+native Markdown. See [the build instructions](development.md#building-optional-markdown-support).
 
 ## Layout
 

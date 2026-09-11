@@ -174,6 +174,37 @@ hit-testing (`textpos`) remain available for experiments. Prepared rows need
 measurement against our existing transcript cache before adoption, and
 `textpos` returns byte offsets rather than the editor's character indices.
 
+## Building optional Markdown support
+
+`vendor/zmdown` is pinned at `8bb1390`; zdraw is pinned at `9c599d8`.
+To enable structured Markdown locally, build both modules against the configured
+source tree matching the installed shell:
+
+```sh
+git submodule update --init --recursive
+ZSH_BUILD_ROOT=/path/to/matching/configured/zsh make curses markdown
+make compile
+make test
+```
+
+`make markdown` builds only zmdown and writes the same local ABI/host stamp used
+by the curses loader. Neither module is installed system-wide. Normal startup,
+headless operation and `make compile` require no C toolchain. Rebuild after a
+dependency or shell update; copied farm binaries are not enabled on other hosts.
+An already loaded zmdown is retained and its output contract is checked.
+
+Native Markdown requires both modules, UTF-8 and zdraw's grapheme-safe text
+policy. zmdown supplies `wcwidth-sum` / `first-base` structured rows; the app
+preflights their complete text and cell counts before publishing a message.
+zdraw then clips those rows with `unicode-17.0.0-egc-wcwidth-sum-attach-zero`.
+Syntax colors remain application-owned. Resize and streaming updates regenerate
+rows from the original Markdown; cached rows retain their drawing policy.
+
+`tests/markdown_native.zsh` always tests optional loading and capability fallback.
+When both local builds are available it also runs a real PTY, comparing retained
+cells across widths and checking streaming, copying, and Unicode rejection.
+The existing Markdown tests continue to cover the dependency-free renderer.
+
 ## Performance measurements
 
 Run the opt-in native microbenchmarks with:

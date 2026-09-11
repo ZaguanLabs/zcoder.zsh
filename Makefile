@@ -1,4 +1,4 @@
-.PHONY: check test test-visual benchmark model-eval compile clean curses
+.PHONY: check test test-visual benchmark model-eval compile clean curses markdown
 
 check:
 	zsh -fc 'for f in zcoder.zsh chat.sh lib/*.zsh scripts/*.zsh tests/*.zsh tests/fixtures/*.zsh; do zsh -n "$$f" || exit $$?; done'
@@ -6,6 +6,9 @@ check:
 # Requires an initialized submodule and ZSH_BUILD_ROOT for this host's Zsh ABI.
 curses: check
 	zsh -df scripts/build-curses.zsh
+
+markdown: check
+	zsh -df scripts/build-markdown.zsh
 
 test: check
 	zsh tests/run.zsh

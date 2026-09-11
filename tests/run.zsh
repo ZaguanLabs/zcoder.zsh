@@ -3193,6 +3193,8 @@ source "${TEST_DIR}/native_input.zsh"
 source "${TEST_DIR}/handoff.zsh"
 source "${TEST_DIR}/presentation.zsh"
 source "${TEST_DIR}/curses.zsh"
+zsh -df "${TEST_DIR}/markdown_native.zsh"
+assert_success "optional native Markdown loading and terminal rendering pass" $?
 source "${TEST_DIR}/resize.zsh"
 source "${TEST_DIR}/ui_preferences.zsh"
 source "${TEST_DIR}/drawing.zsh"

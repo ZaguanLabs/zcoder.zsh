@@ -3,6 +3,7 @@
 source "${${(%):-%x}:A:h}/drawing.zsh"
 source "${${(%):-%x}:A:h}/ui_preferences.zsh"
 source "${${(%):-%x}:A:h}/markdown.zsh"
+source "${${(%):-%x}:A:h}/markdown_native.zsh"
 
 typeset -gi UI_ACTIVE=0 UI_ACTIVITY_DEPTH=0
 # 0: ordinary lifecycle; 1: retained zdraw session; 2: ended fallback session.
@@ -36,7 +37,7 @@ typeset -gi UI_RENDER_COUNT=0
 typeset -gi UI_REVEAL_SELECTED=0
 typeset -ga UI_MESSAGE_STARTS=() UI_MESSAGE_SEGMENT_STARTS=()
 typeset -ga UI_ASSISTANT_GROUPS=()
-typeset -ga UI_LINES=() UI_ATTRS=()
+typeset -ga UI_LINES=() UI_ATTRS=() UI_LINE_NATIVE=()
 typeset -ga UI_LINE_SEGMENT_STARTS=() UI_LINE_SEGMENT_COUNTS=()
 typeset -ga UI_SEGMENT_TEXTS=() UI_SEGMENT_ATTRS=()
 typeset -gA UI_WINDOW_KEYS=() UI_DIRTY_WINDOWS=() UI_PENDING_WINDOWS=()
@@ -292,6 +293,7 @@ ui_init() {
   ui_preferences_load
   ui_detect_geometry
   ui_theme_init
+  ui_markdown_init
   UI_ACTIVE=1
   terminal_start
   input_detect_boundaries
@@ -676,6 +678,7 @@ _ui_copy_transcript() {
 }
 
 _ui_add_line() {
+  UI_LINE_NATIVE[${#UI_LINES}+1]=0
   UI_LINES+=("$1")
   UI_ATTRS+=("${2:-white/black}")
   UI_LINE_SEGMENT_STARTS+=(0)
@@ -1034,7 +1037,7 @@ _ui_render_one_message() {
 
 ui_render_messages() {
   local -i width=$1 count=${#UI_ROLES} i
-  UI_LINES=(); UI_ATTRS=()
+  UI_LINES=(); UI_ATTRS=(); UI_LINE_NATIVE=()
   UI_LINE_SEGMENT_STARTS=(); UI_LINE_SEGMENT_COUNTS=()
   UI_SEGMENT_TEXTS=(); UI_SEGMENT_ATTRS=()
   UI_MESSAGE_STARTS=(); UI_MESSAGE_SEGMENT_STARTS=()
@@ -1054,7 +1057,7 @@ ui_render_messages() {
   for (( i=1; i<=count; i++ )); do
     _ui_render_one_message "$i" "$width"
   done
-  UI_RENDER_CACHE_KEY="${UI_TRANSCRIPT_GENERATION}:${width}:${ZCODER_MODEL}"
+  UI_RENDER_CACHE_KEY="${UI_TRANSCRIPT_GENERATION}:${width}:${ZCODER_MODEL}:${UI_MARKDOWN_BACKEND}"
   UI_RENDER_COUNT=$count
 }
 
@@ -1063,7 +1066,7 @@ _ui_paint_chat() {
   local -i defer_refresh="${1:-0}"
   local -i inner_w=$(( SCREEN_W - SIDE_W - 2 )) inner_h=$(( SCREEN_H - TOP_H - INPUT_H - FOOT_H - 2 ))
   local -i total row idx max_scroll segment_start segment_count segment_index
-  local attr="" padding="${(pl:inner_w:: :)}" cache_key="${UI_TRANSCRIPT_GENERATION}:${inner_w}:${ZCODER_MODEL}"
+  local attr="" padding="${(pl:inner_w:: :)}" cache_key="${UI_TRANSCRIPT_GENERATION}:${inner_w}:${ZCODER_MODEL}:${UI_MARKDOWN_BACKEND}"
   local -a row_spans=()
   local -i message_count=${#UI_ROLES} render_index
   if [[ "$cache_key" != "$UI_RENDER_CACHE_KEY" ]] || \
@@ -1074,6 +1077,7 @@ _ui_paint_chat() {
       local -i keep_lines=$(( UI_MESSAGE_STARTS[UI_RENDER_DIRTY_FROM] - 1 ))
       local -i keep_segments=$(( UI_MESSAGE_SEGMENT_STARTS[UI_RENDER_DIRTY_FROM] - 1 ))
       UI_LINES=("${(@)UI_LINES[1,keep_lines]}"); UI_ATTRS=("${(@)UI_ATTRS[1,keep_lines]}")
+      UI_LINE_NATIVE=("${(@)UI_LINE_NATIVE[1,keep_lines]}")
       UI_LINE_SEGMENT_STARTS=("${(@)UI_LINE_SEGMENT_STARTS[1,keep_lines]}")
       UI_LINE_SEGMENT_COUNTS=("${(@)UI_LINE_SEGMENT_COUNTS[1,keep_lines]}")
       UI_SEGMENT_TEXTS=("${(@)UI_SEGMENT_TEXTS[1,keep_segments]}")
@@ -1129,7 +1133,11 @@ _ui_paint_chat() {
       fi
       row_spans+=("$attr" "${UI_LINES[idx]}$padding")
     fi
-    (( ${#row_spans} )) && ui_draw_row chat_win "$row" 1 "$inner_w" "${row_spans[@]}"
+    if (( ${UI_LINE_NATIVE[idx]:-0} )); then
+      ui_markdown_draw_row chat_win "$row" 1 "$inner_w" "${row_spans[@]}"
+    else
+      (( ${#row_spans} )) && ui_draw_row chat_win "$row" 1 "$inner_w" "${row_spans[@]}"
+    fi
   done
   (( UI_SCROLL > 0 )) && { zcoder_curses move chat_win 0 $(( inner_w - 12 )); ui_attr chat_win dim yellow/black; zcoder_curses string chat_win " [PgUp/PgDn] "; }
   (( defer_refresh )) || terminal_refresh chat_win

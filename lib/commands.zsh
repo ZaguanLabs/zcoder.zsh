@@ -437,6 +437,8 @@ _ui_terminal_draw() {
     "Synchronized output: ${TERMINAL_SYNC_STATE}" "Policy: ${TERMINAL_SYNC_POLICY}"
     "Frame presentation: ${frame_state}" "Reply decoder: ${query_state}"
     "Prompt editing: ${editing_state}"
+    "Markdown: ${UI_MARKDOWN_BACKEND} · Fallbacks: ${UI_MARKDOWN_FALLBACKS}"
+    "Markdown status: ${UI_MARKDOWN_REASON}"
     "Bracketed paste: ${paste_state}")
   local -A terminal_caps=() terminal_resources=()
   local capability=''

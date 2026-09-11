@@ -1,3 +1,6 @@
 [submodule "vendor/zdraw"]
 	path = vendor/zdraw
 	url = https://github.com/ZaguanLabs/zdraw
+[submodule "vendor/zmdown"]
+	path = vendor/zmdown
+	url = https://github.com/ZaguanLabs/zmdown.git

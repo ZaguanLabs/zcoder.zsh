@@ -99,7 +99,7 @@ _ui_add_markdown_inline() {
   return 0
 }
 
-_ui_add_markdown() {
+_ui_add_markdown_fallback() {
   emulate -L zsh
   setopt extendedglob
   local content="$1" attr="${3:-white/black}" line='' trimmed='' fence='' marker='' language=plain info=''
