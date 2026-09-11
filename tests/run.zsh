@@ -3144,6 +3144,7 @@ zcoder_curses() {
   return 0
 }
 
+source "${TEST_DIR}/markdown.zsh"
 source "${TEST_DIR}/transcript.zsh"
 source "${TEST_DIR}/overlays.zsh"
 source "${TEST_DIR}/slash.zsh"

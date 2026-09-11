@@ -2,6 +2,7 @@
 (( ${+functions[zcoder_curses]} )) || source "${${(%):-%x}:A:h}/curses.zsh"
 source "${${(%):-%x}:A:h}/drawing.zsh"
 source "${${(%):-%x}:A:h}/ui_preferences.zsh"
+source "${${(%):-%x}:A:h}/markdown.zsh"
 
 typeset -gi UI_ACTIVE=0 UI_ACTIVITY_DEPTH=0
 # 0: ordinary lifecycle; 1: retained zdraw session; 2: ended fallback session.
@@ -1020,7 +1021,13 @@ _ui_render_one_message() {
   elif [[ "$role" == tool ]]; then
     _ui_add_tool_content "$content" "$width"
   elif [[ -n "$content" ]]; then
-    _ui_add_wrapped "$content" "$width" "  " "$attr"
+    case "$role" in
+      assistant|claude|codex|agy|opencode|*_worker)
+        zcoder_terminal_safe "$content"
+        _ui_add_markdown "$REPLY" "$width" "$attr"
+        ;;
+      *) _ui_add_wrapped "$content" "$width" "  " "$attr" ;;
+    esac
   fi
   _ui_add_line "" default/default
 }
