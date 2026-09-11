@@ -322,6 +322,7 @@ ui_show_help() {
     navigation heading 'Navigation and copying'
     sidebar bullet 'Ctrl+B: Hide or show the sidebar.'
     focus bullet 'Tab: Move focus between the prompt, visible session sidebar, and transcript.'
+    panels bullet 'Alt+1: Focus [1] Sessions. Alt+2: Focus [2] Prompt. Bare 1/2 also work outside the prompt.'
     saved_jobs bullet 'Up/Down in the sidebar: Resume another saved job.'
     copy bullet 'Ctrl+Y or /copy: Open a stable plain-text view for terminal selection and copying.'
     scroll bullet 'PgUp/PgDn: Scroll.'

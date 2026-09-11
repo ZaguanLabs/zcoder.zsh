@@ -272,6 +272,34 @@ ui_toggle_sidebar() {
   ui_refresh_all
 }
 
+ui_focus_panel() {
+  emulate -L zsh
+  (( UI_ACTIVE && ! ${UI_MODAL_ACTIVE:-0} )) || return 0
+  case $1 in
+    1|sessions)
+      if (( UI_ACTIVITY_DEPTH > 0 )); then
+        ui_status_notice warning 'Sessions cannot be changed while work is running.'
+        ui_draw_header
+        return 0
+      fi
+      if (( SCREEN_W < 88 )); then
+        ui_status_notice warning 'Sessions needs at least 88 terminal columns.'
+        ui_draw_header
+        return 0
+      fi
+      UI_FOCUS=sidebar
+      if (( UI_SIDEBAR_HIDDEN || SIDE_W == 0 )); then
+        UI_SIDEBAR_HIDDEN=0
+        ui_setup_windows
+        ui_preferences_save || ui_status_notice warning 'Could not save the sidebar preference.'
+      fi
+      ;;
+    2|prompt) UI_FOCUS=input ;;
+    *) return 1 ;;
+  esac
+  ui_refresh_all
+}
+
 ui_detect_geometry() {
   emulate -L zsh
   # An enabled discovery parameter distinguishes compiled support from a
@@ -422,7 +450,7 @@ _ui_paint_header() {
   local -i badge_x=$(( SCREEN_W - ${(m)#badge} - 2 ))
   local -i identity_limit=$(( badge_x - 3 ))
   local -i section=1
-  local -a identities=("⚡ ${ZCODER_NAME} v${ZCODER_VERSION} │ " "$ZCODER_MODEL" " @ ${host} │ ${workspace}")
+  local -a identities=("⚡ ${ZCODER_NAME} v${ZCODER_VERSION} │ " "$ZCODER_MODEL" " @ ${host}")
   local -a identity_attrs=('bold cyan/black' 'bold yellow/black' 'dim white/black')
   zcoder_curses clear top_win
   ui_attr top_win -dim -bold border/surface
@@ -441,28 +469,59 @@ _ui_paint_header() {
     ui_attr top_win -bold -dim $=UI_STATUS_ATTR
     zcoder_curses string top_win "$badge"
   fi
-  # The lower border keeps workspace context visible without taking a chat row
-  # or competing with the model identity and foreground activity above it.
-  local git_label='' git_attr='bold green/black'
-  local -i git_limit=$(( SCREEN_W - 6 ))
-  if (( git_limit > 0 )); then
-    [[ "$UI_GIT_DISPLAY" == 'No Git' || "$UI_GIT_DISPLAY" == 'Git: unavailable' ]] && git_attr='dim white/black'
-    [[ "$UI_GIT_DISPLAY" == 'Git: detached '* ]] && git_attr='bold yellow/black'
-    zcoder_terminal_safe "$UI_GIT_DISPLAY"; git_label="${REPLY//$'\n'/ }"
-    if (( ${(m)#git_label} > git_limit )); then
-      zcoder_clip "$git_label" $(( git_limit - 1 )); git_label="${REPLY}…"
-    fi
-    zcoder_curses move top_win 2 2
-    ui_attr top_win -bold -dim $=git_attr
-    zcoder_curses string top_win " ${git_label} "
+  # Workspace and branch share the title, independent of the model/status row.
+  local branch='' title_part=''
+  local -i title_limit=$(( SCREEN_W - 6 ))
+  local -a title_parts=("$workspace") title_attrs=('bold cyan/black')
+  if [[ $UI_GIT_DISPLAY == 'Git: '?* && $UI_GIT_DISPLAY != 'Git: unavailable' &&
+        $UI_GIT_DISPLAY != 'Git: detached '* ]]; then
+    branch=${UI_GIT_DISPLAY#Git: }
+    title_parts+=('^' "$branch")
+    title_attrs+=('bold red/black' 'bold yellow/black')
+  fi
+  if (( title_limit > 0 )); then
+    zcoder_curses move top_win 0 2
+    ui_attr top_win -bold -dim cyan/black
+    zcoder_curses string top_win ' '
+    section=1
+    for title_part in "${title_parts[@]}"; do
+      (( title_limit > 0 )) || break
+      zcoder_terminal_safe "$title_part"; title_part="${REPLY//$'\n'/ }"
+      if (( ${(m)#title_part} > title_limit )); then
+        zcoder_clip "$title_part" $(( title_limit - 1 )); title_part="${REPLY}…"
+      fi
+      ui_attr top_win -bold -dim $=title_attrs[section]
+      zcoder_curses string top_win "$title_part"
+      (( title_limit -= ${(m)#title_part}, section++ ))
+    done
+    zcoder_curses string top_win ' '
   fi
   (( defer_refresh )) || terminal_refresh top_win
+}
+
+_ui_panel_frame() {
+  local window=$1 focus=$2 title=$3 width=$4 REPLY
+  if [[ $UI_FOCUS == "$focus" ]]; then
+    ui_attr "$window" -reverse -dim bold accent/surface
+  else
+    ui_attr "$window" -reverse -bold dim border/surface
+  fi
+  ui_border "$window"
+  zcoder_curses move "$window" 0 2
+  if [[ $UI_FOCUS == "$focus" ]]; then
+    ui_attr "$window" -dim reverse bold accent/surface
+  else
+    ui_attr "$window" -reverse -dim bold muted/surface
+  fi
+  zcoder_clip "$title" "$width"
+  zcoder_curses string "$window" "$REPLY"
+  ui_attr "$window" -reverse -dim -bold default/default
 }
 
 _ui_paint_sidebar() {
   (( UI_ACTIVE && SIDE_W > 0 )) || return 0
   local -i defer_refresh="${1:-0}"
-  local root="${ZCODER_WORKSPACE:t}" policy="$ZCODER_COMMAND_POLICY" divider="" display=""
+  local policy="$ZCODER_COMMAND_POLICY" divider="" display=""
   local session_id="" title="" skill_name=""
   local -a names=(list_files read_file read_file_range)
   local -i inner_h=$(( SCREEN_H - TOP_H - INPUT_H - FOOT_H - 2 )) inner_w=$(( SIDE_W - 2 ))
@@ -480,7 +539,7 @@ _ui_paint_sidebar() {
   (( ${#SKILL_ACTIVE_NAMES} > 0 )) && names+=(read_skill_resource)
   names+=(finish)
 
-  bottom_needed=$(( ${#names} + 7 ))
+  bottom_needed=$(( ${#names} + 5 ))
   divider_row=$(( inner_h - bottom_needed + 1 ))
   (( divider_row < 2 )) && divider_row=2
   session_rows=$(( divider_row - 1 ))
@@ -491,11 +550,7 @@ _ui_paint_sidebar() {
   fi
 
   zcoder_curses clear side_win
-  [[ "$UI_FOCUS" == sidebar ]] && ui_attr side_win -dim bold accent/surface || ui_attr side_win -dim -bold border/surface
-  ui_border side_win
-  zcoder_curses move side_win 0 2
-  ui_attr side_win bold cyan/black
-  zcoder_curses string side_win " Sessions (${#SESSION_IDS}) "
+  _ui_panel_frame side_win sidebar " [1] Sessions (${#SESSION_IDS}) " "$(( SIDE_W - 4 ))"
 
   row=1
   for (( i=session_start; i<=${#SESSION_IDS} && row<=session_rows; i++ )); do
@@ -521,10 +576,6 @@ _ui_paint_sidebar() {
     zcoder_curses string side_win "$divider"
   fi
   row=$(( divider_row + 1 ))
-  if (( row <= inner_h )); then zcoder_curses move side_win $row 2; ui_attr side_win bold white/black; zcoder_curses string side_win "Project"; fi
-  (( row++ ))
-  if (( row <= inner_h )); then zcoder_curses move side_win $row 2; ui_attr side_win green/black; zcoder_clip "$root" $(( inner_w - 1 )); zcoder_curses string side_win "$REPLY"; fi
-  (( row++ ))
   if (( row <= inner_h )); then zcoder_curses move side_win $row 2; ui_attr side_win dim cyan/black; zcoder_curses string side_win "${ZCODER_PROFILE} · Guides: ${#INSTRUCTION_SOURCES}"; fi
   (( row++ ))
   if (( row <= inner_h )); then zcoder_curses move side_win $row 2; ui_attr side_win bold white/black; zcoder_curses string side_win "Available tools"; fi
@@ -1147,24 +1198,20 @@ _ui_paint_input() {
   (( UI_ACTIVE )) || return 0
   local -i defer_refresh="${1:-0}"
   local -i max_rows=$(( INPUT_H - UI_SLASH_ROWS - 2 )) row visual_row cursor_y cursor_x total
-  local visible="" marker="" title=" Prompt (Enter sends · Shift-Enter newline) "
+  local visible="" marker="" title=" [2] Prompt (Enter sends · Shift-Enter newline) "
   ui_input_width
   input_layout "$REPLY" "$max_rows"
   if (( UI_ACTIVITY_DEPTH > 0 )); then
-    title=" Draft (send after activity finishes) "
-    [[ -n "${INPUT_QUEUE_TURN_ID:-}${REMOTE_INPUT_TURN_ID:-}" ]] && title=" Prompt (Enter: steer · Ctrl+G: follow-up) "
+    title=" [2] Prompt (draft · send after activity finishes) "
+    [[ -n "${INPUT_QUEUE_TURN_ID:-}${REMOTE_INPUT_TURN_ID:-}" ]] && title=" [2] Prompt (Enter: steer · Ctrl+G: follow-up) "
   fi
   total=${#INPUT_VISUAL_LINES}
   zcoder_curses clear input_win
-  [[ "$UI_FOCUS" == input ]] && ui_attr input_win -dim bold accent/surface || ui_attr input_win -dim -bold border/surface
-  ui_border input_win
   if (( total > INPUT_VISIBLE_ROWS && UI_ACTIVITY_DEPTH == 0 )); then
-    title=" Prompt (Enter sends · Shift-Enter newline · ${INPUT_VIEW_TOP}-$(( INPUT_VIEW_TOP + INPUT_VISIBLE_ROWS - 1 ))/${total}) "
+    title=" [2] Prompt (Enter sends · Shift-Enter newline · ${INPUT_VIEW_TOP}-$(( INPUT_VIEW_TOP + INPUT_VISIBLE_ROWS - 1 ))/${total}) "
   fi
-  (( UI_SLASH_ROWS > 0 )) && title=" Prompt (slash commands) "
-  zcoder_curses move input_win 0 2
-  ui_attr input_win bold white/black
-  zcoder_clip "$title" $(( SCREEN_W - 4 )); zcoder_curses string input_win "$REPLY"
+  (( UI_SLASH_ROWS > 0 )) && title=" [2] Prompt (slash commands) "
+  _ui_panel_frame input_win input "$title" "$(( SCREEN_W - 4 ))"
   for (( row=1; row<=INPUT_VISIBLE_ROWS; row++ )); do
     visual_row=$(( INPUT_VIEW_TOP + row - 1 ))
     visible="${INPUT_VISUAL_LINES[visual_row]}"
@@ -1209,6 +1256,7 @@ _ui_paint_footer() {
   local text=" ^P Commands  ^B Sidebar  Enter Send  S/M-Enter Newline  ^Q Quit  Tab Focus  ^Y Copy  Esc Stop  ^O Model  ^R Reason  PgUp/Dn Scroll"
   [[ "$UI_FOCUS" == chat ]] && text=" ^P Commands  ^B Sidebar  ↑/↓ Select  Enter/Space Fold  ^R Reasoning  Home/End First/Last  PgUp/Dn Scroll  Tab Prompt  ^Y Copy"
   (( UI_ACTIVITY_DEPTH > 0 )) && text=" Esc Stop  ^B Sidebar  Tab Prompt/Transcript  ↑/↓ Navigate  Enter Fold in Transcript  ^R Reasoning  PgUp/Dn Scroll"
+  text=" Alt+1 Sessions  Alt+2 Prompt $text"
   zcoder_clip "$text" "$SCREEN_W"; text="$REPLY"
   zcoder_curses clear foot_win; ui_attr foot_win reverse dim white/black
   zcoder_pad "$text" "$SCREEN_W"; zcoder_curses move foot_win 0 0; zcoder_curses string foot_win "$REPLY"
@@ -1282,10 +1330,12 @@ ui_activity_input() {
   fi
   if [[ "$INPUT_TERM_STATE" == normal && "$ch" == $'\e' ]]; then UI_ACTIVITY_ESCAPE_AT=$EPOCHREALTIME; fi
   if input_decode_terminal_event "$ch" "$key"; then
-    if [[ "$INPUT_EVENT_ACTION" == newline ]]; then input_insert $'\n'; ui_input_changed
+    if [[ "$INPUT_EVENT_ACTION" == focus_sessions || "$INPUT_EVENT_ACTION" == focus_prompt ]]; then ui_focus_panel "${INPUT_EVENT_ACTION#focus_}"
+    elif [[ "$INPUT_EVENT_ACTION" == newline ]]; then input_insert $'\n'; ui_input_changed
     elif [[ "$INPUT_EVENT_ACTION" == paste && -n "$INPUT_EVENT_TEXT" ]]; then input_insert "$INPUT_EVENT_TEXT"; ui_input_changed
     elif [[ "$INPUT_EVENT_ACTION" == paste_rejected ]]; then ui_status_notice warning "$INPUT_EVENT_TEXT"
     fi
+  elif [[ $UI_FOCUS != input && -z $key && $ch == (1|2) ]]; then ui_focus_panel "$ch"
   elif [[ "$ch" == $'\x02' ]]; then ui_toggle_sidebar
   elif [[ "$UI_FOCUS" == input && -n "${INPUT_QUEUE_TURN_ID:-}${REMOTE_INPUT_TURN_ID:-}" &&
           ( "$ch" == $'\r' || "$ch" == $'\n' || "$key" == ENTER || "$key" == PADENTER || "$ch" == $'\x07' ) ]] && (( $+functions[input_queue_ui_submit] )); then

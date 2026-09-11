@@ -3172,13 +3172,15 @@ ui_draw_sidebar
 sidebar_calls="${(j:\n:)MOCK_ZCURSES_CALLS}"
 assert_contains "$sidebar_calls" "Sessions (2)" "sidebar renders the resumable session log"
 assert_contains "$sidebar_calls" "Current job" "sidebar highlights the active saved job"
-assert_contains "$sidebar_calls" "───────────────────────" "project details are separated from sessions by a divider"
-session_call_index=0; project_call_index=0
+assert_contains "$sidebar_calls" "───────────────────────" "tool policy is separated from sessions by a divider"
+assert_not_contains "$sidebar_calls" 'string side_win Project' 'sidebar omits the duplicate project heading'
+assert_not_contains "$sidebar_calls" "string side_win ${ZCODER_WORKSPACE:t}" 'sidebar omits the duplicate workspace name'
+session_call_index=0; policy_call_index=0
 for (( render_index=1; render_index<=${#MOCK_ZCURSES_CALLS}; render_index++ )); do
   [[ "${MOCK_ZCURSES_CALLS[render_index]}" == *"Current job"* ]] && session_call_index=$render_index
-  [[ "${MOCK_ZCURSES_CALLS[render_index]}" == "string side_win Project" ]] && project_call_index=$render_index
+  [[ "${MOCK_ZCURSES_CALLS[render_index]}" == "string side_win Available tools" ]] && policy_call_index=$render_index
 done
-assert_success "session log is rendered above the bottom Project block" $(( session_call_index > 0 && project_call_index > session_call_index ? 0 : 1 ))
+assert_success "session log is rendered above the bottom tool policy" $(( session_call_index > 0 && policy_call_index > session_call_index ? 0 : 1 ))
 
 MOCK_ZCURSES_CALLS=()
 ui_destroy_windows
@@ -3186,6 +3188,7 @@ assert_eq "5" "${#MOCK_ZCURSES_CALLS}" "UI destroys each curses window separatel
 assert_eq "delwin top_win" "${MOCK_ZCURSES_CALLS[1]}" "UI passes one name to each delwin call"
 
 source "${TEST_DIR}/activity.zsh"
+source "${TEST_DIR}/focus.zsh"
 source "${PROJECT_DIR}/lib/stream.zsh"
 source "${TEST_DIR}/stream.zsh"
 source "${TEST_DIR}/terminal.zsh"

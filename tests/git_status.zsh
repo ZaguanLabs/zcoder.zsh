@@ -56,15 +56,29 @@ git_status_test() {
   local -a MOCK_ZCURSES_CALLS=()
   UI_GIT_DISPLAY=$'Git: feature/\e[31m\nvery-long-branch-name'
   _ui_paint_header 1
-  local call='' branch_text='' row=0
+  local call='' branch_text='' row=-1
   for call in "${MOCK_ZCURSES_CALLS[@]}"; do
-    [[ "$call" == 'move top_win 2 2' ]] && row=2
-    [[ "$call" == 'string top_win '* && "$row" == 2 ]] && branch_text="${call#string top_win }"
+    [[ "$call" == 'move top_win 0 2' ]] && row=0
+    [[ "$call" == 'string top_win '* && "$row" == 0 ]] && branch_text+="${call#string top_win }"
   done
   assert_contains "$branch_text" '…' 'long branch names visibly truncate on narrow terminals'
   assert_not_contains "$branch_text" $'\e' 'branch names cannot inject terminal escapes'
   assert_not_contains "$branch_text" $'\n' 'branch names cannot create terminal rows'
   assert_success 'branch labels fit inside the header border' $(( ${(m)#branch_text} <= SCREEN_W - 4 ? 0 : 1 ))
+  assert_contains "$branch_text" 'project^feature/' 'the header title joins workspace and branch with a caret'
+  assert_contains "${(F)MOCK_ZCURSES_CALLS}" $'attr top_win -bold -dim bold red/black\nstring top_win ^' 'the branch separator is red'
+  assert_contains "${(F)MOCK_ZCURSES_CALLS}" $'attr top_win -bold -dim bold yellow/black\nstring top_win feature/' 'the branch name is yellow'
+  for UI_GIT_DISPLAY in 'No Git' 'Git: unavailable' 'Git: detached 01234567' ''; do
+    MOCK_ZCURSES_CALLS=()
+    _ui_paint_header 1
+    branch_text=''; row=-1
+    for call in "${MOCK_ZCURSES_CALLS[@]}"; do
+      [[ "$call" == 'move top_win 0 2' ]] && row=0
+      [[ "$call" == 'string top_win '* && "$row" == 0 ]] && branch_text+="${call#string top_win }"
+    done
+    assert_eq ' project ' "$branch_text" "the workspace title omits branchless Git state: $UI_GIT_DISPLAY"
+    assert_not_contains "${(F)MOCK_ZCURSES_CALLS}" 'move top_win 2 2' 'the header no longer writes a separate Git label'
+  done
 
   local -A saved_functions=()
   local function_name=''

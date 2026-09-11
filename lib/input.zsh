@@ -10,6 +10,7 @@ typeset -ga INPUT_VISUAL_LINES=() INPUT_VISUAL_STARTS=() INPUT_VISUAL_LENGTHS=()
 typeset -gi INPUT_CURSOR_ROW=1 INPUT_CURSOR_COL=0 INPUT_VIEW_TOP=1 INPUT_VISIBLE_ROWS=1
 typeset -gi INPUT_GOAL_COL=-1
 typeset -g INPUT_TERM_STATE="normal" INPUT_ESCAPE_BUF="" INPUT_PASTE_BUF=""
+typeset -gF INPUT_ESCAPE_AT=0.0
 typeset -ga INPUT_PASTE_CHUNKS=()
 typeset -g INPUT_LAYOUT_BUFFER=""
 typeset -gi INPUT_LAYOUT_WIDTH=-1 INPUT_LAYOUT_POS=-1
@@ -303,8 +304,22 @@ input_decode_terminal_event() {
   fi
 
   if [[ "$INPUT_TERM_STATE" == escape ]]; then
+    # A digit typed after a separate, older Escape remains ordinary input.
+    if [[ $INPUT_ESCAPE_BUF == $'\e' && $ch == (1|2) ]] &&
+       (( EPOCHREALTIME - INPUT_ESCAPE_AT > 0.2 )); then
+      INPUT_TERM_STATE=normal; INPUT_ESCAPE_BUF=''
+      return 1
+    fi
     INPUT_ESCAPE_BUF+="$ch"
     case "$INPUT_ESCAPE_BUF" in
+      $'\e1'|$'\e[49;3u'|$'\e[27;3;49~')
+        INPUT_TERM_STATE=normal; INPUT_ESCAPE_BUF=''
+        INPUT_EVENT_ACTION=focus_sessions
+        ;;
+      $'\e2'|$'\e[50;3u'|$'\e[27;3;50~')
+        INPUT_TERM_STATE=normal; INPUT_ESCAPE_BUF=''
+        INPUT_EVENT_ACTION=focus_prompt
+        ;;
       $'\e[200~')
         INPUT_TERM_STATE="paste"
         INPUT_ESCAPE_BUF=""
@@ -320,6 +335,8 @@ input_decode_terminal_event() {
         local -a known=(
           $'\e[200~' $'\e[13;2u' $'\e[13;2~' $'\e[27;2;13~'
           $'\e\n' $'\e\r'
+          $'\e1' $'\e2' $'\e[49;3u' $'\e[50;3u'
+          $'\e[27;3;49~' $'\e[27;3;50~'
         )
         local candidate=""
         local -i is_prefix=0
@@ -338,6 +355,7 @@ input_decode_terminal_event() {
   if [[ "$ch" == $'\e' ]]; then
     INPUT_TERM_STATE="escape"
     INPUT_ESCAPE_BUF="$ch"
+    INPUT_ESCAPE_AT=$EPOCHREALTIME
     return 0
   fi
   return 1

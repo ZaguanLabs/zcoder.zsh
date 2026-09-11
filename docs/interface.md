@@ -55,6 +55,10 @@ The interface includes:
 - a searchable command palette and context inspector
 - an exact-command approval dialog
 
+The header title shows the workspace and current branch as `zcoder.zsh^main`,
+with a red caret and yellow branch name. Without a named branch, it shows only
+the workspace name. Project names are not repeated in the sidebar.
+
 At local interactive startup, the status badge reads `Warming Up` while
 zcoder loads the selected Ollama model and submits the stable system/tool
 context in the background. You can type immediately. The disposable readiness
@@ -105,14 +109,20 @@ Sessions are isolated by canonical workspace and prompt profile. A coding
 conversation is never offered as a sysadmin session. The session directory is
 private to the current user.
 
-Press Tab to focus the sidebar, use Up or Down to choose a job, and press Enter
-to return to the prompt. Ctrl+N starts a new job without deleting earlier ones.
+Press Alt+1 to focus **[1] Sessions**, use Up or Down to choose a job, and press
+Alt+2 or Enter to return to **[2] Prompt**. The focused panel has a bright border
+and a highlighted title. Bare 1 and 2 also jump between these panels when focus
+is outside the prompt; inside it, digits remain ordinary text. Tab still cycles
+focus through the panels and transcript. Dialogs keep their own keyboard controls.
+Sessions cannot receive focus while work is running, but Alt+2 can always return
+from the transcript to the draft. Ctrl+N starts a new job without deleting earlier ones.
 `/sessions` reveals and focuses the same list. Ctrl+B hides or shows the sidebar,
 giving the transcript its full width when hidden. This choice is saved locally
 and restored on your next launch, across projects and remote connections.
 Terminals narrower than 88 columns
 always hide the sidebar, and Tab skips it while hidden. Ctrl+H remains Backspace.
 Automatic hiding on a narrow terminal does not change your saved preference.
+Alt+1 reveals a manually hidden sidebar when the terminal is wide enough.
 
 Remote sessions use the same sidebar controls but remain stored on the named
 server. See [Remote-agent server](remote.md).
@@ -340,6 +350,8 @@ Window resizing and changing the prompt's height rebuild the layout as needed.
 | Shift+Enter | Insert a newline; Alt+Enter is the fallback |
 | Escape | Stop the active response, local tool wait, external delegate, or remote turn |
 | Tab | Complete the selected slash command; otherwise move focus between prompt, sidebar, and transcript |
+| Alt+1 / Alt+2 | Focus [1] Sessions / [2] Prompt; Alt+1 also reveals a hidden sidebar when space allows |
+| 1 / 2 outside the prompt | Focus Sessions / Prompt |
 | Ctrl+B | Hide/show the sidebar and resize the transcript |
 | Ctrl+P | Open the command palette |
 | Ctrl+O | Open the Ollama model picker |

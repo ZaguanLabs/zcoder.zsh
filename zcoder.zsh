@@ -16,7 +16,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.15.0"
+typeset -gr ZCODER_VERSION="0.15.1"
 
 typeset -gr ZCODER_DIR="${0:A:h}"
 
@@ -752,7 +752,9 @@ main_tui() {
     ui_slash_input "$ch" "$key" && continue
     [[ -z "$ch" && -z "$key" ]] && continue
     if input_decode_terminal_event "$ch" "$key"; then
-      if [[ "$INPUT_EVENT_ACTION" == newline ]]; then
+      if [[ "$INPUT_EVENT_ACTION" == focus_sessions || "$INPUT_EVENT_ACTION" == focus_prompt ]]; then
+        ui_focus_panel "${INPUT_EVENT_ACTION#focus_}"
+      elif [[ "$INPUT_EVENT_ACTION" == newline ]]; then
         input_insert $'\n'
         ui_input_changed
       elif [[ "$INPUT_EVENT_ACTION" == paste && -n "$INPUT_EVENT_TEXT" ]]; then
@@ -762,6 +764,8 @@ main_tui() {
         ui_status_notice warning "$INPUT_EVENT_TEXT"
       fi
       continue
+    elif [[ $UI_FOCUS != input && -z $key && $ch == (1|2) ]]; then
+      ui_focus_panel "$ch"
     elif [[ "$ch" == $'\x11' || "$ch" == $'\x04' ]]; then
       break
     elif [[ "$ch" == $'\x03' ]]; then
