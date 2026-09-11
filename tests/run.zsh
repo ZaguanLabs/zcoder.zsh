@@ -3214,6 +3214,8 @@ source "${TEST_DIR}/tool_wait.zsh"
 source "${TEST_DIR}/mcp_connect_wait.zsh"
 source "${TEST_DIR}/remote_wait.zsh"
 source "${TEST_DIR}/remote_browse.zsh"
+zsh -df "${TEST_DIR}/remote_sessions.zsh"
+assert_success "real remote servers share local session storage and preserve legacy histories" $?
 source "${TEST_DIR}/models_wait.zsh"
 source "${TEST_DIR}/context_wait.zsh"
 source "${TEST_DIR}/tui_integration.zsh"

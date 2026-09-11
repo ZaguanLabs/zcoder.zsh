@@ -55,7 +55,7 @@ Run this on the machine that owns the workspace and runs, or can reach, Ollama:
 
 The server runs in the foreground without curses, which makes it suitable for a
 terminal multiplexer or service manager. The name identifies the server and its
-persistent session. A second process cannot start with the same name and
+selected session. A second process cannot start with the same name and
 `ZCODER_HOME` while the first is running.
 
 The server's startup settings are authoritative. In particular:
@@ -158,8 +158,20 @@ HTTP.
 
 ## Sessions and current limitations
 
-Sessions belong to the named server and survive server and client restarts. The
-client starts a fresh server-side job during the handshake, unless the selected
+The API and local TUI share the server user's session store
+(`$ZCODER_HOME/sessions`, or an explicit `ZCODER_SESSIONS_DIR`). Both list all
+sessions for the same canonical workspace and profile. A client on another
+computer sees the server's sessions; it does not upload that computer's local
+history. Different profiles or configuration homes still have separate lists.
+
+Existing conversations from older versions remain in
+`$ZCODER_HOME/remote/<server>/sessions`. On startup, that server adds links to
+them in the shared store, preserving their IDs, selected session, and history.
+The original directories remain their backing storage; new conversations are
+created directly in the shared store.
+
+Sessions survive server and client restarts. The TUI client starts a fresh
+server-side job during the handshake, unless the selected
 job is already empty. Use Ctrl+N or `/new` to create another remote job, and
 focus the Sessions sidebar with Tab or `/sessions` to resume an older one.
 Selecting a job changes the server-side conversation; no duplicate session

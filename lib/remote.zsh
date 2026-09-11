@@ -1569,6 +1569,33 @@ remote_server_stop() {
   fi
 }
 
+# Older servers kept conversations beneath their named runtime directory.
+# Publish aliases in the shared store: existing IDs, selected-session markers,
+# and writer locks keep referring to the same data without copying histories.
+_remote_server_share_legacy_sessions() {
+  emulate -L zsh
+  local legacy_root="${REMOTE_RUNTIME_DIR:A}/sessions" legacy='' shared='' id=''
+  [[ ${legacy_root:A} != ${ZCODER_SESSIONS_DIR:A} ]] || return 0
+  for legacy in "$legacy_root"/*.session(N/); do
+    id=${legacy:t:r}
+    _state_valid_id "$id" || continue
+    shared="$ZCODER_SESSIONS_DIR/$id.session"
+    [[ ${shared:A} == ${legacy:A} ]] && continue
+    if [[ -e $shared || -h $shared ]]; then
+      REMOTE_ERROR="session ID conflict while sharing legacy session: $id"
+      return 1
+    fi
+    # Use the parent directory as destination so an existing same-name
+    # directory is rejected rather than receiving a nested link.
+    if ! zf_ln -s "${legacy:A}" "$ZCODER_SESSIONS_DIR"; then
+      [[ ${shared:A} == ${legacy:A} ]] && continue
+      REMOTE_ERROR="could not share legacy session: $id"
+      return 1
+    fi
+  done
+  return 0
+}
+
 remote_server_main() {
   local safe_name="" client_fd="" existing_pid="" selected_session="" old_umask="$(umask)"
   [[ "$REMOTE_SERVER_PORT" == <1-65535> ]] || { print -u2 -- "Error: --port expects an integer from 1 through 65535"; return 2; }
@@ -1599,7 +1626,12 @@ remote_server_main() {
     print -u2 -- "Error: could not initialize remote command policy"
     return 1
   }
-  ZCODER_SESSIONS_DIR="$REMOTE_RUNTIME_DIR/sessions"
+  # TUI and API sessions share storage; workspace/profile filtering remains
+  # authoritative for listings, selection, transcript reads and worker loads.
+  if ! state_init storage || ! _remote_server_share_legacy_sessions; then
+    print -u2 -r -- "Error: ${REMOTE_ERROR:-could not initialize shared session storage}"
+    return 1
+  fi
   if ! state_init resume; then
     print -u2 -- "Error: could not initialize remote session storage"
     return 1

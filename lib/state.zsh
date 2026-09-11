@@ -41,7 +41,8 @@ state_refresh_sessions_list() {
   local session_dir='' id='' record=''
   local -a records=() reply=()
   local -A titles=() models=()
-  for session_dir in "$ZCODER_SESSIONS_DIR"/*.session(N/); do
+  # Legacy remote histories can be shared through directory symlinks.
+  for session_dir in "$ZCODER_SESSIONS_DIR"/*.session(N-/); do
     id="${session_dir:t:r}"
     _state_valid_id "$id" || continue
     state_snapshot_values "$session_dir" workspace profile updated_at title model || continue
