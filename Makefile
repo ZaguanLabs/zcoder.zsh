@@ -1,8 +1,7 @@
 .DEFAULT_GOAL := all
 .PHONY: all setup native check test test-visual benchmark model-eval compile clean curses markdown
 
-all: native
-	$(MAKE) compile
+all: native compile
 
 setup: all
 
