@@ -63,6 +63,17 @@
     ZCODER_CURSES=invalid
     zcoder_curses_load "$test_root" 2>/dev/null
     assert_failure 'invalid curses policy fails explicitly' $?
+    local ZCODER_RUNTIME_ACTIVE=/private/runtime
+    ZCODER_CURSES=auto; ZCODER_CURSES_BACKEND=unloaded; preloaded=''
+    loaded_paths=(); loaded_modules=(); stock_result=0
+    zcoder_curses_load "$test_root"
+    assert_eq private "$ZCODER_CURSES_BACKEND" 'private runtime loads its matched drawing module'
+    assert_eq "$original_path[1]" "$loaded_paths[1]" 'private runtime uses its configured module path'
+    ZCODER_CURSES_BACKEND=unloaded; stock_result=1; bundled_result=0
+    loaded_paths=(); loaded_modules=()
+    zcoder_curses_load "$test_root" 2>/dev/null
+    assert_failure 'private runtime never retries an installed-shell native binary' $?
+    assert_eq zsh/curses "$loaded_modules[-1]" 'private module failure tries only its own stock curses'
   } always {
     unfunction zmodload
   }

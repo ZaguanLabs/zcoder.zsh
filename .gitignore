@@ -4,6 +4,7 @@
 *.zwc
 .build/picker-visuals/
 .build/document-visuals/
+.build/native/
 node_modules/
 .pnpm_store/
 *.log

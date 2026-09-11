@@ -1,14 +1,28 @@
-.PHONY: check test test-visual benchmark model-eval compile clean curses markdown
+.DEFAULT_GOAL := all
+.PHONY: all setup native check test test-visual benchmark model-eval compile clean curses markdown
+
+all: native
+	$(MAKE) compile
+
+setup: all
+
+native: export MAKE := $(MAKE)
+native: check
+	zsh -df scripts/setup-native.zsh
 
 check:
 	zsh -fc 'for f in zcoder.zsh chat.sh lib/*.zsh scripts/*.zsh tests/*.zsh tests/fixtures/*.zsh; do zsh -n "$$f" || exit $$?; done'
 
-# Requires an initialized submodule and ZSH_BUILD_ROOT for this host's Zsh ABI.
+# Advanced builds for an installed shell retain the explicit source-tree path.
+ifdef ZSH_BUILD_ROOT
 curses: check
 	zsh -df scripts/build-curses.zsh
 
 markdown: check
 	zsh -df scripts/build-markdown.zsh
+else
+curses markdown: native
+endif
 
 test: check
 	zsh tests/run.zsh

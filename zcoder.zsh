@@ -1,6 +1,14 @@
 #!/usr/bin/env zsh
 # zcoder.zsh - a Zsh-first Ollama coding agent.
 
+0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
+0="${${(M)0:#/*}:-$PWD/$0}"
+source "${0:A:h}/lib/runtime.zsh"
+# Sourced entrypoints retain their caller's shell state and test/tool hooks.
+if [[ $ZSH_EVAL_CONTEXT == toplevel ]]; then
+  zcoder_runtime_select "$0" "$@" || exit $?
+fi
+
 setopt EXTENDED_GLOB NO_NOMATCH NO_MONITOR NO_NOTIFY NO_CHECK_JOBS NO_HUP 2>/dev/null
 zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect || {
   print -u2 -- "Error: required Zsh loadable modules are unavailable."
@@ -8,10 +16,8 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.14.6"
+typeset -gr ZCODER_VERSION="0.15.0"
 
-0="${ZERO:-${${0:#$ZSH_ARGZERO}:-${(%):-%N}}}"
-0="${${(M)0:#/*}:-$PWD/$0}"
 typeset -gr ZCODER_DIR="${0:A:h}"
 
 # Load each library once, on demand. Mode-gated libraries — ACP, the remote

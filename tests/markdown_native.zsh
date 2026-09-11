@@ -41,6 +41,14 @@ _ui_markdown_ascii $'a\u0301\u0301\n👩‍💻'
 run_fixture() {
   trap - EXIT
   export TERM=xterm-256color LC_ALL=C.UTF-8
+  local runtime=''
+  [[ ! -r $root/.build/native/current ]] || runtime=$(<"$root/.build/native/current")
+  if [[ ${ZCODER_RUNTIME:-auto} != system && $runtime == "$root/.build/native/builds/"*/runtime &&
+        -x $runtime/bin/zsh && -r $runtime/zcoder-host &&
+        $(<"$runtime/zcoder-host") == "$MACHTYPE:$OSTYPE:$HOST:$root" ]]; then
+    exec "$runtime/bin/zsh" -df "$root/scripts/run-native.zsh" \
+      "$root/tests/fixtures/markdown_native.zsh" "$runtime" "$root" "$scratch/result"
+  fi
   exec zsh -df "$root/tests/fixtures/markdown_native.zsh" "$root" "$scratch/result"
 }
 zpty -b markdown-native run_fixture || fail 'PTY startup'

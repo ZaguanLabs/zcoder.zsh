@@ -23,8 +23,8 @@ Older modules are probed on the first resize poll; a failed initial probe keeps
 the fallback for that session. No configuration is required.
 
 GNU `timeout` is optional. Without it, approved shell commands still work, but
-their configured time limits are not enforced. `make` and `mktemp` are needed
-only for development and the test suite.
+their configured time limits are not enforced. GNU Make and a C toolchain are needed for the optional native setup below.
+`mktemp` is also needed for the test suite.
 
 Claude Code, Codex, Google Antigravity, and OpenCode are optional external
 harnesses. Their plain slash commands provide read-only consultations; explicit
@@ -44,6 +44,7 @@ Start Ollama, pull a suitable model, clone the project, and select a workspace:
 ollama pull qwen3-coder
 git clone https://github.com/ZaguanLabs/zcoder.zsh.git
 cd zcoder.zsh
+make
 ./zcoder.zsh --model qwen3-coder --workspace /path/to/project
 ```
 
@@ -52,28 +53,53 @@ structured tool calls for agent work.
 
 ## Enhanced curses module
 
-The Git submodule at `vendor/zdraw` pins the experimental
-[ZaguanLabs module](https://github.com/ZaguanLabs/zdraw). Its native geometry
-query removes the `stty size` subprocess from each due resize poll (up to four
-per second). Enable it locally with:
+Plain `make` (or `make setup`) builds the enhanced interface, including zdraw
+and zmdown. It initializes both pinned submodules, downloads Zsh 5.9.2 from
+zsh.org, verifies its pinned SHA-256 checksum, and builds a private shell with
+both modules. You do not need to find or configure your system shell's sources.
+
+Build requirements:
+
+- Zsh 5.8+, Git, GNU Make (`gmake` on systems where `make` is not GNU Make)
+- a C compiler, standard Unix build tools, Autoconf, Autoheader, M4 and Patch
+- wide-character ncurses development headers/libraries and a terminfo database
+- Curl, Tar and Xz; either `sha256sum` or `shasum` for archive verification
+
+These are build-time tools. The Makefile reports missing commands; it does not
+install operating-system packages or use sudo. For nonstandard ncurses paths,
+supply `CPPFLAGS` and `LDFLAGS`. Use a checkout path without whitespace or shell
+metacharacters because Zsh's upstream makefiles do not support those paths.
+Linux is tested; BSD/macOS native builds still need validation.
 
 ```sh
-git submodule update --init --recursive
-ZSH_BUILD_ROOT=/path/to/matching/configured/zsh make curses
-make test
+make
 ./zcoder.zsh --workspace /path/to/project
 ```
 
-The current dependency builds against its recorded Zsh 5.9.2 source baseline;
-it needs a configured, built source tree matching the installed shell, Make,
-a C compiler, and that tree's development dependencies. See
-[development](development.md#building-the-curses-dependency) for details.
-Zsh 5.8 continues to use the stock module.
+Build files and logs stay under `.build/native/`. The private shell is used
+only to run this application; your login shell and system Zsh are unchanged.
+The launcher selects it automatically when its host and checkout path match.
+`ZCODER_RUNTIME=system ./zcoder.zsh` uses the installed shell instead. Missing,
+copied or relocated private runtimes fall back to the installed shell; run
+`make` on the destination to build a matched set there.
 
-Once built, ordinary launches automatically select the local module. `/terminal`
-shows the selected module and resize-query backend. Set `ZCODER_CURSES=stock`
-to bypass the bundled module for a run. Without a matching local build, zcoder
-uses the system module. Headless server and ACP modes do not load curses.
+Repeat `make` after pulling updates. Successful matching builds are reused;
+failed rebuilds leave the previous runtime available. Downloads are cached and
+verified on rebuild. .build/native/lock prevents concurrent builds and is released automatically
+when the build exits, including after interruption. Inspect
+`.build/native/build.log` when configuration or compilation fails.
+
+`make native` builds only the runtime and modules. `make curses` and
+`make markdown` also prepare the matched set unless you explicitly supply
+`ZSH_BUILD_ROOT` for an advanced system-shell build. `make compile` still only
+compiles application libraries and never downloads or builds C code, so headless
+farm deployments retain their lightweight workflow. You can skip native setup
+entirely and run the script with the existing Zsh renderer.
+
+`/terminal` reports `private` when the private zdraw module is selected and
+`zmdown` when native Markdown is active. Use a UTF-8 locale for that rendering
+path. `ZCODER_CURSES=stock` selects stock curses; `ZCODER_MARKDOWN=zsh` selects
+the Zsh Markdown renderer. Headless server and ACP modes do not load curses.
 
 When the module advertises `structured_events` and `norefresh_events`, input
 reads leave unfinished drawing hidden until the next explicit frame refresh.

@@ -74,7 +74,25 @@ all tool results must precede steering, and follow-ups must wait for completion.
 Its PTY fixture checks Enter, Ctrl+G, Unicode/multiline paste, draft preservation,
 and cancellation using the actual editor and queue.
 
-## Building the curses dependency
+## Building the native dependencies
+
+The normal fresh-checkout path is `make` (or `make setup`). See
+[setup and build requirements](getting-started.md#enhanced-curses-module).
+It builds an isolated Zsh 5.9.2 runtime with both pinned modules, installs only
+that shell and its modules under `.build/native/`, verifies their contracts,
+and atomically publishes a data pointer to the completed build. The launcher
+checks the host and checkout path before selecting it. Running processes retain
+their immutable build prefix when a replacement is published.
+
+`make compile`, `make check` and `make test` do not invoke native setup. Existing
+system-shell builds in `vendor/*/.build` remain separate from private setup.
+Build fingerprints include dependency commits, setup script, source checksum,
+host/path and compiler flags. Previous builds are retained so rebuilding does
+not remove files used by running processes. Removing `.build/native/` disables
+the private runtime; stop processes using it before removing their build files.
+
+### Advanced: build for the installed shell
+
 
 `vendor/zdraw` is a pinned Git submodule using
 `https://github.com/ZaguanLabs/zdraw`. Initialize it over public HTTPS:
@@ -113,7 +131,8 @@ native versus fallback resize queries.
 The stamp guards against common mismatches, including copying the build to a
 different farm host; it is not proof of ABI compatibility for arbitrary builds
 with different configuration flags. Supply a source build matching the installed
-shell. The experimental C module has not been validated against Zsh 5.8.
+shell. The experimental C module has not been validated against Zsh 5.8;
+the automatic setup instead runs both modules in its own Zsh 5.9.2.
 
 After upgrading from `vendor/zcurses`, run `make -C vendor/zdraw clean`
 once before rebuilding to discard the old module build cache.
@@ -136,7 +155,7 @@ directory. The dependency's own broader module checks use a Python 3 PTY driver:
 ZSH_BUILD_ROOT=/path/to/matching/configured/zsh make -C vendor/zdraw test
 ```
 
-The pinned module (`4e133e4`) adds `geometry`, custom borders, runtime `colorinfo`,
+The module adds `geometry`, custom borders, runtime `colorinfo`,
 opt-in RGB colors and styled-span batching, with discovery through
 the read-only `zdraw_features` array. Its build also requires Autoconf,
 Autoheader, M4 and Patch for optional curses function checks. Its own RGB tests
@@ -176,9 +195,9 @@ measurement against our existing transcript cache before adoption, and
 
 ## Building optional Markdown support
 
-`vendor/zmdown` is pinned at `8bb1390`; zdraw is pinned at `9c599d8`.
-To enable structured Markdown locally, build both modules against the configured
-source tree matching the installed shell:
+`make` includes Markdown support automatically. For the advanced installed-shell
+path, `vendor/zmdown` is pinned at `8bb1390`; zdraw is pinned at `9c599d8`.
+Build both modules against the configured source tree matching that shell:
 
 ```sh
 git submodule update --init --recursive
@@ -187,7 +206,7 @@ make compile
 make test
 ```
 
-`make markdown` builds only zmdown and writes the same local ABI/host stamp used
+With `ZSH_BUILD_ROOT` set, `make markdown` builds only zmdown and writes the same local ABI/host stamp used
 by the curses loader. Neither module is installed system-wide. Normal startup,
 headless operation and `make compile` require no C toolchain. Rebuild after a
 dependency or shell update; copied farm binaries are not enabled on other hosts.

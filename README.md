@@ -37,6 +37,7 @@ You need Zsh 5.8 or newer, a running Ollama server, a tool-capable model, and
 ollama pull qwen3-coder
 git clone https://github.com/ZaguanLabs/zcoder.zsh.git
 cd zcoder.zsh
+make
 ./zcoder.zsh --model qwen3-coder --workspace /path/to/project
 ```
 
@@ -46,9 +47,13 @@ Then ask for a concrete outcome:
 Find the cause of the failing tests, make the smallest safe fix, and verify it.
 ```
 
-The optional [enhanced curses module](docs/getting-started.md#enhanced-curses-module)
-is pinned as a Git submodule. Build it locally to enable terminal resize queries
-without spawning `stty`; ordinary installs retain the stock-module fallback.
+`make` prepares a private Zsh runtime with the pinned zdraw and zmdown modules
+for the enhanced interface and Markdown rendering. It needs a C toolchain,
+Autoconf, ncurses development headers and download tools; see
+[build requirements](docs/getting-started.md#enhanced-curses-module). It requires
+no administrator access and leaves your system shell unchanged.
+
+To try the dependency-free renderer, skip `make` and run the script directly.
 
 Prefer a non-interactive run? Use `--prompt`:
 
