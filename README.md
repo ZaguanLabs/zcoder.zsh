@@ -7,7 +7,7 @@ edit files, apply patches, run tests, and keep working through multi-step tasks
 until the job is complete. You get a focused terminal interface, local model
 execution, and a clear approval prompt before any shell command runs.
 
-![zcoder.zsh 0.13.0 terminal interface](images/zcoder-0.13.0.png)
+![zcoder.zsh 0.15.5 terminal interface](images/zcoder-0.15.5.png)
 
 It is deliberately small and inspectable. Application logic—including HTTP,
 JSON, session storage, tool dispatch, and the interface—uses native Zsh modules.
