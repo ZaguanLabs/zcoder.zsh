@@ -73,6 +73,8 @@
   }
 }
 
+test_integration slash || return 0
+
 # Real terminal input, drawing, and resize behavior on both available backends.
 slash_pty_wait() {
   local file=$1 expected=$2 chunk=''

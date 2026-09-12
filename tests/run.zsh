@@ -8,6 +8,41 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/stat zsh/system zsh/zselect
 typeset -gr TEST_DIR="${0:A:h}"
 typeset -gr PROJECT_DIR="${TEST_DIR:h}"
 
+typeset -g TEST_MODE=full
+typeset -gi TEST_TIMINGS=0 TEST_INTEGRATION_SKIPPED=0
+for test_option in "$@"; do
+  case $test_option in
+    --fast) TEST_MODE=fast ;;
+    --timings) TEST_TIMINGS=1 ;;
+    *) print -ru2 -- "Usage: zsh tests/run.zsh [--fast] [--timings]"; exit 2 ;;
+  esac
+done
+typeset -F TEST_STARTED=$EPOCHREALTIME TEST_SECTION_STARTED=$EPOCHREALTIME
+typeset -g TEST_SECTION='core'
+typeset -gi TEST_SECTION_COUNT=0
+
+# Timing boundaries do not source tests inside a function: the older fixtures
+# intentionally share top-level state and must retain their original scope.
+test_section() {
+  if (( TEST_TIMINGS )); then
+    printf '# %s: %.3fs, %d assertions\n' "$TEST_SECTION" \
+      "$(( EPOCHREALTIME - TEST_SECTION_STARTED ))" "$(( TESTS - TEST_SECTION_COUNT ))"
+  fi
+  TEST_SECTION=$1
+  TEST_SECTION_STARTED=$EPOCHREALTIME
+  TEST_SECTION_COUNT=$TESTS
+}
+
+test_integration() {
+  if [[ $TEST_MODE == fast ]]; then
+    (( TEST_INTEGRATION_SKIPPED++ ))
+    print -r -- "# omitted integration group: $1"
+    return 1
+  fi
+  test_section "$1 (integration)"
+  return 0
+}
+
 source "${PROJECT_DIR}/lib/util.zsh"
 source "${PROJECT_DIR}/lib/json.zsh"
 source "${PROJECT_DIR}/lib/transcript.zsh"
@@ -475,7 +510,9 @@ assert_eq "$quote_sample" "$JSON_TOKEN_VALUE" "bulk JSON quoting round-trips mix
 control_quote_sample=$'slash \\ and control \x01'
 json_quote "$control_quote_sample"; json_begin "$REPLY"
 assert_eq "$control_quote_sample" "$JSON_TOKEN_VALUE" "fallback JSON quoting round-trips uncommon controls"
+test_section json_utf8
 source "${TEST_DIR}/json_utf8.zsh"
+test_section core
 
 tool_write_file "src/note.txt" $'one\ntwo\nthree\n'
 assert_success "write_file creates parent directories" $?
@@ -3144,10 +3181,15 @@ zcoder_curses() {
   return 0
 }
 
+test_section markdown
 source "${TEST_DIR}/markdown.zsh"
+test_section transcript
 source "${TEST_DIR}/transcript.zsh"
+test_section overlays
 source "${TEST_DIR}/overlays.zsh"
+test_section slash
 source "${TEST_DIR}/slash.zsh"
+test_section sidebar
 
 UI_ACTIVE=1
 SCREEN_H=30; SCREEN_W=100; SIDE_W=0; TOP_H=3; INPUT_H=3; FOOT_H=1
@@ -3187,50 +3229,104 @@ ui_destroy_windows
 assert_eq "5" "${#MOCK_ZCURSES_CALLS}" "UI destroys each curses window separately"
 assert_eq "delwin top_win" "${MOCK_ZCURSES_CALLS[1]}" "UI passes one name to each delwin call"
 
+test_section activity
 source "${TEST_DIR}/activity.zsh"
+test_section focus
 source "${TEST_DIR}/focus.zsh"
 source "${PROJECT_DIR}/lib/stream.zsh"
+test_section stream
 source "${TEST_DIR}/stream.zsh"
+test_section terminal
 source "${TEST_DIR}/terminal.zsh"
+test_section native_input
 source "${TEST_DIR}/native_input.zsh"
+test_section handoff
 source "${TEST_DIR}/handoff.zsh"
-source "${TEST_DIR}/presentation.zsh"
+if test_integration presentation; then
+  source "${TEST_DIR}/presentation.zsh"
+fi
+test_section curses
 source "${TEST_DIR}/curses.zsh"
-zsh -df "${TEST_DIR}/native_setup.zsh"
-assert_success "native setup and runtime selection preserve fallback and failure recovery" $?
-zsh -df "${TEST_DIR}/markdown_native.zsh"
-assert_success "optional native Markdown loading and terminal rendering pass" $?
+if test_integration native_setup; then
+  zsh -df "${TEST_DIR}/native_setup.zsh"
+  assert_success "native setup and runtime selection preserve fallback and failure recovery" $?
+fi
+if test_integration markdown_native; then
+  zsh -df "${TEST_DIR}/markdown_native.zsh"
+  assert_success "optional native Markdown loading and terminal rendering pass" $?
+fi
+test_section resize
 source "${TEST_DIR}/resize.zsh"
+test_section ui_preferences
 source "${TEST_DIR}/ui_preferences.zsh"
-source "${TEST_DIR}/drawing.zsh"
-zsh -df "${TEST_DIR}/picker.zsh"
-assert_success "picker widgets and visual baselines pass in real terminals" $?
-zsh -df "${TEST_DIR}/document.zsh"
-assert_success "document navigation, anchored reflow and visual baselines pass" $?
+if test_integration drawing; then
+  source "${TEST_DIR}/drawing.zsh"
+fi
+if test_integration picker; then
+  zsh -df "${TEST_DIR}/picker.zsh"
+  assert_success "picker widgets and visual baselines pass in real terminals" $?
+fi
+if test_integration document; then
+  zsh -df "${TEST_DIR}/document.zsh"
+  assert_success "document navigation, anchored reflow and visual baselines pass" $?
+fi
+test_section git_status
 source "${TEST_DIR}/git_status.zsh"
+test_section status
 source "${TEST_DIR}/status.zsh"
-source "${TEST_DIR}/process.zsh"
-source "${TEST_DIR}/tool_wait.zsh"
-source "${TEST_DIR}/mcp_connect_wait.zsh"
-source "${TEST_DIR}/remote_wait.zsh"
-source "${TEST_DIR}/remote_browse.zsh"
-zsh -df "${TEST_DIR}/remote_sessions.zsh"
-assert_success "real remote servers share local session storage and preserve legacy histories" $?
-source "${TEST_DIR}/models_wait.zsh"
-source "${TEST_DIR}/context_wait.zsh"
-source "${TEST_DIR}/tui_integration.zsh"
+if test_integration process; then
+  source "${TEST_DIR}/process.zsh"
+fi
+if test_integration tool_wait; then
+  source "${TEST_DIR}/tool_wait.zsh"
+fi
+if test_integration mcp_connect_wait; then
+  source "${TEST_DIR}/mcp_connect_wait.zsh"
+fi
+if test_integration remote_wait; then
+  source "${TEST_DIR}/remote_wait.zsh"
+fi
+if test_integration remote_browse; then
+  source "${TEST_DIR}/remote_browse.zsh"
+fi
+if test_integration remote_sessions; then
+  zsh -df "${TEST_DIR}/remote_sessions.zsh"
+  assert_success "real remote servers share local session storage and preserve legacy histories" $?
+fi
+if test_integration models_wait; then
+  source "${TEST_DIR}/models_wait.zsh"
+fi
+if test_integration context_wait; then
+  source "${TEST_DIR}/context_wait.zsh"
+fi
+if test_integration tui_integration; then
+  source "${TEST_DIR}/tui_integration.zsh"
+fi
+test_section tool_labels
 source "${TEST_DIR}/tool_labels.zsh"
+test_section context_accounting
 source "${TEST_DIR}/context_accounting.zsh"
+test_section input_queue
 source "${TEST_DIR}/input_queue.zsh"
+test_section user_shell
 source "${TEST_DIR}/user_shell.zsh"
+test_section hardening_state
 source "${TEST_DIR}/hardening_state.zsh"
+test_section hardening_json_tools
 source "${TEST_DIR}/hardening_json_tools.zsh"
+test_section hardening_protocol
 source "${TEST_DIR}/hardening_protocol.zsh"
+test_section concurrency
 source "${TEST_DIR}/concurrency.zsh"
+test_section hardening_input
 source "${TEST_DIR}/hardening_input.zsh"
+test_section memory_accounting
 source "${TEST_DIR}/memory_accounting.zsh"
 
+test_section finished
 print -r -- "1..${TESTS}"
+printf '# %s suite: %d assertions, %.3fs; %d integration groups omitted\n' \
+  "$TEST_MODE" "$TESTS" "$(( EPOCHREALTIME - TEST_STARTED ))" "$TEST_INTEGRATION_SKIPPED"
 if (( FAILURES > 0 )); then
   print -u2 -r -- "${FAILURES} test(s) failed"
   exit 1

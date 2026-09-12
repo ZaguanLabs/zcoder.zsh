@@ -199,6 +199,8 @@ input_queue_tests() {
 input_queue_tests
 unfunction input_queue_tests
 
+test_integration input_queue || return 0
+
 input_queue_pty_tests() {
   zmodload zsh/zpty || return 1
   local base="$TEST_TMP/input-queue-ui" chunk='' expected='' file=''

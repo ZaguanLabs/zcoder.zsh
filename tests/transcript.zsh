@@ -268,6 +268,8 @@ REMOTE_SESSIONS_SUPPORTED=$saved_transcript_remote_sessions
 transcript_reset
 MOCK_ZCURSES_CALLS=()
 
+test_integration transcript || return 0
+
 # Exercise real ncurses key decoding, focus styling, and resize handling.
 zmodload zsh/zpty
 typeset -g transcript_pty_base="$TEST_TMP/transcript-pty" transcript_pty_output="" transcript_pty_chunk=""

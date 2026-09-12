@@ -13,7 +13,32 @@ make test
 ```
 
 `make test` first parses the entry points, libraries, tests, and fixtures with `zsh -n`,
-then runs the shell-level suite. The suite covers:
+then runs the complete shell-level suite, including terminal and integration
+fixtures. For a shorter development loop, use:
+
+```sh
+make test-fast
+```
+
+The fast target retains core behavior, command approvals, workspace confinement,
+JSON/protocol validation, session fault injection, stale-writer checks, and UI
+logic with a curses recorder. It omits slower integration groups, including
+real PTYs, native setup, live remote session storage, and interactive
+connection/timeout fixtures. Omitted groups are listed explicitly; they are not
+counted as passing assertions. Some cheap child-process and socket checks remain
+in the fast target. `make test` is still required before handoff.
+
+To locate expensive groups, run either mode with timings:
+
+```sh
+zsh -df tests/run.zsh --timings
+zsh -df tests/run.zsh --fast --timings
+```
+
+The final count is **assertions**, not independent scenarios or a coverage score.
+Each run reports its mode, elapsed time, and number of omitted integration groups.
+The [suite audit](test-suite-audit.md) explains the retained coverage and the
+consolidation decisions. The complete suite covers:
 
 - strict native JSON grammar, Unicode controls, and encoding
 - both supported MCP protocol generations

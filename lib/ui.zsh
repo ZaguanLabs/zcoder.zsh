@@ -144,7 +144,7 @@ ui_status_notice() {
   UI_NOTICE_GENERATION=$UI_TRANSCRIPT_GENERATION
 }
 
-# Content cells inside the badge. Geometry, never status text, sets its width.
+# Maximum status content cells. Geometry sets the space reserved for the badge.
 _ui_status_width() {
   local -i limit=$(( SCREEN_W / 2 - 4 ))
   REPLY=12
@@ -450,9 +450,11 @@ _ui_paint_header() {
   if (( ${(m)#UI_STATUS_DISPLAY} > badge_limit )); then
     zcoder_clip "$badge" $(( badge_limit - 1 )); badge="${REPLY}…"
   fi
-  zcoder_pad "$badge" "$badge_limit"; badge="[ ${REPLY} ]"
+  badge="[ ${badge} ]"
   local -i badge_x=$(( SCREEN_W - ${(m)#badge} - 2 ))
-  local -i identity_limit=$(( badge_x - 3 ))
+  # Keep the badge compact and right-aligned, but reserve its maximum width
+  # independently so longer statuses cannot shift or overwrite the identity.
+  local -i identity_limit=$(( SCREEN_W - badge_limit - 9 ))
   local -i section=1
   local -a identities=("⚡ ${ZCODER_NAME} v${ZCODER_VERSION} │ " "$ZCODER_MODEL" "@${host} | " "$workspace")
   local -a identity_attrs=('bold cyan/black' 'bold yellow/black' 'dim white/black' 'bold cyan/black')

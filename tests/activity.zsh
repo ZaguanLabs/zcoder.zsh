@@ -156,6 +156,8 @@ functions[remote_client_model_ensure]="${functions[_activity_saved_ensure]}"
 functions[ui_poll_remote_turn]="${functions[_activity_saved_remote_poll]}"
 unfunction _activity_saved_request _activity_saved_ensure _activity_saved_remote_poll
 
+test_integration activity || return 0
+
 # Drive real curses waits with file barriers instead of model/network timing.
 typeset -g activity_pty_base="$TEST_TMP/activity-pty" activity_pty_output="" activity_pty_chunk=""
 activity_pty_wait() {

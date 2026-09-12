@@ -195,6 +195,8 @@ unfunction _overlay_saved_curses _overlay_saved_resize overlay_keys
 SCREEN_W=80; SCREEN_H=24; UI_RESIZE_PENDING=0; UI_FOCUS=input
 MOCK_ZCURSES_CALLS=()
 
+test_integration overlays || return 0
+
 # Exercise actual ncurses windows, input decoding, and resizing in a PTY.
 typeset -g overlay_pty_base="$TEST_TMP/overlay-pty" overlay_pty_output="" overlay_pty_chunk=""
 overlay_pty_wait() {

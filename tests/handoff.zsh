@@ -90,6 +90,8 @@
   }
 }
 
+test_integration handoff || return 0
+
 () {
   emulate -L zsh
   local -a modes=(stock) reply=()

@@ -64,30 +64,32 @@ _hardening_input_tests() {
   unfunction _hardening_real_wrap
   input_reset
 
-  local backend=''
-  for backend in stock auto; do
-    output=$(LC_ALL=C.UTF-8 zsh -df "$TEST_DIR/fixtures/grapheme_input.zsh" "$PROJECT_DIR" "$backend" 2>&1)
-    assert_success "$backend grapheme editing checks: $output" $?
-  done
+  if test_integration hardening_input; then
+    local backend=''
+    for backend in stock auto; do
+      output=$(LC_ALL=C.UTF-8 zsh -df "$TEST_DIR/fixtures/grapheme_input.zsh" "$PROJECT_DIR" "$backend" 2>&1)
+      assert_success "$backend grapheme editing checks: $output" $?
+    done
 
-  # The real curses fixture checks cursor coordinates and retained glyphs.
-  zmodload zsh/zpty
-  _hardening_input_pty_start() {
-    trap - EXIT INT TERM
-    exec zsh -f "$TEST_DIR/fixtures/input_cells_ui.zsh" "$PROJECT_DIR" "$base"
-  }
-  TERM=xterm-256color zpty -b input-cells _hardening_input_pty_start
-  local -F deadline=$(( EPOCHREALTIME + 5.0 ))
-  while (( EPOCHREALTIME < deadline )); do
-    while zpty -r input-cells chunk 2>/dev/null; do output+="$chunk"; done
-    [[ -f "$base.done" ]] && break
-    zselect -t 1 2>/dev/null
-  done
-  assert_eq '2:6:界:界' "${mapfile[$base.wide]:-missing}" 'real curses wraps wide input and positions its cursor correctly'
-  assert_eq '1:6' "${mapfile[$base.combining]:-missing}" 'real curses places a combining-text cursor by terminal cells'
-  assert_eq 1 "${mapfile[$base.done]:-missing}" 'Unicode input fixture restores the terminal'
-  zpty -d input-cells 2>/dev/null
-  unfunction _hardening_input_pty_start
+    # The real curses fixture checks cursor coordinates and retained glyphs.
+    zmodload zsh/zpty
+    _hardening_input_pty_start() {
+      trap - EXIT INT TERM
+      exec zsh -f "$TEST_DIR/fixtures/input_cells_ui.zsh" "$PROJECT_DIR" "$base"
+    }
+    TERM=xterm-256color zpty -b input-cells _hardening_input_pty_start
+    local -F deadline=$(( EPOCHREALTIME + 5.0 ))
+    while (( EPOCHREALTIME < deadline )); do
+      while zpty -r input-cells chunk 2>/dev/null; do output+="$chunk"; done
+      [[ -f "$base.done" ]] && break
+      zselect -t 1 2>/dev/null
+    done
+    assert_eq '2:6:界:界' "${mapfile[$base.wide]:-missing}" 'real curses wraps wide input and positions its cursor correctly'
+    assert_eq '1:6' "${mapfile[$base.combining]:-missing}" 'real curses places a combining-text cursor by terminal cells'
+    assert_eq 1 "${mapfile[$base.done]:-missing}" 'Unicode input fixture restores the terminal'
+    zpty -d input-cells 2>/dev/null
+    unfunction _hardening_input_pty_start
+  fi
   UI_ACTIVE=$old_active
   input_reset
 }

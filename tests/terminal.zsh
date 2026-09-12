@@ -182,6 +182,8 @@ unfunction _terminal_saved_curses
 
 source "$TEST_DIR/native_sync.zsh"
 
+test_integration terminal || return 0
+
 typeset -g terminal_pty_base="$TEST_TMP/terminal-pty" terminal_pty_output='' terminal_pty_chunk=''
 terminal_pty_wait() {
   local file="$1" expected="$2"

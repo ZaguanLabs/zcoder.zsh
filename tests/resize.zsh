@@ -80,6 +80,8 @@
   }
 }
 
+test_integration resize || return 0
+
 # Run the real UI on stock curses, and optionally the experimental module.
 resize_pty_wait() {
   local -F deadline=$(( EPOCHREALTIME + 8 ))

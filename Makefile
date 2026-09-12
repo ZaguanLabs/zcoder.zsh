@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := all
-.PHONY: all setup native check test test-visual benchmark model-eval compile clean curses markdown
+.PHONY: all setup native check test test-fast test-visual benchmark model-eval compile clean curses markdown
 
 all: native compile
 
@@ -25,6 +25,9 @@ endif
 
 test: check
 	zsh tests/run.zsh
+
+test-fast: check
+	zsh tests/run.zsh --fast
 
 test-visual: check
 	ZCODER_REQUIRE_VISUALS=1 zsh -df tests/picker.zsh

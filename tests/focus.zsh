@@ -46,6 +46,8 @@
   input_reset
 }
 
+test_integration focus || return 0
+
 # Exercise the actual idle application loop in a PTY on both backend choices.
 () {
   local backend base chunk output='' tty_path

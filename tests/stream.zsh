@@ -175,6 +175,8 @@ zf_rmdir "${stream_failed_base}.body"
 functions[http_request]="${functions[_stream_saved_request]}"
 unfunction _stream_saved_request
 
+test_integration stream || return 0
+
 typeset -g stream_pty_base="$TEST_TMP/stream-pty" stream_pty_output="" stream_pty_chunk=""
 stream_pty_wait() {
   local file="$1" expected="$2"
