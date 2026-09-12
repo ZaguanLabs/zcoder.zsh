@@ -22,7 +22,7 @@ typeset -grF UI_RESIZE_CHECK_INTERVAL=0.25
 typeset -g UI_STATUS="Ready"
 typeset -g UI_STATUS_KIND=success UI_STATUS_DISPLAY='' UI_STATUS_ATTR='bold green/black'
 typeset -g UI_NOTICE_TEXT='' UI_NOTICE_KIND=''
-typeset -gF UI_STATUS_SINCE=0.0 UI_NOTICE_UNTIL=0.0
+typeset -gF UI_NOTICE_UNTIL=0.0
 typeset -gi UI_NOTICE_GENERATION=0
 typeset -g UI_GIT_DISPLAY='' UI_GIT_WORKSPACE=''
 typeset -gF UI_NEXT_GIT_CHECK=0.0
@@ -111,18 +111,18 @@ ui_draw_footer() { _ui_draw_window footer "${1:-0}"; }
 TRAPWINCH() { UI_RESIZE_PENDING=1; }
 
 # Existing local and remote status events share this presentation adapter.
-# Only known activity states animate; arbitrary remote text remains plain data.
+# Detailed local/remote events remain available independently of the badge.
 ui_set_status() {
   emulate -L zsh
   local kind=info value="$1"
   zcoder_terminal_safe "${value[1,256]}"; value="${REPLY//$'\n'/ }"
   case "${value:l}" in
+    tool:*) kind=busy ;;
     ready|'goal complete') kind=success ;;
     *error*|*failed*|denied*) kind=error ;;
     stopped|incomplete|*blocked*|*budget*|*paused*|*stopped*) kind=warning ;;
-    thinking*|warming*|compacting*|'goal verifying'*|tool:*|connecting*|checking*|loading*|*' working'|*' consulting') kind=busy ;;
+    thinking*|warming*|compacting*|'goal verifying'*|connecting*|checking*|loading*|running*|*' working'|*' consulting') kind=busy ;;
   esac
-  [[ "$value" != "$UI_STATUS" || "$kind" != "$UI_STATUS_KIND" ]] && UI_STATUS_SINCE=$EPOCHREALTIME
   UI_STATUS="$value"; UI_STATUS_KIND="$kind"
   [[ "$kind" == error || "$kind" == warning ]] && ui_status_notice "$kind" "$value" 0
   return 0
@@ -144,29 +144,33 @@ ui_status_notice() {
   UI_NOTICE_GENERATION=$UI_TRANSCRIPT_GENERATION
 }
 
+# Content cells inside the badge. Geometry, never status text, sets its width.
+_ui_status_width() {
+  local -i limit=$(( SCREEN_W / 2 - 4 ))
+  REPLY=12
+  (( SCREEN_W >= 100 )) && REPLY=28
+  (( REPLY > limit )) && REPLY=$limit
+  (( REPLY < 1 )) && REPLY=1
+  return 0
+}
+
 ui_status_update() {
   emulate -L zsh
   ui_git_update
   local text="$UI_STATUS" kind="$UI_STATUS_KIND" extra=''
-  local -i elapsed=0 frame=1 percent=0 ticks=0
-  local -a frames=('|' '/' '-' $'\\')
+  local -i percent=0 status_limit=0
+  _ui_status_width; status_limit=$REPLY
   if (( EPOCHREALTIME >= UI_NOTICE_UNTIL || UI_NOTICE_GENERATION != UI_TRANSCRIPT_GENERATION )); then
     UI_NOTICE_TEXT=''; UI_NOTICE_KIND=''
   fi
   if [[ -n "$UI_NOTICE_TEXT" ]]; then
     text="$UI_NOTICE_TEXT"; kind="$UI_NOTICE_KIND"
   elif [[ "$kind" == busy ]]; then
-    (( UI_STATUS_SINCE > 0 )) || UI_STATUS_SINCE=$EPOCHREALTIME
-    elapsed=$(( EPOCHREALTIME - UI_STATUS_SINCE ))
-    (( elapsed < 0 )) && elapsed=0
-    if [[ ${ZCODER_ANIMATE:-true} != false ]]; then
-      ticks=$(( (EPOCHREALTIME - UI_STATUS_SINCE) * 4 ))
-      frame=$(( ticks % 4 + 1 ))
-      (( frame < 1 )) && frame=1
-      text="${frames[frame]} ${text} ${elapsed}s"
-    else
-      text="${text} ${elapsed}s"
-    fi
+    # Tool cards already expose individual steps. Keep the header still as
+    # generation, tools, compaction and consultations alternate within a turn.
+    case "${text:l}" in
+      thinking*|tool:*|compacting*|'goal verifying'*|running*|*' working'|*' consulting') text=Working ;;
+    esac
   fi
   case "$kind" in
     error)
@@ -181,16 +185,16 @@ ui_status_update() {
   esac
   # Display only local accounting here; remote servers do not expose these
   # counters. Add whole metadata fields only when there is room for them.
-  if [[ "$kind" != error && "$kind" != warning && ${REMOTE_MODE:-local} != client ]] && (( SCREEN_W >= 100 )); then
+  if [[ "$kind" != busy && "$kind" != error && "$kind" != warning && ${REMOTE_MODE:-local} != client ]] && (( SCREEN_W >= 100 )); then
     if (( ${AGENT_CONTEXT_WINDOW:-0} > 0 )); then
       percent=$(( 100.0 * ${AGENT_ESTIMATED_TOKENS:-0} / AGENT_CONTEXT_WINDOW ))
       extra=" ~${percent}% ctx"
-      (( ${#text} + ${#extra} <= SCREEN_W / 2 - 6 )) && text+="$extra"
+      (( ${#text} + ${#extra} <= status_limit )) && text+="$extra"
     fi
     case "${GOAL_STATUS:-none}" in
       active|verifying|paused|blocked|complete)
         extra=" goal:${GOAL_STATUS}"
-        (( ${#text} + ${#extra} <= SCREEN_W / 2 - 6 )) && text+="$extra" ;;
+        (( ${#text} + ${#extra} <= status_limit )) && text+="$extra" ;;
     esac
   fi
   UI_STATUS_DISPLAY="$text"
@@ -440,13 +444,13 @@ _ui_paint_header() {
   local -i defer_refresh="${1:-0}"
   local badge='' identity='' workspace="${ZCODER_WORKSPACE:t}" host="$OLLAMA_HOST"
   [[ "${REMOTE_MODE:-local}" == client ]] && host="${REMOTE_SERVER_NAME:-remote}@${REMOTE_ENDPOINT}"
-  local -i badge_limit=$(( SCREEN_W / 2 - 4 ))
-  (( badge_limit < 1 )) && badge_limit=1
+  _ui_status_width
+  local -i badge_limit=$REPLY
   zcoder_clip "$UI_STATUS_DISPLAY" "$badge_limit"; badge="$REPLY"
   if (( ${(m)#UI_STATUS_DISPLAY} > badge_limit )); then
     zcoder_clip "$badge" $(( badge_limit - 1 )); badge="${REPLY}…"
   fi
-  badge="[ ${badge} ]"
+  zcoder_pad "$badge" "$badge_limit"; badge="[ ${REPLY} ]"
   local -i badge_x=$(( SCREEN_W - ${(m)#badge} - 2 ))
   local -i identity_limit=$(( badge_x - 3 ))
   local -i section=1

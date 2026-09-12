@@ -67,18 +67,17 @@ to `Ready` after a successful warm-up.
 
 ## Status and activity
 
-The header reserves space for status even on narrow terminals. Long identity
-and status text are clipped to fit. At 100 columns or more, local sessions add
+The header reserves a fixed space for status at each terminal width, so status
+changes cannot push into the model, server, or project text. Long identity
+and status text are clipped to fit. At 100 columns or more, idle local sessions add
 an estimated context percentage and the current goal state when those fields
 fit. Remote sessions show the server's status without substituting local context
 or goal counters.
 
-Known activity states, including generation, warm-up, compaction, verification,
-and external consultations, show a small ASCII spinner and elapsed seconds for
-the current phase. Repeated status events do not reset the timer. Animation runs
-at four frames per second through the existing input loop; idle status stays
-still. Set `ZCODER_ANIMATE=false` to keep elapsed time without the spinner.
-Synchronous operations can still delay updates until control returns to the UI.
+Generation, tool calls, compaction, verification, and external consultations
+share a steady `Working` badge. Individual tool steps remain visible in the
+transcript. The header has no spinner or elapsed-time counter; startup states
+such as `Connecting` and `Warming Up` remain visible without animation.
 
 Errors temporarily take precedence over warnings and ordinary activity for six
 seconds. A later `Ready` event does not immediately hide an error. The full error
@@ -278,7 +277,7 @@ handling until their next polling point.
 
 Local interactive shell commands run only after the existing approval checks.
 Their output is collected when they finish; typing, paste, transcript folding,
-status animation, and resize handling remain available while they run. Escape
+status notices, and resize handling remain available while they run. Escape
 stops the owned command process group and skips the rest of that tool batch.
 Completed side effects remain in place. Cancelling a verifier search pauses the
 goal instead of continuing verification.

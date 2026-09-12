@@ -41,7 +41,7 @@ _ui_approval_input() {
   fi
   _fixture_approval_input
 }
-command stty rows 24 cols 120 < /dev/tty || exit 1
+command stty rows 24 cols 160 < /dev/tty || exit 1
 trap 'ui_end' EXIT
 input_reset; transcript_reset
 ui_append_message assistant 'Stable transcript'
@@ -50,9 +50,21 @@ ui_init || exit 1
 # Baseline after entering activity so later editor paints count actual edits.
 ui_activity_begin
 fixture_header=0; fixture_chat=1; fixture_input=1
+typeset -gi fixture_polls=0
+typeset -a fixture_phases=('Thinking 2' 'Tool: read_file' 'Tool: mcp__server__a_long_tool_name')
+typeset -g fixture_initial_header=${mapfile[${fixture_base}.header]}
 typeset -g fixture_ch='' fixture_key='' fixture_mouse=''
 while true; do
   ui_poll_resize
+  if (( fixture_polls < 12 )); then
+    ui_set_status "${fixture_phases[$(( fixture_polls % 3 + 1 ))]}"
+    ui_draw_header
+    (( fixture_polls++ ))
+    if (( fixture_polls == 12 )); then
+      mapfile[${fixture_base}.underlay]="${fixture_chat}:${fixture_input}"
+      mapfile[${fixture_base}.stable]="${fixture_header}:$([[ ${mapfile[${fixture_base}.header]} == "$fixture_initial_header" ]] && print 1 || print 0)"
+    fi
+  fi
   zcoder_curses timeout input_win 50
   terminal_read_event input_win fixture_ch fixture_key fixture_mouse
   if [[ "$fixture_ch" == $'\x07' ]]; then
@@ -62,10 +74,6 @@ while true; do
   else
     ui_activity_input "$fixture_ch" "$fixture_key"
     (( $? == 130 )) && break
-  fi
-  if (( fixture_header >= 2 )); then
-    mapfile[${fixture_base}.underlay]="${fixture_chat}:${fixture_input}"
-    mapfile[${fixture_base}.animated]=1
   fi
   [[ ${mapfile[${fixture_base}.expire]:-} == 1 ]] && UI_NOTICE_UNTIL=0
   mapfile[${fixture_base}.draft]="$INPUT_BUF"
