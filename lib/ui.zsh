@@ -450,8 +450,13 @@ _ui_paint_header() {
   local -i badge_x=$(( SCREEN_W - ${(m)#badge} - 2 ))
   local -i identity_limit=$(( badge_x - 3 ))
   local -i section=1
-  local -a identities=("⚡ ${ZCODER_NAME} v${ZCODER_VERSION} │ " "$ZCODER_MODEL" " @ ${host}")
-  local -a identity_attrs=('bold cyan/black' 'bold yellow/black' 'dim white/black')
+  local -a identities=("⚡ ${ZCODER_NAME} v${ZCODER_VERSION} │ " "$ZCODER_MODEL" "@${host} | " "$workspace")
+  local -a identity_attrs=('bold cyan/black' 'bold yellow/black' 'dim white/black' 'bold cyan/black')
+  if [[ $UI_GIT_DISPLAY == 'Git: '?* && $UI_GIT_DISPLAY != 'Git: unavailable' &&
+        $UI_GIT_DISPLAY != 'Git: detached '* ]]; then
+    identities+=('^' "${UI_GIT_DISPLAY#Git: }")
+    identity_attrs+=('bold red/black' 'bold yellow/black')
+  fi
   zcoder_curses clear top_win
   ui_attr top_win -dim -bold border/surface
   ui_border top_win
@@ -459,7 +464,9 @@ _ui_paint_header() {
   for identity in "${identities[@]}"; do
     (( identity_limit > 0 )) || break
     zcoder_terminal_safe "$identity"; identity="${REPLY//$'\n'/ }"
-    zcoder_clip "$identity" "$identity_limit"; identity="$REPLY"
+    if (( ${(m)#identity} > identity_limit )); then
+      zcoder_clip "$identity" $(( identity_limit - 1 )); identity="${REPLY}…"
+    fi
     ui_attr top_win -bold -dim $=identity_attrs[section]
     zcoder_curses string top_win "$identity"
     (( identity_limit -= ${(m)#identity}, section++ ))
@@ -468,33 +475,6 @@ _ui_paint_header() {
     zcoder_curses move top_win 1 $badge_x
     ui_attr top_win -bold -dim $=UI_STATUS_ATTR
     zcoder_curses string top_win "$badge"
-  fi
-  # Workspace and branch share the title, independent of the model/status row.
-  local branch='' title_part=''
-  local -i title_limit=$(( SCREEN_W - 6 ))
-  local -a title_parts=("$workspace") title_attrs=('bold cyan/black')
-  if [[ $UI_GIT_DISPLAY == 'Git: '?* && $UI_GIT_DISPLAY != 'Git: unavailable' &&
-        $UI_GIT_DISPLAY != 'Git: detached '* ]]; then
-    branch=${UI_GIT_DISPLAY#Git: }
-    title_parts+=('^' "$branch")
-    title_attrs+=('bold red/black' 'bold yellow/black')
-  fi
-  if (( title_limit > 0 )); then
-    zcoder_curses move top_win 0 2
-    ui_attr top_win -bold -dim cyan/black
-    zcoder_curses string top_win ' '
-    section=1
-    for title_part in "${title_parts[@]}"; do
-      (( title_limit > 0 )) || break
-      zcoder_terminal_safe "$title_part"; title_part="${REPLY//$'\n'/ }"
-      if (( ${(m)#title_part} > title_limit )); then
-        zcoder_clip "$title_part" $(( title_limit - 1 )); title_part="${REPLY}…"
-      fi
-      ui_attr top_win -bold -dim $=title_attrs[section]
-      zcoder_curses string top_win "$title_part"
-      (( title_limit -= ${(m)#title_part}, section++ ))
-    done
-    zcoder_curses string top_win ' '
   fi
   (( defer_refresh )) || terminal_refresh top_win
 }
@@ -509,7 +489,11 @@ _ui_panel_frame() {
   ui_border "$window"
   zcoder_curses move "$window" 0 2
   if [[ $UI_FOCUS == "$focus" ]]; then
-    ui_attr "$window" -dim reverse bold accent/surface
+    if [[ $focus == input ]]; then
+      ui_attr "$window" -reverse -dim bold accent/surface
+    else
+      ui_attr "$window" -dim reverse bold accent/surface
+    fi
   else
     ui_attr "$window" -reverse -dim bold muted/surface
   fi

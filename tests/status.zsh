@@ -29,11 +29,11 @@ status_header_identity_test() {
   for call in "${MOCK_ZCURSES_CALLS[@]}"; do
     [[ "$call" == 'string top_win '* ]] && header_text+="${call#string top_win }"
   done
-  assert_contains "$header_text" "$ZCODER_MODEL @ $OLLAMA_HOST" "a wide local header includes model and host"
-  assert_contains "${(F)MOCK_ZCURSES_CALLS}" $'attr top_win -bold -dim bold cyan/black\nstring top_win zcoder.zsh' "the workspace has its own header title"
+  assert_contains "$header_text" "$ZCODER_MODEL@$OLLAMA_HOST | zcoder.zsh" "the header places the workspace after the compact model and host"
+  assert_not_contains "${(F)MOCK_ZCURSES_CALLS}" 'move top_win 0 2' "the workspace no longer occupies the top border"
   assert_contains "${(F)MOCK_ZCURSES_CALLS}" $'attr top_win -bold -dim bold cyan/black\nstring top_win ⚡ zcoder.zsh v0.11.3' "header branding restores the lightning icon and cyan name/version"
   assert_contains "${(F)MOCK_ZCURSES_CALLS}" $'attr top_win -bold -dim bold yellow/black\nstring top_win '"$ZCODER_MODEL" "the model name retains its distinct yellow styling"
-  assert_contains "${(F)MOCK_ZCURSES_CALLS}" $'attr top_win -bold -dim dim white/black\nstring top_win  @ '"$OLLAMA_HOST" "the host retains subdued white styling"
+  assert_contains "${(F)MOCK_ZCURSES_CALLS}" $'attr top_win -bold -dim dim white/black\nstring top_win @'"$OLLAMA_HOST" "the host retains subdued white styling"
   REMOTE_MODE=client
   local REMOTE_SERVER_NAME=remote-fixture REMOTE_ENDPOINT=192.168.1.48:7337
   ui_invalidate header; MOCK_ZCURSES_CALLS=(); ui_draw_header
@@ -122,7 +122,7 @@ assert_success "status fixture starts with real curses" $?
 status_pty_wait "$status_pty_base.animated" 1
 assert_success "the existing activity loop animates while awaiting input" $?
 assert_contains "$status_pty_output" 'zcoder vtest' "real curses displays the application name and version in the header"
-assert_contains "$status_pty_output" 'main' "real curses displays the branch on a narrow terminal without a sidebar"
+assert_contains "${mapfile[$status_pty_base.header]:-}" 'fixture@fixture | project^main' "real curses displays project and branch after the server"
 assert_not_contains "$status_pty_output" 'Git: main' "real curses omits the old separate Git label"
 assert_eq '1:1' "${mapfile[$status_pty_base.underlay]:-}" "animation never repaints unchanged transcript or editor windows"
 zpty -w -n status-ui draft

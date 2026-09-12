@@ -55,8 +55,8 @@ The interface includes:
 - a searchable command palette and context inspector
 - an exact-command approval dialog
 
-The header title shows the workspace and current branch as `zcoder.zsh^main`,
-with a red caret and yellow branch name. Without a named branch, it shows only
+The header shows `model@server | zcoder.zsh^main`, with the workspace and branch
+after the server, a red caret, and a yellow branch name. Without a named branch, it shows only
 the workspace name. Project names are not repeated in the sidebar.
 
 At local interactive startup, the status badge reads `Warming Up` while
@@ -111,7 +111,8 @@ private to the current user.
 
 Press Alt+1 to focus **[1] Sessions**, use Up or Down to choose a job, and press
 Alt+2 or Enter to return to **[2] Prompt**. The focused panel has a bright border
-and a highlighted title. Bare 1 and 2 also jump between these panels when focus
+and a bold title; the Prompt instructions use the normal panel background.
+Bare 1 and 2 also jump between these panels when focus
 is outside the prompt; inside it, digits remain ordinary text. Tab still cycles
 focus through the panels and transcript. Dialogs keep their own keyboard controls.
 Sessions cannot receive focus while work is running, but Alt+2 can always return

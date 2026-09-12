@@ -25,6 +25,9 @@
   assert_contains "${(F)MOCK_ZCURSES_CALLS}" 'attr side_win -dim reverse bold' 'focused sidebar title has a non-color focus cue'
   ui_activity_input 2 ''
   assert_eq input:12 "$UI_FOCUS:$INPUT_BUF" 'bare 2 returns from Sessions without inserting text'
+  MOCK_ZCURSES_CALLS=()
+  _ui_paint_input 1
+  assert_not_contains "${(F)MOCK_ZCURSES_CALLS}" ' reverse ' 'focused Prompt instructions have no reverse background'
   UI_ACTIVITY_DEPTH=1; UI_FOCUS=chat
   for ch in $'\e' 2; do ui_activity_input "$ch" ''; done
   assert_eq input:12 "$UI_FOCUS:$INPUT_BUF" 'Alt+2 returns to the draft during activity'

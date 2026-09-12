@@ -51,21 +51,23 @@ git_status_test() {
   assert_success 'server Git metadata round-trips through model status JSON' $?
   assert_eq 'Git: feature/new-ui' "$REMOTE_GIT_STATUS" 'remote polling reads the current server branch'
 
-  local -i UI_ACTIVE=1 UI_MODAL_ACTIVE=0 SCREEN_W=28
+  local -i UI_ACTIVE=1 UI_MODAL_ACTIVE=0 SCREEN_W=80
+  local ZCODER_NAME=zcoder ZCODER_VERSION=test ZCODER_MODEL=model OLLAMA_HOST=host REMOTE_MODE=local
   local UI_STATUS_DISPLAY=Ready UI_STATUS_ATTR='bold green/black'
   local -a MOCK_ZCURSES_CALLS=()
   UI_GIT_DISPLAY=$'Git: feature/\e[31m\nvery-long-branch-name'
   _ui_paint_header 1
   local call='' branch_text='' row=-1
   for call in "${MOCK_ZCURSES_CALLS[@]}"; do
-    [[ "$call" == 'move top_win 0 2' ]] && row=0
+    [[ "$call" == 'move top_win '* ]] && row=-1
+    [[ "$call" == 'string top_win project' ]] && row=0
     [[ "$call" == 'string top_win '* && "$row" == 0 ]] && branch_text+="${call#string top_win }"
   done
   assert_contains "$branch_text" '…' 'long branch names visibly truncate on narrow terminals'
   assert_not_contains "$branch_text" $'\e' 'branch names cannot inject terminal escapes'
   assert_not_contains "$branch_text" $'\n' 'branch names cannot create terminal rows'
   assert_success 'branch labels fit inside the header border' $(( ${(m)#branch_text} <= SCREEN_W - 4 ? 0 : 1 ))
-  assert_contains "$branch_text" 'project^feature/' 'the header title joins workspace and branch with a caret'
+  assert_contains "$branch_text" 'project^feature/' 'the header joins workspace and branch with a caret'
   assert_contains "${(F)MOCK_ZCURSES_CALLS}" $'attr top_win -bold -dim bold red/black\nstring top_win ^' 'the branch separator is red'
   assert_contains "${(F)MOCK_ZCURSES_CALLS}" $'attr top_win -bold -dim bold yellow/black\nstring top_win feature/' 'the branch name is yellow'
   for UI_GIT_DISPLAY in 'No Git' 'Git: unavailable' 'Git: detached 01234567' ''; do
@@ -73,10 +75,11 @@ git_status_test() {
     _ui_paint_header 1
     branch_text=''; row=-1
     for call in "${MOCK_ZCURSES_CALLS[@]}"; do
-      [[ "$call" == 'move top_win 0 2' ]] && row=0
+      [[ "$call" == 'move top_win '* ]] && row=-1
+      [[ "$call" == 'string top_win project' ]] && row=0
       [[ "$call" == 'string top_win '* && "$row" == 0 ]] && branch_text+="${call#string top_win }"
     done
-    assert_eq ' project ' "$branch_text" "the workspace title omits branchless Git state: $UI_GIT_DISPLAY"
+    assert_eq project "$branch_text" "the workspace omits branchless Git state: $UI_GIT_DISPLAY"
     assert_not_contains "${(F)MOCK_ZCURSES_CALLS}" 'move top_win 2 2' 'the header no longer writes a separate Git label'
   done
 

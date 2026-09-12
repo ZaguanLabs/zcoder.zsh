@@ -5,14 +5,27 @@ zmodload zsh/curses zsh/terminfo zsh/datetime zsh/mapfile zsh/files || exit 1
 typeset -g fixture_root="$1" fixture_base="$2"
 for fixture_lib in util json transcript input terminal ui overlays; do source "$fixture_root/lib/${fixture_lib}.zsh"; done
 typeset -g ZCODER_NAME=zcoder ZCODER_VERSION=test ZCODER_MODEL=fixture ZCODER_SYNC_OUTPUT=false
-typeset -g ZCODER_WORKSPACE="${fixture_base}.workspace" OLLAMA_HOST=fixture ZCODER_PROFILE=coding REMOTE_MODE=local
+typeset -g ZCODER_WORKSPACE="${fixture_base}.workspace/project" OLLAMA_HOST=fixture ZCODER_PROFILE=coding REMOTE_MODE=local
 zf_mkdir -p "$ZCODER_WORKSPACE/.git"
 print -r -- 'ref: refs/heads/main' > "$ZCODER_WORKSPACE/.git/HEAD"
 typeset -gi fixture_header=0 fixture_chat=0 fixture_input=0 fixture_notified=0 fixture_modal_header=0
 functions[_fixture_header]="${functions[_ui_paint_header]}"
 functions[_fixture_chat]="${functions[_ui_paint_chat]}"
 functions[_fixture_input]="${functions[_ui_paint_input]}"
-_ui_paint_header() { (( fixture_header++ )); _fixture_header "$@"; }
+_ui_paint_header() {
+  (( fixture_header++ )); _fixture_header "$@"
+  local -a cell=() cursor=()
+  local -i column
+  local rendered=''
+  zcoder_curses position top_win cursor
+  for (( column=0; column<SCREEN_W; column++ )); do
+    zcoder_curses move top_win 1 "$column"
+    zcoder_curses querychar top_win cell
+    rendered+=${cell[1]}
+  done
+  zcoder_curses move top_win "$cursor[1]" "$cursor[2]"
+  mapfile[${fixture_base}.header]=$rendered
+}
 _ui_paint_chat() { (( fixture_chat++ )); _fixture_chat "$@"; }
 _ui_paint_input() { (( fixture_input++ )); _fixture_input "$@"; }
 functions[_fixture_approval_draw]="${functions[_ui_approval_draw]}"
@@ -28,7 +41,7 @@ _ui_approval_input() {
   fi
   _fixture_approval_input
 }
-command stty rows 24 cols 60 < /dev/tty || exit 1
+command stty rows 24 cols 120 < /dev/tty || exit 1
 trap 'ui_end' EXIT
 input_reset; transcript_reset
 ui_append_message assistant 'Stable transcript'
