@@ -50,15 +50,15 @@ _acp_forward_worker_line() {
 }
 
 _acp_valid_json() {
-  json_begin "$1" || return 1
-  json_skip_value || return 1
-  [[ "$JSON_TOKEN_TYPE" == eof ]]
+  zjson_begin "$1" || return 1
+  zjson_skip_value || return 1
+  [[ "$ZJSON_TOKEN_TYPE" == eof ]]
 }
 
 _acp_raw_string() {
-  json_begin "$1" || return 1
-  [[ "$JSON_TOKEN_TYPE" == string ]] || return 1
-  REPLY="$JSON_TOKEN_VALUE"
+  zjson_begin "$1" || return 1
+  [[ "$ZJSON_TOKEN_TYPE" == string ]] || return 1
+  REPLY="$ZJSON_TOKEN_VALUE"
 }
 
 _acp_parse_message() {
@@ -78,11 +78,11 @@ _acp_parse_message() {
 
   if _mcp_raw_member "$source" id; then
     raw="$REPLY"
-    json_begin "$raw" || return 1
-    case "$JSON_TOKEN_TYPE" in
+    zjson_begin "$raw" || return 1
+    case "$ZJSON_TOKEN_TYPE" in
       string|number|null)
         ACP_MESSAGE_ID_RAW="$raw"
-        ACP_MESSAGE_ID="$JSON_TOKEN_VALUE"
+        ACP_MESSAGE_ID="$ZJSON_TOKEN_VALUE"
         ;;
       *) return 1 ;;
     esac
@@ -112,13 +112,13 @@ _acp_error() {
   # JSON-RPC notifications never receive a response. The literal `null` is
   # reserved for parse errors where no request ID can be recovered.
   [[ -n "$id_raw" ]] || return 0
-  json_quote "$message"; message_json="$REPLY"
+  zjson_quote "$message"; message_json="$REPLY"
   _acp_send "{\"jsonrpc\":\"2.0\",\"id\":${id_raw},\"error\":{\"code\":${code},\"message\":${message_json}}}"
 }
 
 _acp_notify_update() {
   local session_id="$1" update="$2" session_json=""
-  json_quote "$session_id"; session_json="$REPLY"
+  zjson_quote "$session_id"; session_json="$REPLY"
   _acp_send "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":${session_json},\"update\":${update}}}"
 }
 
@@ -126,7 +126,7 @@ _acp_content_update() {
   local kind="$1" content="$2" session_id="${3:-$ACP_SESSION_ID}"
   local content_json=""
   [[ -n "$content" ]] || return 0
-  json_quote "$content"; content_json="$REPLY"
+  zjson_quote "$content"; content_json="$REPLY"
   _acp_notify_update "$session_id" "{\"sessionUpdate\":\"${kind}\",\"content\":{\"type\":\"text\",\"text\":${content_json}}}"
 }
 
@@ -185,13 +185,13 @@ _acp_mcp_servers() {
       [[ "$env_name" == [A-Za-z_][A-Za-z0-9_]# ]] || { REPLY="MCP server '$name' has an unsafe environment name"; return 1; }
       _mcp_raw_member "$env_item" value && _acp_raw_string "$REPLY" || { REPLY="MCP server '$name' has an invalid environment value"; return 1; }
       env_value="$REPLY"
-      json_quote "$env_name"; env_name_json="$REPLY"
-      json_quote "$env_value"; env_value_json="$REPLY"
+      zjson_quote "$env_name"; env_name_json="$REPLY"
+      zjson_quote "$env_value"; env_value_json="$REPLY"
       env_json+="${comma}${env_name_json}:${env_value_json}"
       comma=,
     done
     env_json+='}'
-    json_quote "$command_name"; command_json="$REPLY"
+    zjson_quote "$command_name"; command_json="$REPLY"
     local_raw="{\"type\":\"stdio\",\"command\":${command_json},\"args\":${args},\"env\":${env_json}}"
     _mcp_register_raw "$name" acp "$local_raw"
   done
@@ -213,9 +213,9 @@ _acp_initialize() {
   local id_raw="$1" params="$2" raw="" requested=0
   _mcp_raw_member "$params" protocolVersion || { _acp_error "$id_raw" -32602 "protocolVersion is required"; return 1; }
   raw="$REPLY"
-  json_begin "$raw" || { _acp_error "$id_raw" -32602 "protocolVersion must be an integer"; return 1; }
-  [[ "$JSON_TOKEN_TYPE" == number && "$JSON_TOKEN_VALUE" == <1-> ]] || { _acp_error "$id_raw" -32602 "protocolVersion must be an integer"; return 1; }
-  requested=$JSON_TOKEN_VALUE
+  zjson_begin "$raw" || { _acp_error "$id_raw" -32602 "protocolVersion must be an integer"; return 1; }
+  [[ "$ZJSON_TOKEN_TYPE" == number && "$ZJSON_TOKEN_VALUE" == <1-> ]] || { _acp_error "$id_raw" -32602 "protocolVersion must be an integer"; return 1; }
+  requested=$ZJSON_TOKEN_VALUE
   ACP_INITIALIZED=1
   local queue_capability=true
   [[ "${REMOTE_MODE:-local}" == client ]] && queue_capability="${REMOTE_INPUT_SUPPORTED:-false}"
@@ -236,7 +236,7 @@ _acp_new_session() {
     remote_client_new_session || { _acp_error "$id_raw" -32603 "${REMOTE_ERROR:-could not create remote session}"; return 1; }
     ACP_SESSION_CWD[$CURRENT_SESSION_ID]="${ZCODER_WORKSPACE:A}"
     ACP_SESSION_MCP[$CURRENT_SESSION_ID]='[]'
-    json_quote "$CURRENT_SESSION_ID"; session_json="$REPLY"
+    zjson_quote "$CURRENT_SESSION_ID"; session_json="$REPLY"
     _acp_result "$id_raw" "{\"sessionId\":${session_json}}"
     return 0
   fi
@@ -254,7 +254,7 @@ _acp_new_session() {
   STATE_ENABLED=0
   ACP_SESSION_CWD[$CURRENT_SESSION_ID]="$cwd"
   ACP_SESSION_MCP[$CURRENT_SESSION_ID]="$mcp_servers"
-  json_quote "$CURRENT_SESSION_ID"; session_json="$REPLY"
+  zjson_quote "$CURRENT_SESSION_ID"; session_json="$REPLY"
   _acp_result "$id_raw" "{\"sessionId\":${session_json}}"
 }
 
@@ -395,20 +395,20 @@ acp_worker_tool_event() {
       (( ACP_TOOL_SEQUENCE++ ))
       ACP_CURRENT_TOOL_CALL_ID="tool_${sysparams[pid]:-$$}_${ACP_TOOL_SEQUENCE}"
       _acp_tool_kind "$name"; kind="$REPLY"
-      json_quote "$ACP_CURRENT_TOOL_CALL_ID"; id_json="$REPLY"
-      json_quote "$name"; title_json="$REPLY"
+      zjson_quote "$ACP_CURRENT_TOOL_CALL_ID"; id_json="$REPLY"
+      zjson_quote "$name"; title_json="$REPLY"
       _acp_notify_update "$ACP_SESSION_ID" "{\"sessionUpdate\":\"tool_call\",\"toolCallId\":${id_json},\"title\":${title_json},\"kind\":\"${kind}\",\"status\":\"pending\",\"rawInput\":${args_json}}"
       ;;
     running)
       [[ -n "$ACP_CURRENT_TOOL_CALL_ID" ]] || return 0
-      json_quote "$ACP_CURRENT_TOOL_CALL_ID"; id_json="$REPLY"
+      zjson_quote "$ACP_CURRENT_TOOL_CALL_ID"; id_json="$REPLY"
       _acp_notify_update "$ACP_SESSION_ID" "{\"sessionUpdate\":\"tool_call_update\",\"toolCallId\":${id_json},\"status\":\"in_progress\"}"
       ;;
     complete)
       [[ -n "$ACP_CURRENT_TOOL_CALL_ID" ]] || return 0
       [[ "$succeeded" == 1 ]] && tool_status=completed
-      json_quote "$ACP_CURRENT_TOOL_CALL_ID"; id_json="$REPLY"
-      json_quote "$result"; result_json="$REPLY"
+      zjson_quote "$ACP_CURRENT_TOOL_CALL_ID"; id_json="$REPLY"
+      zjson_quote "$result"; result_json="$REPLY"
       _acp_notify_update "$ACP_SESSION_ID" "{\"sessionUpdate\":\"tool_call_update\",\"toolCallId\":${id_json},\"status\":\"${tool_status}\",\"content\":[{\"type\":\"content\",\"content\":{\"type\":\"text\",\"text\":${result_json}}}]}"
       ACP_CURRENT_TOOL_CALL_ID=""
       ;;
@@ -420,10 +420,10 @@ acp_worker_request_permission() {
   local session_id_json="" tool_id_json="" title_json="" line="" raw="" outcome="" option_id="" options_json=""
   (( ACP_REQUEST_SEQUENCE++ ))
   request_id="permission_${sysparams[pid]:-$$}_${ACP_REQUEST_SEQUENCE}"
-  json_quote "$request_id"; request_id_json="$REPLY"
-  json_quote "$ACP_SESSION_ID"; session_id_json="$REPLY"
-  json_quote "$ACP_CURRENT_TOOL_CALL_ID"; tool_id_json="$REPLY"
-  json_quote "$action"; title_json="$REPLY"
+  zjson_quote "$request_id"; request_id_json="$REPLY"
+  zjson_quote "$ACP_SESSION_ID"; session_id_json="$REPLY"
+  zjson_quote "$ACP_CURRENT_TOOL_CALL_ID"; tool_id_json="$REPLY"
+  zjson_quote "$action"; title_json="$REPLY"
   options_json='[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"}'
   if [[ "$permission_kind" == command && "$ZCODER_PROFILE" == coding ]]; then
     options_json+=',{"optionId":"allow-always","name":"Allow for this session","kind":"allow_always"}'

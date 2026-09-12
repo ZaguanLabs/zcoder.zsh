@@ -209,7 +209,7 @@ REMOTE_RUNTIME_DIR="$saved_remote_runtime_for_acp"
 acp_smoke_home="$TEST_TMP/acp-smoke-home"
 acp_smoke_stderr="$TEST_TMP/acp-smoke.stderr"
 acp_smoke_input=$'{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}\n'
-json_quote "$TEST_TMP"; acp_smoke_cwd="$REPLY"
+zjson_quote "$TEST_TMP"; acp_smoke_cwd="$REPLY"
 acp_smoke_input+="{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session/new\",\"params\":{\"cwd\":${acp_smoke_cwd},\"mcpServers\":[]}}"
 acp_smoke_output="$(print -r -- "$acp_smoke_input" | ZCODER_HOME="$acp_smoke_home" "$PROJECT_DIR/zcoder.zsh" --acp --workspace "$TEST_TMP" 2>| "$acp_smoke_stderr")"
 acp_smoke_exit=$?
@@ -503,13 +503,13 @@ exec {test_toolkit_fd}>&-
 zcoder_debug_init
 
 quote_sample=$'quote " and slash \\\nline\ttab æøå'
-json_quote "$quote_sample"; fast_quoted="$REPLY"
-json_begin "$fast_quoted"
+zjson_quote "$quote_sample"; fast_quoted="$REPLY"
+zjson_begin "$fast_quoted"
 assert_success "bulk JSON quoting produces valid JSON" $?
-assert_eq "$quote_sample" "$JSON_TOKEN_VALUE" "bulk JSON quoting round-trips mixed content"
+assert_eq "$quote_sample" "$ZJSON_TOKEN_VALUE" "bulk JSON quoting round-trips mixed content"
 control_quote_sample=$'slash \\ and control \x01'
-json_quote "$control_quote_sample"; json_begin "$REPLY"
-assert_eq "$control_quote_sample" "$JSON_TOKEN_VALUE" "fallback JSON quoting round-trips uncommon controls"
+zjson_quote "$control_quote_sample"; zjson_begin "$REPLY"
+assert_eq "$control_quote_sample" "$ZJSON_TOKEN_VALUE" "fallback JSON quoting round-trips uncommon controls"
 test_section json_utf8
 source "${TEST_DIR}/json_utf8.zsh"
 test_section core
@@ -649,9 +649,9 @@ mcp_fixture="${PROJECT_DIR}/tests/fixtures/mcp_server.zsh"
 mcp_modern_log="$mcp_home/modern.log"
 mcp_legacy_log="$mcp_home/legacy.log"
 zf_mkdir -p "$mcp_home"
-json_quote "$mcp_fixture"; mcp_fixture_json="$REPLY"
-json_quote "$mcp_modern_log"; mcp_modern_log_json="$REPLY"
-json_quote "$mcp_legacy_log"; mcp_legacy_log_json="$REPLY"
+zjson_quote "$mcp_fixture"; mcp_fixture_json="$REPLY"
+zjson_quote "$mcp_modern_log"; mcp_modern_log_json="$REPLY"
+zjson_quote "$mcp_legacy_log"; mcp_legacy_log_json="$REPLY"
 mapfile[$mcp_home/mcp.json]='{"mcpServers":{"modern":{"type":"stdio","command":"zsh","args":['"${mcp_fixture_json}"',"modern"],"env":{"MCP_FIXTURE_LOG":'"${mcp_modern_log_json}"'}},"shadowed":{"type":"stdio","command":"missing-user-command","args":[]}}}'
 mapfile[$TEST_TMP/.mcp.json]='{"mcpServers":{"legacy":{"type":"stdio","command":"zsh","args":['"${mcp_fixture_json}"',"legacy"],"env":{"MCP_FIXTURE_LOG":'"${mcp_legacy_log_json}"'}},"shadowed":{"type":"stdio","command":"missing-project-command","args":[],"enabled":false}}}'
 ZCODER_HOME="$mcp_home"
@@ -871,9 +871,9 @@ assert_eq $'pair \U0001f600 ok' "$JSON_RESPONSE_CONTENT" "surrogate pairs decode
 json_parse_ollama_response '{"message":{"content":"pre \ud83d post"}}'
 assert_success "a lone UTF-16 surrogate escape does not abort parsing" $?
 assert_eq $'pre � post' "$JSON_RESPONSE_CONTENT" "a lone surrogate decodes to the replacement character"
-json_begin '"\udc00\uD800\uD800"'
+zjson_begin '"\udc00\uD800\uD800"'
 assert_success "adjacent unpairable surrogate escapes decode" $?
-assert_eq $'���' "$JSON_TOKEN_VALUE" "each unpairable surrogate becomes one replacement character"
+assert_eq $'���' "$ZJSON_TOKEN_VALUE" "each unpairable surrogate becomes one replacement character"
 
 json_parse_running_model_context '{"models":[{"name":"other:latest","context_length":4096},{"name":"qwen:latest","model":"qwen:latest","context_length":65536}]}' "qwen:latest"
 assert_success "running Ollama model metadata parses" $?
@@ -1989,7 +1989,7 @@ agent_parse_compaction_summary '{"schema_version":1,"objective":"missing the req
 assert_failure "incomplete compaction checkpoints fail closed" $?
 agent_parse_compaction_summary '{"schema_version":1,"objective":"wrong next type","constraints":[],"decisions":[],"artifacts":[],"facts":[],"completed":[],"active":[],"blocked":[],"next":"continue"}'
 assert_failure "compaction checkpoints reject scalar array fields" $?
-assert_eq "checkpoint field next must be an array" "$JSON_ERROR" "compaction validation identifies the mistyped field"
+assert_eq "checkpoint field next must be an array" "$ZJSON_ERROR" "compaction validation identifies the mistyped field"
 
 ZCODER_CONTEXT_WINDOW=32768
 ZCODER_COMPACT_PERCENT=70
@@ -2007,7 +2007,7 @@ agent_add_message user "current request"
 typeset -g MOCK_COMPACT_PAYLOAD=""
 agent_ollama_chat() {
   MOCK_COMPACT_PAYLOAD="$1"
-  json_quote "$MOCK_CHECKPOINT"
+  zjson_quote "$MOCK_CHECKPOINT"
   HTTP_BODY='{"message":{"content":'"$REPLY"'},"prompt_eval_count":1800,"eval_count":120}'
   HTTP_ERROR=""
   return 0
@@ -2026,7 +2026,7 @@ assert_eq "2" "${#AGENT_MESSAGES}" "replacement history preserves every bounded 
 assert_eq "2" "${#AGENT_USER_MESSAGES}" "replacement history preserves recent real user messages"
 agent_build_payload
 post_compaction_payload="$REPLY"
-json_begin "$post_compaction_payload" && json_discard_value && [[ "$JSON_TOKEN_TYPE" == eof ]]
+zjson_begin "$post_compaction_payload" && zjson_discard_value && [[ "$ZJSON_TOKEN_TYPE" == eof ]]
 assert_success "post-compaction payload remains valid JSON with multiple retained records" $?
 REPLY="$post_compaction_payload"
 assert_contains "$REPLY" "complete the requested change" "regular prompts include the validated checkpoint"
@@ -2049,7 +2049,7 @@ typeset -gi MOCK_COMPACTION_ATTEMPTS=0
 agent_ollama_chat() {
   (( MOCK_COMPACTION_ATTEMPTS++ ))
   if (( MOCK_COMPACTION_ATTEMPTS == 1 )); then
-    json_quote '{"schema_version":1,"objective":"retry malformed checkpoint","constraints":[],"decisions":[],"artifacts":[],"facts":[],"completed":[],"active":[],"blocked":[],"next":"continue"}'
+    zjson_quote '{"schema_version":1,"objective":"retry malformed checkpoint","constraints":[],"decisions":[],"artifacts":[],"facts":[],"completed":[],"active":[],"blocked":[],"next":"continue"}'
     HTTP_BODY='{"message":{"content":'"$REPLY"'},"prompt_eval_count":1800,"eval_count":12}'
     HTTP_ERROR=""
     return 0
@@ -2074,7 +2074,7 @@ typeset -ga MOCK_COMPACTION_PAYLOADS=()
 agent_ollama_chat() {
   (( MOCK_COMPACTION_ATTEMPTS++ ))
   MOCK_COMPACTION_PAYLOADS+=("$1")
-  json_quote '```json'
+  zjson_quote '```json'
   HTTP_BODY='{"message":{"content":'"$REPLY"'},"prompt_eval_count":1800,"eval_count":4}'
   HTTP_ERROR=""
   return 0
@@ -3250,6 +3250,8 @@ source "${TEST_DIR}/curses.zsh"
 if test_integration native_setup; then
   zsh -df "${TEST_DIR}/native_setup.zsh"
   assert_success "native setup and runtime selection preserve fallback and failure recovery" $?
+  zsh -df "${TEST_DIR}/json_setup.zsh"
+  assert_success "JSON setup preserves pinned sources, offline builds and local edits" $?
 fi
 if test_integration markdown_native; then
   zsh -df "${TEST_DIR}/markdown_native.zsh"

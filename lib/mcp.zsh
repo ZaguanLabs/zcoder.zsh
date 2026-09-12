@@ -125,7 +125,7 @@ _mcp_raw_value_bounds() {
 _mcp_raw_member() {
   local source="$1" wanted="$2" needle="" key=""
   local -i index=2 length=${#source} value_start=0 value_end=0
-  json_quote "$wanted"; needle="$REPLY"
+  zjson_quote "$wanted"; needle="$REPLY"
   [[ "${source[1]}" == '{' ]] || return 1
   while (( index <= length )); do
     while (( index <= length )) && [[ "${source[index]}" == [[:space:]] ]]; do (( index++ )); done
@@ -171,29 +171,29 @@ _mcp_raw_array_items() {
   return 1
 }
 
-# Capture a named object member without losing nested JSON. json_capture_value
+# Capture a named object member without losing nested JSON. zjson_capture_value
 # returns in REPLY, so preserve it before the next tokenizer operation.
 _mcp_json_get() {
   local source="$1" wanted="$2" key="" captured=""
   REPLY=""
-  json_begin "$source" || return 1
-  [[ "$JSON_TOKEN_TYPE" == '{' ]] || { JSON_ERROR="expected JSON object"; return 1; }
-  json_next || return 1
-  while [[ "$JSON_TOKEN_TYPE" != '}' ]]; do
-    [[ "$JSON_TOKEN_TYPE" == string ]] || return 1
-    key="$JSON_TOKEN_VALUE"
-    json_next || return 1
-    [[ "$JSON_TOKEN_TYPE" == ':' ]] || return 1
-    json_next || return 1
-    json_capture_raw_value || return 1
+  zjson_begin "$source" || return 1
+  [[ "$ZJSON_TOKEN_TYPE" == '{' ]] || { ZJSON_ERROR="expected JSON object"; return 1; }
+  zjson_next || return 1
+  while [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; do
+    [[ "$ZJSON_TOKEN_TYPE" == string ]] || return 1
+    key="$ZJSON_TOKEN_VALUE"
+    zjson_next || return 1
+    [[ "$ZJSON_TOKEN_TYPE" == ':' ]] || return 1
+    zjson_next || return 1
+    zjson_capture_raw_value || return 1
     captured="$REPLY"
     if [[ "$key" == "$wanted" ]]; then
       REPLY="$captured"
       return 0
     fi
-    if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
-      json_next || return 1
-    elif [[ "$JSON_TOKEN_TYPE" != '}' ]]; then
+    if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
+      zjson_next || return 1
+    elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
       return 1
     fi
   done
@@ -202,24 +202,24 @@ _mcp_json_get() {
 
 _mcp_json_string() {
   local source="$1"
-  json_begin "$source" || return 1
-  [[ "$JSON_TOKEN_TYPE" == string ]] || return 1
-  REPLY="$JSON_TOKEN_VALUE"
+  zjson_begin "$source" || return 1
+  [[ "$ZJSON_TOKEN_TYPE" == string ]] || return 1
+  REPLY="$ZJSON_TOKEN_VALUE"
 }
 
 _mcp_parse_string_array() {
   local source="$1"
   MCP_PARSED_ARRAY=()
-  json_begin "$source" || return 1
-  [[ "$JSON_TOKEN_TYPE" == '[' ]] || return 1
-  json_next || return 1
-  while [[ "$JSON_TOKEN_TYPE" != ']' ]]; do
-    [[ "$JSON_TOKEN_TYPE" == string ]] || return 1
-    MCP_PARSED_ARRAY+=("$JSON_TOKEN_VALUE")
-    json_next || return 1
-    if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
-      json_next || return 1
-    elif [[ "$JSON_TOKEN_TYPE" != ']' ]]; then
+  zjson_begin "$source" || return 1
+  [[ "$ZJSON_TOKEN_TYPE" == '[' ]] || return 1
+  zjson_next || return 1
+  while [[ "$ZJSON_TOKEN_TYPE" != ']' ]]; do
+    [[ "$ZJSON_TOKEN_TYPE" == string ]] || return 1
+    MCP_PARSED_ARRAY+=("$ZJSON_TOKEN_VALUE")
+    zjson_next || return 1
+    if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
+      zjson_next || return 1
+    elif [[ "$ZJSON_TOKEN_TYPE" != ']' ]]; then
       return 1
     fi
   done
@@ -229,45 +229,45 @@ typeset -ga MCP_PARSED_ARRAY=()
 
 _mcp_config_parse_servers() {
   local source="$1" scope="$2" key="" name="" captured=""
-  json_begin "$source" || return 1
-  [[ "$JSON_TOKEN_TYPE" == '{' ]] || { JSON_ERROR="MCP config must be a JSON object"; return 1; }
-  json_next || return 1
-  while [[ "$JSON_TOKEN_TYPE" != '}' ]]; do
-    [[ "$JSON_TOKEN_TYPE" == string ]] || return 1
-    key="$JSON_TOKEN_VALUE"
-    json_next || return 1
-    [[ "$JSON_TOKEN_TYPE" == ':' ]] || return 1
-    json_next || return 1
-    if [[ "$key" == mcpServers && "$JSON_TOKEN_TYPE" == '{' ]]; then
-      json_next || return 1
-      while [[ "$JSON_TOKEN_TYPE" != '}' ]]; do
-        [[ "$JSON_TOKEN_TYPE" == string ]] || return 1
-        name="$JSON_TOKEN_VALUE"
-        _mcp_valid_name "$name" || { JSON_ERROR="invalid MCP server name: $name"; return 1; }
-        json_next || return 1
-        [[ "$JSON_TOKEN_TYPE" == ':' ]] || return 1
-        json_next || return 1
-        json_capture_raw_value || return 1
+  zjson_begin "$source" || return 1
+  [[ "$ZJSON_TOKEN_TYPE" == '{' ]] || { ZJSON_ERROR="MCP config must be a JSON object"; return 1; }
+  zjson_next || return 1
+  while [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; do
+    [[ "$ZJSON_TOKEN_TYPE" == string ]] || return 1
+    key="$ZJSON_TOKEN_VALUE"
+    zjson_next || return 1
+    [[ "$ZJSON_TOKEN_TYPE" == ':' ]] || return 1
+    zjson_next || return 1
+    if [[ "$key" == mcpServers && "$ZJSON_TOKEN_TYPE" == '{' ]]; then
+      zjson_next || return 1
+      while [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; do
+        [[ "$ZJSON_TOKEN_TYPE" == string ]] || return 1
+        name="$ZJSON_TOKEN_VALUE"
+        _mcp_valid_name "$name" || { ZJSON_ERROR="invalid MCP server name: $name"; return 1; }
+        zjson_next || return 1
+        [[ "$ZJSON_TOKEN_TYPE" == ':' ]] || return 1
+        zjson_next || return 1
+        zjson_capture_raw_value || return 1
         captured="$REPLY"
-        [[ "$captured" == \{* ]] || { JSON_ERROR="MCP server '$name' must be an object"; return 1; }
+        [[ "$captured" == \{* ]] || { ZJSON_ERROR="MCP server '$name' must be an object"; return 1; }
         if [[ "$scope" == user ]]; then
           MCP_USER_RAW[$name]="$captured"
         else
           MCP_PROJECT_RAW[$name]="$captured"
         fi
-        if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
-          json_next || return 1
-        elif [[ "$JSON_TOKEN_TYPE" != '}' ]]; then
+        if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
+          zjson_next || return 1
+        elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
           return 1
         fi
       done
-      json_next || return 1
+      zjson_next || return 1
     else
-      json_skip_value || return 1
+      zjson_skip_value || return 1
     fi
-    if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
-      json_next || return 1
-    elif [[ "$JSON_TOKEN_TYPE" != '}' ]]; then
+    if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
+      zjson_next || return 1
+    elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
       return 1
     fi
   done
@@ -281,7 +281,7 @@ _mcp_config_read() {
   content="${mapfile[$path]}"
   [[ -n "$content" ]] || return 0
   if ! _mcp_config_parse_servers "$content" "$scope"; then
-    MCP_ERROR="Could not parse $path: ${JSON_ERROR:-invalid JSON}"
+    MCP_ERROR="Could not parse $path: ${ZJSON_ERROR:-invalid JSON}"
     return 1
   fi
 }
@@ -344,7 +344,7 @@ _mcp_config_write() {
   fi
   local old_umask="$(umask)" tmp="${path}.tmp.${sysparams[pid]:-$$}.${RANDOM}"
   for name in "${names[@]}"; do
-    json_quote "$name"
+    zjson_quote "$name"
     [[ "$scope" == user ]] && raw="${MCP_USER_RAW[$name]}" || raw="${MCP_PROJECT_RAW[$name]}"
     output+="${comma}${REPLY}:${raw}"
     comma=,
@@ -384,12 +384,12 @@ _mcp_wire_envelope() {
   # id/method fields. Slice only top-level members without decoding the result.
   if _mcp_raw_member "$line" id; then
     raw="$REPLY"
-    if json_begin "$raw" && [[ "$JSON_TOKEN_TYPE" == number || "$JSON_TOKEN_TYPE" == string ]]; then
+    if zjson_begin "$raw" && [[ "$ZJSON_TOKEN_TYPE" == number || "$ZJSON_TOKEN_TYPE" == string ]]; then
       MCP_WIRE_ID="$raw"
     fi
   fi
-  if _mcp_raw_member "$line" method && json_begin "$REPLY" && [[ "$JSON_TOKEN_TYPE" == string ]]; then
-    MCP_WIRE_METHOD="$JSON_TOKEN_VALUE"
+  if _mcp_raw_member "$line" method && zjson_begin "$REPLY" && [[ "$ZJSON_TOKEN_TYPE" == string ]]; then
+    MCP_WIRE_METHOD="$ZJSON_TOKEN_VALUE"
   fi
   return 0
 }
@@ -415,7 +415,7 @@ _mcp_broker_exchange() {
       fi
       if [[ -n "$MCP_WIRE_ID" && -n "$MCP_WIRE_METHOD" ]]; then
         local response_id="$MCP_WIRE_ID"
-        json_quote "Client method not supported: $MCP_WIRE_METHOD"
+        zjson_quote "Client method not supported: $MCP_WIRE_METHOD"
         error_json="{\"jsonrpc\":\"2.0\",\"id\":${response_id},\"error\":{\"code\":-32601,\"message\":${REPLY}}}"
         print -r -u "$MCP_BROKER_WRITE_FD" -- "$error_json" || true
       fi
@@ -683,7 +683,7 @@ mcp_rpc() {
   else
     params="{${params_members}}"
   fi
-  json_quote "$method"
+  zjson_quote "$method"
   request="{\"jsonrpc\":\"2.0\",\"id\":${id},\"method\":${REPLY},\"params\":${params}}"
   mcp_broker_request "$name" R "$id" "$request" "$timeout_seconds" || return 1
   _mcp_response_parse "$MCP_RESPONSE" || { MCP_ERROR="MCP server returned malformed JSON"; return 1; }
@@ -797,8 +797,8 @@ _mcp_rebuild_tool_catalog() {
         MCP_TOOL_SERVER[$exposed]="$server"
         MCP_TOOL_ORIGINAL[$exposed]="$original"
         MCP_TOOL_EFFECT[$exposed]="$effect"
-        json_quote "$exposed"; local exposed_json="$REPLY"
-        json_quote "[MCP server '$server'; short tool name '$original'; $effect_note. When instructions mention '$original', call this exact function.] $description"; local description_json="$REPLY"
+        zjson_quote "$exposed"; local exposed_json="$REPLY"
+        zjson_quote "[MCP server '$server'; short tool name '$original'; $effect_note. When instructions mention '$original', call this exact function.] $description"; local description_json="$REPLY"
         MCP_TOOL_SCHEMA[$exposed]="{\"type\":\"function\",\"function\":{\"name\":${exposed_json},\"description\":${description_json},\"parameters\":${schema}}}"
       fi
     done
@@ -809,7 +809,7 @@ mcp_fetch_tools() {
   local name="$1" result="" tools="" cursor="" all='[' comma="" member="" tool_raw=""
   while true; do
     member=""
-    if [[ -n "$cursor" ]]; then json_quote "$cursor"; member="\"cursor\":${REPLY}"; fi
+    if [[ -n "$cursor" ]]; then zjson_quote "$cursor"; member="\"cursor\":${REPLY}"; fi
     mcp_rpc "$name" tools/list "$member" "$MCP_STARTUP_TIMEOUT" || return 1
     result="$REPLY"
     _mcp_raw_member "$result" tools || { MCP_ERROR="tools/list omitted tools"; return 1; }
@@ -911,11 +911,11 @@ mcp_call_tool() {
   server="${MCP_TOOL_SERVER[$exposed]:-}"
   [[ -n "$server" ]] || { _tool_fail "unknown MCP tool: $exposed"; return 1; }
   original="${MCP_TOOL_ORIGINAL[$exposed]}"
-  json_begin "$args_json" || { _tool_fail "invalid MCP arguments: $JSON_ERROR"; return 1; }
-  [[ "$JSON_TOKEN_TYPE" == '{' ]] || { _tool_fail "MCP tool arguments must be an object"; return 1; }
-  json_capture_raw_value || { _tool_fail "invalid MCP arguments: $JSON_ERROR"; return 1; }
+  zjson_begin "$args_json" || { _tool_fail "invalid MCP arguments: $ZJSON_ERROR"; return 1; }
+  [[ "$ZJSON_TOKEN_TYPE" == '{' ]] || { _tool_fail "MCP tool arguments must be an object"; return 1; }
+  zjson_capture_raw_value || { _tool_fail "invalid MCP arguments: $ZJSON_ERROR"; return 1; }
   args_json="$REPLY"
-  json_quote "$original"; local name_json="$REPLY"
+  zjson_quote "$original"; local name_json="$REPLY"
   if ! mcp_rpc "$server" tools/call "\"name\":${name_json},\"arguments\":${args_json}" "$MCP_REQUEST_TIMEOUT"; then
     _tool_fail "MCP ${server}/${original} failed: $MCP_ERROR"
     (( TOOL_CANCELLED )) && return 130
@@ -962,13 +962,13 @@ mcp_status_text() {
 
 _mcp_raw_stdio() {
   local command_name="$1" args_json="$2" env_json="$3" enabled="${4:-true}"
-  json_quote "$command_name"; local command_json="$REPLY"
+  zjson_quote "$command_name"; local command_json="$REPLY"
   REPLY="{\"type\":\"stdio\",\"command\":${command_json},\"args\":${args_json},\"env\":${env_json},\"enabled\":${enabled}}"
 }
 
 _mcp_cli_json_array() {
   local value="" output="[" comma=""
-  for value in "$@"; do json_quote "$value"; output+="${comma}${REPLY}"; comma=,; done
+  for value in "$@"; do zjson_quote "$value"; output+="${comma}${REPLY}"; comma=,; done
   REPLY="${output}]"
 }
 
@@ -978,7 +978,7 @@ _mcp_cli_env_json() {
     [[ "$pair" == *=* ]] || { MCP_ERROR="--env expects KEY=VALUE"; return 1; }
     key="${pair%%=*}"; value="${pair#*=}"
     [[ "$key" == [A-Za-z_][A-Za-z0-9_]## ]] || { MCP_ERROR="invalid environment name: $key"; return 1; }
-    json_quote "$key"; local key_json="$REPLY"; json_quote "$value"
+    zjson_quote "$key"; local key_json="$REPLY"; zjson_quote "$value"
     output+="${comma}${key_json}:${REPLY}"; comma=,
   done
   REPLY="${output}}"
@@ -1006,7 +1006,7 @@ mcp_cli() {
       if (( json )); then
         local output='{"servers":[' comma="" item=""
         for name in "${MCP_NAMES[@]}"; do
-          json_quote "$name"; item="{\"name\":${REPLY}"; json_quote "${MCP_SCOPE[$name]}"; item+=",\"scope\":${REPLY}"; json_quote "${MCP_TYPE[$name]}"; item+=",\"transport\":${REPLY},\"enabled\":${MCP_ENABLED[$name]}}"; output+="${comma}${item}"; comma=,; done
+          zjson_quote "$name"; item="{\"name\":${REPLY}"; zjson_quote "${MCP_SCOPE[$name]}"; item+=",\"scope\":${REPLY}"; zjson_quote "${MCP_TYPE[$name]}"; item+=",\"transport\":${REPLY},\"enabled\":${MCP_ENABLED[$name]}}"; output+="${comma}${item}"; comma=,; done
         print -r -- "${output}]}"
       else
         mcp_status_text; print -r -- "$REPLY"

@@ -21,7 +21,7 @@ lib/
   input.zsh             multiline editor, viewport, and history
   input_queue.zsh       durable steering and queued follow-ups
   instructions.zsh      AGENTS.md discovery and prompt assembly
-  json.zsh              native tokenizer, decoder, and encoder
+  json.zsh              Ollama/model codecs and scalar tool argument validation
   mcp.zsh               MCP registry, stdio brokers, and tools
   overlays.zsh          shared modal lifecycle, pickers, and approval views
   process.zsh           interactive command/search worker and process cleanup
@@ -37,9 +37,24 @@ lib/
   util.zsh              wrapping, truncation, and display helpers
 tests/run.zsh           shell-level unit and integration tests
 tests/benchmark.zsh     opt-in native performance measurements
+vendor/zjson/           pure-Zsh JSON tokenizer, encoding, UTF-8 repair and contexts
 ```
 
 ## Library loading
+
+`lib/json.zsh` loads the pinned public `vendor/zjson/zjson.zsh` entrypoint.
+Generic parsing uses `zjson_*` functions and `ZJSON_*` tokenizer state;
+application codecs retain their `json_parse_*` APIs and `JSON_RESPONSE_*`,
+`JSON_TOOL_*` and `JSON_OBJECT*` results. Tool arguments remain scalar-only.
+Nested context accounting and queue/remote operations use `zjson_with_context`
+to preserve the outer parser, including diagnostics. Application result arrays
+are localized separately where the caller owns them. Paste and cached-response
+repair use `zjson_utf8_repair`, which preserves active parser diagnostics.
+
+Parsing validates UTF-8 and uses byte offsets. Generic container traversal is
+limited to 128 levels. Raw capture retains original JSON bytes; compact capture
+re-encodes values. JSON Pointer lookup is available for occasional lookups, while
+protocol codecs traverse once when reading multiple members.
 
 `zcoder_require` sources each library at most once. The core libraries load at
 startup; `acp.zsh` and `remote.zsh` load only when their modes are selected.

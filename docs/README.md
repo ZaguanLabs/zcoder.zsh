@@ -35,6 +35,7 @@ zcoder.zsh. If you are new to the project, begin with
 
 ## Releases
 
+- [v0.16.0 — A smaller core, a calmer terminal](releases/v0.16.0.md)
 - [v0.15.0 — Native Markdown, one-command setup](releases/v0.15.0.md)
 - [v0.14.0 — A stronger foundation](releases/v0.14.0.md)
 - [v0.13.1 — UTF-8 transcript hotfix](releases/v0.13.1.md)

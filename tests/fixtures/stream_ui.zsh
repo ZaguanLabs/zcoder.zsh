@@ -48,7 +48,7 @@ fixture_barrier() {
 (
   trap - EXIT INT TERM
   local peer="" record="" request="" chunk="" command_json=""
-  json_quote "print executed > ${fixture_base}.executed"; command_json="$REPLY"
+  zjson_quote "print executed > ${fixture_base}.executed"; command_json="$REPLY"
   for phase in first final cancel truncated; do
     ztcp -a "$fixture_listener" || exit 1
     peer=$REPLY

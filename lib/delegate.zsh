@@ -249,44 +249,44 @@ delegate_async_collect() {
 
 _delegate_json_collect_value() {
   local path="$1" key="" child_path=""
-  case "$JSON_TOKEN_TYPE" in
+  case "$ZJSON_TOKEN_TYPE" in
     string)
       DELEGATE_JSON_PATHS+=("$path")
-      DELEGATE_JSON_VALUES+=("$JSON_TOKEN_VALUE")
-      json_next || return 1
+      DELEGATE_JSON_VALUES+=("$ZJSON_TOKEN_VALUE")
+      zjson_next || return 1
       ;;
     number|true|false|null)
-      json_next || return 1
+      zjson_next || return 1
       ;;
     '{')
-      json_next || return 1
-      while [[ "$JSON_TOKEN_TYPE" != '}' ]]; do
-        [[ "$JSON_TOKEN_TYPE" == string ]] || return 1
-        key="$JSON_TOKEN_VALUE"
-        json_next || return 1
-        [[ "$JSON_TOKEN_TYPE" == ':' ]] || return 1
-        json_next || return 1
+      zjson_next || return 1
+      while [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; do
+        [[ "$ZJSON_TOKEN_TYPE" == string ]] || return 1
+        key="$ZJSON_TOKEN_VALUE"
+        zjson_next || return 1
+        [[ "$ZJSON_TOKEN_TYPE" == ':' ]] || return 1
+        zjson_next || return 1
         child_path="${path:+${path}.}${key}"
         _delegate_json_collect_value "$child_path" || return 1
-        if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
-          json_next || return 1
-        elif [[ "$JSON_TOKEN_TYPE" != '}' ]]; then
+        if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
+          zjson_next || return 1
+        elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
           return 1
         fi
       done
-      json_next || return 1
+      zjson_next || return 1
       ;;
     '[')
-      json_next || return 1
-      while [[ "$JSON_TOKEN_TYPE" != ']' ]]; do
+      zjson_next || return 1
+      while [[ "$ZJSON_TOKEN_TYPE" != ']' ]]; do
         _delegate_json_collect_value "${path}[]" || return 1
-        if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
-          json_next || return 1
-        elif [[ "$JSON_TOKEN_TYPE" != ']' ]]; then
+        if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
+          zjson_next || return 1
+        elif [[ "$ZJSON_TOKEN_TYPE" != ']' ]]; then
           return 1
         fi
       done
-      json_next || return 1
+      zjson_next || return 1
       ;;
     *) return 1 ;;
   esac
@@ -295,9 +295,9 @@ _delegate_json_collect_value() {
 delegate_json_collect_scalars() {
   DELEGATE_JSON_PATHS=()
   DELEGATE_JSON_VALUES=()
-  json_begin "$1" || return 1
+  zjson_begin "$1" || return 1
   _delegate_json_collect_value "" || return 1
-  [[ "$JSON_TOKEN_TYPE" == eof ]]
+  [[ "$ZJSON_TOKEN_TYPE" == eof ]]
 }
 
 _delegate_json_value() {

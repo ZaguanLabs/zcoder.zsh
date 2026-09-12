@@ -162,7 +162,7 @@ transcript_metadata_json() {
     "${UI_TOOL_NAMES[index]}" "${UI_TOOL_ARGS[index]}" "${UI_TOOL_RESULTS[index]}" "${UI_TOOL_STATES[index]}" "${UI_TOOL_SUMMARIES[index]}")
   for key in id open name args result state summary; do
     value="${values[1]}"; shift values
-    json_quote "$value"
+    zjson_quote "$value"
     output+="${output:+,}\"${key}\":${REPLY}"
   done
   output+=",\"streaming\":$(( index == UI_STREAM_INDEX ? 1 : 0 ))"

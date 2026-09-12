@@ -47,13 +47,15 @@ Then ask for a concrete outcome:
 Find the cause of the failing tests, make the smallest safe fix, and verify it.
 ```
 
-`make` prepares a private Zsh runtime with the pinned zdraw and zmdown modules
-for the enhanced interface and Markdown rendering. It needs a C toolchain,
+`make` initializes the pure-Zsh zjson dependency and prepares a private Zsh
+runtime with the pinned zdraw and zmdown modules for the enhanced interface and
+Markdown rendering. It needs a C toolchain,
 Autoconf, ncurses development headers and download tools; see
 [build requirements](docs/getting-started.md#enhanced-curses-module). It requires
 no administrator access and leaves your system shell unchanged.
 
-To try the dependency-free renderer, skip `make` and run the script directly.
+To use the stock renderer, run `make compile` and launch the script. This
+initializes zjson and compiles Zsh libraries without building native modules.
 
 Prefer a non-interactive run? Use `--prompt`:
 

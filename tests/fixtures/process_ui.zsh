@@ -37,7 +37,7 @@ tool_process_run() { (( fixture_processes++ )); _fixture_process_run "$@"; }
 typeset -g fixture_command="print -r -- started > ${(q)fixture_base}.started; print -r -- PRIVATE_\"WORKER\"_TTY > /dev/tty; trap '' TERM; sleep 30 & print -r -- \$! > ${(q)fixture_base}.child; wait"
 agent_ollama_chat() {
   (( fixture_requests++ ))
-  json_quote "$fixture_command"
+  zjson_quote "$fixture_command"
   HTTP_BODY='{"message":{"content":"","tool_calls":[{"function":{"name":"run_command","arguments":{"command":'"$REPLY"'}}},{"function":{"name":"run_command","arguments":{"command":"print should-not-run > process-pty.should-not-run"}}}]}}'
   HTTP_ERROR=''
   return 0

@@ -89,8 +89,8 @@ input_queue_submit() {
   (( bytes > 0 && bytes <= 65536 )) || { INPUT_QUEUE_ERROR='input must contain 1 to 65536 bytes'; return 1; }
   _input_queue_lock "$session" || return 1
   {
-    json_quote "$body"; body_json="$REPLY"
-    json_quote "$turn"; record='{"turn_id":'"$REPLY"',"message_id":"'"$id"'","mode":"'"$mode"'","text":'"$body_json"'}'
+    zjson_quote "$body"; body_json="$REPLY"
+    zjson_quote "$turn"; record='{"turn_id":'"$REPLY"',"message_id":"'"$id"'","mode":"'"$mode"'","text":'"$body_json"'}'
     matches=("$queue_dir/items/"*-"$id".json(N))
     if (( ${#matches} )); then
       [[ "${mapfile[$matches[1]]}" == "$record" ]] || { INPUT_QUEUE_ERROR='message ID already used for different input'; return 1; }
@@ -121,19 +121,20 @@ input_queue_receipt() {
 # Called only by the agent at request boundaries. Keep the lock through history
 # persistence: enqueue and turn completion cannot race past the final check.
 input_queue_drain() {
+  INPUT_QUEUE_ERROR=''
+  INPUT_QUEUE_MODEL_PENDING=0
+  [[ -n "$INPUT_QUEUE_TURN_ID" ]] || return 1
+  zjson_with_context _input_queue_drain "$@"
+}
+
+_input_queue_drain() {
   emulate -L zsh
   setopt extendedglob
   local mode="${1:-steer}" queue_dir='' queue_lock='' file='' id='' text='' message='' selected=''
   local -i count=0 found=0 message_index=0 shell_result=0
   local interrupted=''
   local seq=''
-  INPUT_QUEUE_ERROR=''
-  INPUT_QUEUE_MODEL_PENDING=0
-  [[ -n "$INPUT_QUEUE_TURN_ID" ]] || return 1
-  local JSON_SOURCE='' JSON_TOKEN_TYPE='' JSON_TOKEN_VALUE='' JSON_ERROR=''
-  local -a JSON_CHARS=()
   local -A JSON_OBJECT=() JSON_OBJECT_TYPES=()
-  local -i JSON_POS=1 JSON_LEN=0 JSON_TOKEN_START=1
   _input_queue_lock "$CURRENT_SESSION_ID" || return 1
   {
     for file in "$queue_dir/items/"*.json(N.on); do
@@ -244,13 +245,14 @@ input_queue_ui_submit() {
 }
 
 input_queue_command() {
+  zjson_with_context _input_queue_command "$@"
+}
+
+_input_queue_command() {
   emulate -L zsh
   setopt extendedglob
   local action="${1:-list}" id="${2:-}" queue_dir='' queue_lock='' file='' text='' turn=''
-  local JSON_SOURCE='' JSON_TOKEN_TYPE='' JSON_TOKEN_VALUE='' JSON_ERROR=''
-  local -a JSON_CHARS=()
   local -A JSON_OBJECT=() JSON_OBJECT_TYPES=()
-  local -i JSON_POS=1 JSON_LEN=0 JSON_TOKEN_START=1
   if [[ "${REMOTE_MODE:-local}" == client ]]; then
     if [[ "$action" == resume ]]; then remote_client_user_turn '/queue resume'; return $?; fi
     remote_client_input_request "$action" '' "$id" '' '' || { agent_emit error "$REMOTE_ERROR"; return 1; }
@@ -289,14 +291,15 @@ input_queue_command() {
 # Shared flat request contract for HTTP and the namespaced ACP extension.
 # No mutation of the broker's conversation arrays occurs here.
 input_queue_request() {
+  zjson_with_context _input_queue_request "$@"
+}
+
+_input_queue_request() {
   emulate -L zsh
   setopt extendedglob
   local action="$1" session="$2" turn="$3" id="$4" mode="$5" body="$6"
   local queue_dir='' queue_lock='' file='' item_id='' pending='' active=''
-  local JSON_SOURCE='' JSON_TOKEN_TYPE='' JSON_TOKEN_VALUE='' JSON_ERROR=''
-  local -a JSON_CHARS=()
   local -A JSON_OBJECT=() JSON_OBJECT_TYPES=()
-  local -i JSON_POS=1 JSON_LEN=0 JSON_TOKEN_START=1
   INPUT_QUEUE_ERROR=''
   case "$action" in
     submit) input_queue_submit "$session" "$turn" "$id" "$mode" "$body"; return $? ;;
@@ -320,8 +323,8 @@ input_queue_request() {
       pending+="[$item_id] ${JSON_OBJECT[mode]}: ${JSON_OBJECT[text]}"$'\n'
     done
     [[ "$action" == list ]] || { INPUT_QUEUE_ERROR='no matching pending input'; return 1; }
-    json_quote "$pending"; pending="$REPLY"
-    json_quote "$active"
+    zjson_quote "$pending"; pending="$REPLY"
+    zjson_quote "$active"
     REPLY='{"turn_id":'"$REPLY"',"pending":'"$pending"'}'
   } always { zsystem flock -u "$queue_lock"; }
 }

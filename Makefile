@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := all
-.PHONY: all setup native check test test-fast test-visual benchmark model-eval compile clean curses markdown
+.PHONY: all setup native json check test test-fast test-visual benchmark model-eval compile clean curses markdown
 
 all: native compile
 
@@ -9,8 +9,11 @@ native: export MAKE := $(MAKE)
 native: check
 	zsh -df scripts/setup-native.zsh
 
-check:
-	zsh -fc 'for f in zcoder.zsh chat.sh lib/*.zsh scripts/*.zsh tests/*.zsh tests/fixtures/*.zsh; do zsh -n "$$f" || exit $$?; done'
+json:
+	zsh -df scripts/setup-json.zsh
+
+check: json
+	zsh -fc 'for f in zcoder.zsh chat.sh lib/*.zsh scripts/*.zsh tests/*.zsh tests/fixtures/*.zsh vendor/zjson/zjson.zsh vendor/zjson/lib/*.zsh; do zsh -n "$$f" || exit $$?; done'
 
 # Advanced builds for an installed shell retain the explicit source-tree path.
 ifdef ZSH_BUILD_ROOT
@@ -44,7 +47,7 @@ model-eval: check
 # time; a stale .zwc is ignored, so recompiling is an optimization, never a
 # correctness requirement.
 compile: check
-	zsh -fc 'for f in lib/*.zsh; do zcompile -R $$f; done'
+	zsh -fc 'for f in lib/*.zsh vendor/zjson/zjson.zsh vendor/zjson/lib/*.zsh; do zcompile -R "$$f" || exit $$?; done'
 
 clean:
-	rm -f lib/*.zwc
+	rm -f lib/*.zwc vendor/zjson/*.zwc vendor/zjson/lib/*.zwc

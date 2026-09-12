@@ -55,7 +55,7 @@ for benchmark_size in 25000 50000 100000; do
   benchmark_measure "paste ${benchmark_size} characters" benchmark_paste "$benchmark_size" || exit 1
 done
 
-benchmark_quote() { json_quote "$benchmark_text"; }
+benchmark_quote() { zjson_quote "$benchmark_text"; }
 for benchmark_kind in DEL SOH; do
   benchmark_control=$'\177'
   [[ "$benchmark_kind" == SOH ]] && benchmark_control=$'\001'
@@ -73,7 +73,7 @@ benchmark_measure 'input cached layout 100000 chars' benchmark_cached_layout || 
 
 ZCODER_MODEL=benchmark; AGENT_SYSTEM_PROMPT=benchmark; AGENT_CONTEXT_TOOLS='[]'
 benchmark_text="${(pl:1024::x:)}"
-json_quote "$benchmark_text"
+zjson_quote "$benchmark_text"
 for benchmark_index in {1..1000}; do AGENT_MESSAGES+=('{"role":"assistant","content":'"$REPLY"'}'); done
 benchmark_context_cold() {
   AGENT_ACCOUNTING_MESSAGES=(); AGENT_ACCOUNTING_BYTES=(); AGENT_ACCOUNTING_REASONING_BYTES=()

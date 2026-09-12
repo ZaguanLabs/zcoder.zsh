@@ -167,7 +167,7 @@ input_queue_tests() {
     # Forwarded ACP requests must use the server session and run IDs without
     # damaging a surrounding HTTP event read or JSON parser.
     saved[remote_client_request]="${functions[remote_client_request]}"
-    local REMOTE_INPUT_SUPPORTED=true HTTP_BODY=outer-response JSON_SOURCE=outer-json
+    local REMOTE_INPUT_SUPPORTED=true HTTP_BODY=outer-response ZJSON_SOURCE=outer-json
     local forwarded='' response_id=bridge
     remote_client_request() {
       forwarded="$1:$2:$3"
@@ -177,13 +177,19 @@ input_queue_tests() {
     _acp_input_request 13 '{"sessionId":"'"$CURRENT_SESSION_ID"'","turnId":"remote-run","messageId":"bridge","mode":"follow_up","text":"Forward this"}'
     assert_contains "$captured" '"message_id":"bridge","state":"accepted"' 'ACP forwards accepted receipts from a remote server'
     assert_contains "$forwarded" 'POST:/v1/input:{"session_id":"'"$CURRENT_SESSION_ID"'","turn_id":"remote-run","message_id":"bridge","mode":"follow_up","text":"Forward this"}' 'remote ACP sends the exact server identity and message'
-    JSON_SOURCE=outer-json
+    zjson_begin '["outer",2]'; zjson_next
+    local outer_parser="$ZJSON_SOURCE|$ZJSON_POS|$ZJSON_TOKEN_TYPE|$ZJSON_TOKEN_VALUE"
     remote_client_input_request submit remote-run bridge steer 'Nested input'
     assert_eq outer-response "$HTTP_BODY" 'nested queue submission preserves an outer HTTP response'
-    assert_eq outer-json "$JSON_SOURCE" 'nested queue submission preserves the outer JSON parser'
+    assert_eq "$outer_parser" "$ZJSON_SOURCE|$ZJSON_POS|$ZJSON_TOKEN_TYPE|$ZJSON_TOKEN_VALUE" 'nested queue submission preserves the outer JSON parser'
+    zjson_next; zjson_next
+    assert_eq 2 "$ZJSON_TOKEN_VALUE" 'outer tokenizer resumes after nested queue submission'
     response_id=wrong-id
+    zjson_validate $'{\n"invalid":01}'
+    local outer_diagnostic="$ZJSON_ERROR|$ZJSON_ERROR_CODE|$ZJSON_ERROR_OFFSET|$ZJSON_ERROR_LINE|$ZJSON_ERROR_COLUMN"
     remote_client_input_request submit remote-run bridge steer 'Nested input'
     assert_failure 'a mismatched remote receipt cannot clear the submitted draft' $?
+    assert_eq "$outer_diagnostic" "$ZJSON_ERROR|$ZJSON_ERROR_CODE|$ZJSON_ERROR_OFFSET|$ZJSON_ERROR_LINE|$ZJSON_ERROR_COLUMN" 'failed nested queue submission restores outer diagnostics'
     REMOTE_INPUT_SUPPORTED=false
     remote_client_input_request submit remote-run bridge steer 'Nested input'
     assert_failure 'legacy remote servers do not receive unsupported input requests' $?

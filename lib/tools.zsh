@@ -29,9 +29,9 @@ tools_schema_json() {
   fi
   _tool_patch_contract
   patch_contract="$REPLY"
-  json_quote $'Apply a focused workspace edit using a raw standard unified diff.\n'"${patch_contract}"$'\nIf rejected, re-read the exact target lines and retry apply_patch. write_file remains unavailable until the corrected patch succeeds or a new user request begins.'
+  zjson_quote $'Apply a focused workspace edit using a raw standard unified diff.\n'"${patch_contract}"$'\nIf rejected, re-read the exact target lines and retry apply_patch. write_file remains unavailable until the corrected patch succeeds or a new user request begins.'
   patch_description="$REPLY"
-  json_quote "Raw unified diff text satisfying the complete contract in the tool description."
+  zjson_quote "Raw unified diff text satisfying the complete contract in the tool description."
   patch_argument_description="$REPLY"
   # Put installed MCP capabilities first. Smaller local models strongly weight
   # tool order, and project-designated navigation must not be shadowed by the
@@ -846,7 +846,7 @@ tool_dispatch() {
     return $?
   fi
   if ! json_parse_flat_object "$args_json"; then
-    _tool_fail "invalid arguments for $name: ${JSON_ERROR:-parse error}"
+    _tool_fail "invalid arguments for $name: ${ZJSON_ERROR:-parse error}"
     return 1
   fi
   if [[ "$name" != run_command && "$name" != send_agent_message ]]; then

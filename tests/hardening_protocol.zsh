@@ -85,7 +85,7 @@ hardening_protocol_tests() {
 
     # Exercise framing itself: routing-only tests miss quadratic removal of
     # a long consumed line. Retain a following reply and an incomplete tail.
-    json_quote "${(pl:50000::é:)}"
+    zjson_quote "${(pl:50000::é:)}"
     wire='{"jsonrpc":"2.0","id":3,"result":{"text":'"$REPLY"'}}'
     MCP_BROKER_BUFFER="$wire"$'\n{"jsonrpc":"2.0","id":4,"result":{}}\n{"partial":"é'
     started=$EPOCHREALTIME
@@ -152,7 +152,7 @@ hardening_mcp_native_scan_test() {
   local -i MCP_PCRE_JSON_STATE=0
   local description="${(pl:50000::é:)}" value='' wire=''
   local -F started elapsed
-  json_quote "$description"; description="$REPLY"
+  zjson_quote "$description"; description="$REPLY"
   wire='{"jsonrpc":"2.0","result":{"description":'"$description"',"id":999,"method":"nested"},"id":"outer"}'
   started=$EPOCHREALTIME
   _mcp_wire_envelope "$wire"
@@ -186,7 +186,7 @@ hardening_mcp_timeout_test() {
   local -a MCP_NAMES=() MCP_TOOL_NAMES=()
   local -A MCP_TOOL_SERVER=() MCP_TOOL_ORIGINAL=() MCP_TOOL_SCHEMA=() MCP_TOOL_EFFECT=()
   local broker_pid='' server_pid='' runtime=''
-  json_quote "$TEST_DIR/fixtures/hardening_mcp.zsh"
+  zjson_quote "$TEST_DIR/fixtures/hardening_mcp.zsh"
   MCP_ARGS[$name]="[$REPLY]"
   {
     mcp_broker_start "$name"

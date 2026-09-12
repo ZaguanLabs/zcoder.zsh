@@ -9,8 +9,8 @@ typeset -g ZCODER_WORKSPACE="${fixture_base}.workspace" ZCODER_HOME="${fixture_b
 typeset -g ZCODER_TOOL_EXPOSURE=full ZCODER_WARMUP=false
 typeset -gi STATE_ENABLED=0 MCP_STARTUP_TIMEOUT=5 fixture_second=0
 zf_mkdir -p "$ZCODER_WORKSPACE" "$ZCODER_HOME"
-json_quote "$fixture_root/tests/fixtures/mcp_connect_server.zsh"; fixture_server_json="$REPLY"
-json_quote "$fixture_base"; fixture_base_json="$REPLY"
+zjson_quote "$fixture_root/tests/fixtures/mcp_connect_server.zsh"; fixture_server_json="$REPLY"
+zjson_quote "$fixture_base"; fixture_base_json="$REPLY"
 mapfile[$ZCODER_HOME/mcp.json]='{"mcpServers":{"fixture":{"command":"zsh","args":['"$fixture_server_json,$fixture_base_json"']},"second":{"command":"zsh","args":[]}}}'
 functions[_fixture_broker]="${functions[_mcp_broker_main]}"
 _mcp_broker_main() {

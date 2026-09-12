@@ -88,9 +88,9 @@ _relay_ack_json() {
   emulate -L zsh
   local message_id="$1" ack_status="$2" queue_position="${3:-0}" relay_state="${4:-ready}"
   local id_json="" status_json="" state_json=""
-  json_quote "$message_id"; id_json="$REPLY"
-  json_quote "$ack_status"; status_json="$REPLY"
-  json_quote "$relay_state"; state_json="$REPLY"
+  zjson_quote "$message_id"; id_json="$REPLY"
+  zjson_quote "$ack_status"; status_json="$REPLY"
+  zjson_quote "$relay_state"; state_json="$REPLY"
   REPLY="{\"protocol\":1,\"type\":\"ack\",\"message_id\":${id_json},\"status\":${status_json},\"queue_position\":${queue_position},\"state\":${state_json}}"
 }
 
@@ -262,14 +262,14 @@ relay_refresh_manifest() {
   _relay_current_state; state="$REPLY"
   signature="${CURRENT_SESSION_ID:-}:${ZCODER_MODEL:-}:${ZCODER_PROFILE:-}:$state"
   [[ "$signature" == "$RELAY_MANIFEST_SIGNATURE" && -f "$RELAY_MANIFEST_PATH" ]] && return 0
-  json_quote "$RELAY_INSTANCE_ID"; id_json="$REPLY"
-  json_quote "$project"; project_json="$REPLY"
-  json_quote "${ZCODER_WORKSPACE:A}"; workspace_json="$REPLY"
-  json_quote "${CURRENT_SESSION_ID:-}"; session_json="$REPLY"
-  json_quote "${ZCODER_PROFILE:-coding}"; profile_json="$REPLY"
-  json_quote "${ZCODER_MODEL:-unknown}"; model_json="$REPLY"
-  json_quote "$RELAY_SOCKET_PATH"; socket_json="$REPLY"
-  json_quote "$state"; state_json="$REPLY"
+  zjson_quote "$RELAY_INSTANCE_ID"; id_json="$REPLY"
+  zjson_quote "$project"; project_json="$REPLY"
+  zjson_quote "${ZCODER_WORKSPACE:A}"; workspace_json="$REPLY"
+  zjson_quote "${CURRENT_SESSION_ID:-}"; session_json="$REPLY"
+  zjson_quote "${ZCODER_PROFILE:-coding}"; profile_json="$REPLY"
+  zjson_quote "${ZCODER_MODEL:-unknown}"; model_json="$REPLY"
+  zjson_quote "$RELAY_SOCKET_PATH"; socket_json="$REPLY"
+  zjson_quote "$state"; state_json="$REPLY"
   _relay_atomic_write "$RELAY_MANIFEST_PATH" \
     "{\"protocol\":1,\"instance_id\":${id_json},\"pid\":${sysparams[pid]:-$$},\"project\":${project_json},\"workspace\":${workspace_json},\"session_id\":${session_json},\"profile\":${profile_json},\"model\":${model_json},\"socket\":${socket_json},\"state\":${state_json},\"started_at\":${RELAY_STARTED_AT}}" || {
       RELAY_ERROR="could not publish relay manifest"
@@ -375,9 +375,9 @@ _relay_ping_peer() {
   emulate -L zsh
   local socket_path="$1" target_id="$2" message_id="ping-${sysparams[pid]:-$$}-${RANDOM}"
   local id_json="" target_json="" sender_json="" payload=""
-  json_quote "$message_id"; id_json="$REPLY"
-  json_quote "$target_id"; target_json="$REPLY"
-  json_quote "${RELAY_INSTANCE_ID:-observer-${sysparams[pid]:-$$}}"; sender_json="$REPLY"
+  zjson_quote "$message_id"; id_json="$REPLY"
+  zjson_quote "$target_id"; target_json="$REPLY"
+  zjson_quote "${RELAY_INSTANCE_ID:-observer-${sysparams[pid]:-$$}}"; sender_json="$REPLY"
   payload="{\"protocol\":1,\"type\":\"ping\",\"message_id\":${id_json},\"target_instance_id\":${target_json},\"sender_instance_id\":${sender_json}}"
   relay_request "$socket_path" "$payload" || return 1
   _relay_parse_ack "$RELAY_RESPONSE" || return 1
@@ -471,12 +471,12 @@ relay_tool_send_agent_message() {
   [[ -n "$target_socket" ]] || { _tool_fail "target instance is not available; call list_agents again"; return 1; }
   (( RELAY_SEND_SEQUENCE++ ))
   message_id="${RELAY_INSTANCE_ID}-${RELAY_SEND_SEQUENCE}"
-  json_quote "$message_id"; message_json="$REPLY"
-  json_quote "$target_id"; target_json="$REPLY"
-  json_quote "$RELAY_INSTANCE_ID"; sender_json="$REPLY"
-  json_quote "${ZCODER_WORKSPACE:A:t}"; project_json="$REPLY"
-  json_quote "${ZCODER_WORKSPACE:A}"; workspace_json="$REPLY"
-  json_quote "$body"; body_json="$REPLY"
+  zjson_quote "$message_id"; message_json="$REPLY"
+  zjson_quote "$target_id"; target_json="$REPLY"
+  zjson_quote "$RELAY_INSTANCE_ID"; sender_json="$REPLY"
+  zjson_quote "${ZCODER_WORKSPACE:A:t}"; project_json="$REPLY"
+  zjson_quote "${ZCODER_WORKSPACE:A}"; workspace_json="$REPLY"
+  zjson_quote "$body"; body_json="$REPLY"
   payload="{\"protocol\":1,\"type\":\"enqueue\",\"message_id\":${message_json},\"target_instance_id\":${target_json},\"sender_instance_id\":${sender_json},\"sender_pid\":${sysparams[pid]:-$$},\"sender_project\":${project_json},\"sender_workspace\":${workspace_json},\"body\":${body_json},\"created_at\":${EPOCHSECONDS}}"
   local first_error=""
   if ! relay_request "$target_socket" "$payload"; then

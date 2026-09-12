@@ -170,7 +170,7 @@ goal_verifier_dispatch_read() {
   local name="$1" args_json="$2"
   TOOL_CANCELLED=0
   if ! json_parse_flat_object "$args_json"; then
-    _tool_fail "invalid verifier arguments for $name: ${JSON_ERROR:-parse error}"
+    _tool_fail "invalid verifier arguments for $name: ${ZJSON_ERROR:-parse error}"
     return 1
   fi
   case "$name" in
@@ -189,7 +189,7 @@ goal_parse_verdict() {
   GOAL_VERIFIER_NEXT_ACTION=""
   GOAL_VERIFIER_MISSING_EVIDENCE=""
   if ! json_parse_flat_object "$args_json"; then
-    REPLY="invalid verify_goal arguments: ${JSON_ERROR:-parse error}"
+    REPLY="invalid verify_goal arguments: ${ZJSON_ERROR:-parse error}"
     return 1
   fi
   verdict="${JSON_OBJECT[verdict]:-}"

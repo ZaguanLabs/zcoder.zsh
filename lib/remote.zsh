@@ -167,7 +167,7 @@ remote_client_handshake() {
   local protocol="" server_name="" workspace="" model="" profile="" command_policy="" sessions="" harnesses="" goals=""
   remote_load_token "$REMOTE_TOKEN_FILE" || return 1
   remote_client_request GET /v1/hello || return $?
-  json_parse_flat_object "$HTTP_BODY" || { REMOTE_ERROR="invalid server handshake: ${JSON_ERROR:-parse error}"; return 1; }
+  json_parse_flat_object "$HTTP_BODY" || { REMOTE_ERROR="invalid server handshake: ${ZJSON_ERROR:-parse error}"; return 1; }
   protocol="${JSON_OBJECT[protocol]:-}"
   server_name="${JSON_OBJECT[server_name]:-Remote zcoder}"
   workspace="${JSON_OBJECT[workspace]:-remote-workspace}"
@@ -234,7 +234,7 @@ remote_client_refresh_sessions() {
   while true; do
     remote_client_request GET "/v1/sessions?after=${cursor}" || return $?
     json_parse_flat_object "$HTTP_BODY" || {
-      REMOTE_ERROR="invalid remote session list: ${JSON_ERROR:-parse error}"
+      REMOTE_ERROR="invalid remote session list: ${ZJSON_ERROR:-parse error}"
       return 1
     }
     event="${JSON_OBJECT[event]:-}"
@@ -297,7 +297,7 @@ remote_client_load_session() {
   while true; do
     remote_client_request GET "/v1/session?id=${id}&after=${cursor}" || return $?
     json_parse_flat_object "$HTTP_BODY" || {
-      REMOTE_ERROR="invalid remote session transcript: ${JSON_ERROR:-parse error}"
+      REMOTE_ERROR="invalid remote session transcript: ${ZJSON_ERROR:-parse error}"
       return 1
     }
     event="${JSON_OBJECT[event]:-}"
@@ -335,7 +335,7 @@ remote_client_select_session() {
   (( REMOTE_SESSIONS_SUPPORTED )) || { REMOTE_ERROR="remote session browsing is not supported by this server"; return 1; }
   remote_client_idle_cancel
   REMOTE_SESSION_SYNC_REQUIRED=1
-  json_quote "$id"; id_json="$REPLY"
+  zjson_quote "$id"; id_json="$REPLY"
   remote_client_request POST /v1/session/select "{\"id\":${id_json}}" || return $?
   remote_client_refresh_sessions 0 || return $?
   [[ "$REMOTE_LIST_CURRENT_ID" == "$id" ]] || { REMOTE_ERROR='server selected a different session; refresh before sending a prompt'; return 1; }
@@ -371,7 +371,7 @@ remote_client_reconcile_session() {
 
 _remote_client_parse_model_status() {
   if ! json_parse_flat_object "$HTTP_BODY"; then
-    REMOTE_ERROR="invalid remote model status: ${JSON_ERROR:-parse error}"
+    REMOTE_ERROR="invalid remote model status: ${ZJSON_ERROR:-parse error}"
     return 1
   fi
   REMOTE_MODEL_STATUS="${JSON_OBJECT[model_status]:-unknown}"
@@ -556,8 +556,8 @@ remote_client_cancel_turn() {
   # A turn receipt lets the server reject delayed cancellation after another
   # client starts work. Before a receipt, retain the legacy cancellation path.
   if [[ -n "$REMOTE_INPUT_TURN_ID" ]]; then
-    json_quote "$CURRENT_SESSION_ID"; session_json=$REPLY
-    json_quote "$REMOTE_INPUT_TURN_ID"; turn_json=$REPLY
+    zjson_quote "$CURRENT_SESSION_ID"; session_json=$REPLY
+    zjson_quote "$REMOTE_INPUT_TURN_ID"; turn_json=$REPLY
     cancel_payload="{\"session_id\":$session_json,\"turn_id\":$turn_json}"
   fi
   if remote_client_request POST /v1/cancel "$cancel_payload" >/dev/null 2>&1 &&
@@ -603,7 +603,7 @@ _remote_client_user_turn() {
     ui_append_message user "$user_content"
     ui_refresh_all
   fi
-  json_quote "$user_content"; prompt_json="$REPLY"
+  zjson_quote "$user_content"; prompt_json="$REPLY"
   turn_payload="{\"prompt\":${prompt_json}}"
   (( ${ACP_WORKER_ACTIVE:-0} || ${UI_ACTIVE:-0} )) && turn_payload="{\"prompt\":${prompt_json},\"structured_events\":true}"
   remote_client_model_ensure
@@ -651,7 +651,7 @@ _remote_client_user_turn() {
     fi
     if ! json_parse_flat_object "$HTTP_BODY"; then
       transcript_interrupt_tool || true
-      agent_emit error "Invalid remote event: ${JSON_ERROR:-parse error}"
+      agent_emit error "Invalid remote event: ${ZJSON_ERROR:-parse error}"
       agent_set_status "Error"
       return 1
     fi
@@ -722,8 +722,8 @@ _remote_client_user_turn() {
           a|always|session) [[ "$approval_kind" == external ]] && decision="n" || decision="a" ;;
           *) decision="n" ;;
         esac
-        json_quote "$approval_id"; approval_id="$REPLY"
-        json_quote "$decision"; decision="$REPLY"
+        zjson_quote "$approval_id"; approval_id="$REPLY"
+        zjson_quote "$decision"; decision="$REPLY"
         approval_json="{\"id\":${approval_id},\"decision\":${decision}}"
         if ! remote_client_request POST /v1/approval "$approval_json"; then
           if (( REMOTE_REQUEST_CANCELLED )); then remote_client_cancel_turn; return 130; fi
@@ -756,19 +756,23 @@ _remote_client_user_turn() {
 }
 
 remote_client_input_request() {
+  zjson_with_context _remote_client_input_request "$@"
+}
+
+_remote_client_input_request() {
+  setopt localoptions extendedglob nonomatch
   # This can run inside an event-poll UI wait. Preserve its transport/parser
   # scratch state, and keep its asynchronous worker ownership separate.
   local action="$1" turn="$2" id="$3" mode="$4" text="$5" payload='' endpoint="/v1/input/$1"
-  local HTTP_BODY='' HTTP_ERROR='' JSON_SOURCE='' JSON_TOKEN_TYPE='' JSON_TOKEN_VALUE='' JSON_ERROR=''
-  local -a JSON_CHARS=()
+  local HTTP_BODY='' HTTP_ERROR=''
   local -A JSON_OBJECT=() JSON_OBJECT_TYPES=()
-  local -i JSON_POS=1 JSON_LEN=0 JSON_TOKEN_START=1 REMOTE_REQUEST_CANCELLED=0
+  local -i REMOTE_REQUEST_CANCELLED=0
   [[ "$REMOTE_INPUT_SUPPORTED" == true ]] || { REMOTE_ERROR='This server does not support queued input.'; return 1; }
-  json_quote "$CURRENT_SESSION_ID"; payload='{"session_id":'"$REPLY"
-  json_quote "$turn"; payload+=',"turn_id":'"$REPLY"
-  json_quote "$id"; payload+=',"message_id":'"$REPLY"
-  json_quote "$mode"; payload+=',"mode":'"$REPLY"
-  json_quote "$text"; payload+=',"text":'"$REPLY"'}'
+  zjson_quote "$CURRENT_SESSION_ID"; payload='{"session_id":'"$REPLY"
+  zjson_quote "$turn"; payload+=',"turn_id":'"$REPLY"
+  zjson_quote "$id"; payload+=',"message_id":'"$REPLY"
+  zjson_quote "$mode"; payload+=',"mode":'"$REPLY"
+  zjson_quote "$text"; payload+=',"text":'"$REPLY"'}'
   [[ "$action" == submit ]] && endpoint=/v1/input
   remote_client_request POST "$endpoint" "$payload" || return $?
   json_parse_flat_object "$HTTP_BODY" || { REMOTE_ERROR='invalid input queue response'; return 1; }
@@ -847,15 +851,15 @@ _remote_server_publish_json() {
 
 remote_server_emit_message() {
   local role="$1" content="$2" thinking="${3:-}" role_json="" content_json="" thinking_json=""
-  json_quote "$role"; role_json="$REPLY"
-  json_quote "$content"; content_json="$REPLY"
-  json_quote "$thinking"; thinking_json="$REPLY"
+  zjson_quote "$role"; role_json="$REPLY"
+  zjson_quote "$content"; content_json="$REPLY"
+  zjson_quote "$thinking"; thinking_json="$REPLY"
   _remote_server_publish_json "{\"event\":\"message\",\"role\":${role_json},\"content\":${content_json},\"thinking\":${thinking_json}}"
 }
 
 remote_server_emit_status() {
   local status_json=""
-  json_quote "$1"; status_json="$REPLY"
+  zjson_quote "$1"; status_json="$REPLY"
   _remote_server_publish_json "{\"event\":\"status\",\"status\":${status_json}}"
 }
 
@@ -882,10 +886,10 @@ remote_server_worker_tool_event() {
     *) return 0 ;;
   esac
   transcript_tool_event "$phase" "$name" "$args" "$result" "$succeeded" "$REMOTE_SERVER_TOOL_CALL_ID"
-  json_quote "$REMOTE_SERVER_TOOL_CALL_ID"; id_json="$REPLY"
-  json_quote "$name"; name_json="$REPLY"
-  json_quote "$args"; args_json="$REPLY"
-  json_quote "$result"; result_json="$REPLY"
+  zjson_quote "$REMOTE_SERVER_TOOL_CALL_ID"; id_json="$REPLY"
+  zjson_quote "$name"; name_json="$REPLY"
+  zjson_quote "$args"; args_json="$REPLY"
+  zjson_quote "$result"; result_json="$REPLY"
   _remote_server_publish_json "{\"event\":\"tool\",\"phase\":\"${phase}\",\"tool_call_id\":${id_json},\"name\":${name_json},\"args\":${args_json},\"result\":${result_json},\"succeeded\":${succeeded}}"
   [[ "$phase" == complete ]] && REMOTE_SERVER_TOOL_CALL_ID=""
   return 0
@@ -893,8 +897,8 @@ remote_server_worker_tool_event() {
 
 _remote_server_model_status_json() {
   local status_json="" error_json=""
-  json_quote "$REMOTE_MODEL_STATUS"; status_json="$REPLY"
-  json_quote "$REMOTE_MODEL_ERROR"; error_json="$REPLY"
+  zjson_quote "$REMOTE_MODEL_STATUS"; status_json="$REPLY"
+  zjson_quote "$REMOTE_MODEL_ERROR"; error_json="$REPLY"
   REPLY="{\"model_status\":${status_json},\"model_error\":${error_json}}"
   _remote_server_git_json
 }
@@ -904,7 +908,7 @@ _remote_server_model_status_json() {
 _remote_server_git_json() {
   local response="$REPLY"
   zcoder_git_status "$ZCODER_WORKSPACE"
-  json_quote "$REPLY"
+  zjson_quote "$REPLY"
   REPLY="${response%\}},\"git_status\":${REPLY}}"
 }
 
@@ -929,7 +933,7 @@ _remote_server_model_poll() {
   if (( request_status != 0 )); then
     error="${HTTP_ERROR:-Ollama warm-up request failed}"
   elif (( parse_status != 0 )); then
-    error="${JSON_ERROR:-invalid Ollama warm-up response}"
+    error="${ZJSON_ERROR:-invalid Ollama warm-up response}"
   else
     error="${JSON_RESPONSE_ERROR:-Ollama warm-up failed}"
   fi
@@ -993,10 +997,10 @@ remote_server_request_approval() {
   local pending="$REMOTE_RUNTIME_DIR/pending_approval" response="$REMOTE_RUNTIME_DIR/approvals/${approval_id}.response"
   local decision="n"
   local -F deadline=$(( EPOCHREALTIME + REMOTE_APPROVAL_TIMEOUT ))
-  json_quote "$approval_id"; id_json="$REPLY"
-  json_quote "$command_text"; command_json="$REPLY"
+  zjson_quote "$approval_id"; id_json="$REPLY"
+  zjson_quote "$command_text"; command_json="$REPLY"
   [[ "$approval_kind" == external ]] || approval_kind="command"
-  json_quote "$approval_kind"; kind_json="$REPLY"
+  zjson_quote "$approval_kind"; kind_json="$REPLY"
   mapfile[$pending]="$approval_id" || { REPLY="n"; return 1; }
   _remote_server_publish_json "{\"event\":\"approval_required\",\"id\":${id_json},\"kind\":${kind_json},\"command\":${command_json}}" || {
     zf_rm -f "$pending" 2>/dev/null
@@ -1060,9 +1064,9 @@ _remote_server_session_summary() {
   _state_nonnegative "${reply[1]:-0}"; agent_count=$REPLY
   _state_nonnegative "${reply[2]:-0}"; ui_count=$REPLY
   (( agent_count == 0 && ui_count == 0 )) && empty=1
-  json_quote "$id"; id_json="$REPLY"
-  json_quote "${reply[3]:-Untitled}"; title_json="$REPLY"
-  json_quote "${reply[4]:-unknown}"; model_json="$REPLY"
+  zjson_quote "$id"; id_json="$REPLY"
+  zjson_quote "${reply[3]:-Untitled}"; title_json="$REPLY"
+  zjson_quote "${reply[4]:-unknown}"; model_json="$REPLY"
   REPLY="{\"event\":\"session\",\"seq\":${index},\"id\":${id_json},\"title\":${title_json},\"model\":${model_json},\"current\":${current},\"empty\":${empty}}"
 }
 
@@ -1093,11 +1097,11 @@ _remote_server_session_event_snapshot() {
   ui_dir="${reply[index]:h}"
   seq="${reply[index]:t}"
   [[ -f "$ui_dir/$seq.role" ]] || return 2
-  json_quote "${mapfile[$ui_dir/$seq.role]:-system}"; role_json="$REPLY"
-  json_quote "${mapfile[$ui_dir/$seq.content]}"; content_json="$REPLY"
-  json_quote "${mapfile[$ui_dir/$seq.thinking]}"; thinking_json="$REPLY"
-  json_quote "${mapfile[$ui_dir/$seq.time]}"; time_json="$REPLY"
-  json_quote "${mapfile[$ui_dir/$seq.meta]:-}"; metadata_json="$REPLY"
+  zjson_quote "${mapfile[$ui_dir/$seq.role]:-system}"; role_json="$REPLY"
+  zjson_quote "${mapfile[$ui_dir/$seq.content]}"; content_json="$REPLY"
+  zjson_quote "${mapfile[$ui_dir/$seq.thinking]}"; thinking_json="$REPLY"
+  zjson_quote "${mapfile[$ui_dir/$seq.time]}"; time_json="$REPLY"
+  zjson_quote "${mapfile[$ui_dir/$seq.meta]:-}"; metadata_json="$REPLY"
   _state_nonnegative "${mapfile[$ui_dir/$seq.reasoning_open]:-0}"; reasoning_open=$REPLY
   (( reasoning_open > 0 )) && reasoning_open=1
   REPLY="{\"event\":\"message\",\"seq\":${index},\"role\":${role_json},\"content\":${content_json},\"thinking\":${thinking_json},\"time\":${time_json},\"reasoning_open\":${reasoning_open},\"metadata\":${metadata_json}}"
@@ -1152,7 +1156,7 @@ _remote_http_send() {
   local -i body_bytes
   _remote_http_reason "$status_code"; reason="$REPLY"
   # Cached events may contain JSON serialized before UTF-8 repair was added.
-  _json_utf8_text "$body"; body="$REPLY"
+  zjson_utf8_repair "$body"; body="$REPLY"
   _http_byte_length "$body"; body_bytes=$REPLY
   response="HTTP/1.1 ${status_code} ${reason}"$'\r\n'\
 "Content-Type: application/json"$'\r\n'\
@@ -1164,7 +1168,7 @@ _remote_http_send() {
 
 _remote_http_error() {
   local fd="$1" status_code="$2" message_json=""
-  json_quote "$3"; message_json="$REPLY"
+  zjson_quote "$3"; message_json="$REPLY"
   _remote_http_send "$fd" "$status_code" "{\"error\":${message_json}}"
 }
 
@@ -1353,14 +1357,14 @@ _remote_server_hello_json() {
     delegate_available_csv
     harnesses="$REPLY"
   fi
-  json_quote "$REMOTE_SERVER_NAME"; name_json="$REPLY"
-  json_quote "${ZCODER_WORKSPACE:A}"; workspace_json="$REPLY"
-  json_quote "$ZCODER_MODEL"; model_json="$REPLY"
-  json_quote "$ZCODER_PROFILE"; profile_json="$REPLY"
-  json_quote "$effective_policy"; policy_json="$REPLY"
-  json_quote "$REMOTE_MODEL_STATUS"; model_status_json="$REPLY"
-  json_quote "$REMOTE_MODEL_ERROR"; model_error_json="$REPLY"
-  json_quote "$harnesses"; harnesses_json="$REPLY"
+  zjson_quote "$REMOTE_SERVER_NAME"; name_json="$REPLY"
+  zjson_quote "${ZCODER_WORKSPACE:A}"; workspace_json="$REPLY"
+  zjson_quote "$ZCODER_MODEL"; model_json="$REPLY"
+  zjson_quote "$ZCODER_PROFILE"; profile_json="$REPLY"
+  zjson_quote "$effective_policy"; policy_json="$REPLY"
+  zjson_quote "$REMOTE_MODEL_STATUS"; model_status_json="$REPLY"
+  zjson_quote "$REMOTE_MODEL_ERROR"; model_error_json="$REPLY"
+  zjson_quote "$harnesses"; harnesses_json="$REPLY"
   REPLY="{\"protocol\":1,\"server_name\":${name_json},\"workspace\":${workspace_json},\"model\":${model_json},\"profile\":${profile_json},\"command_policy\":${policy_json},\"model_status\":${model_status_json},\"model_error\":${model_error_json},\"harnesses\":${harnesses_json},\"sessions\":true,\"goals\":true,\"input_queue\":true}"
   _remote_server_git_json
 }
@@ -1404,7 +1408,7 @@ _remote_server_handle_connection() {
         return
       fi
       if ! json_parse_flat_object "$REMOTE_REQUEST_BODY"; then
-        _remote_http_error "$fd" 400 "invalid turn request: ${JSON_ERROR:-parse error}"
+        _remote_http_error "$fd" 400 "invalid turn request: ${ZJSON_ERROR:-parse error}"
         return
       fi
       prompt="${JSON_OBJECT[prompt]:-}"
@@ -1425,7 +1429,7 @@ _remote_server_handle_connection() {
           _remote_http_error "$fd" 500 "could not queue the remote turn during model warm-up"
           return
         fi
-        json_quote "$REPLY"; turn_json="$REPLY"
+        zjson_quote "$REPLY"; turn_json="$REPLY"
         _remote_http_send "$fd" 202 "{\"turn_id\":${turn_json},\"model_status\":\"warming\"}"
         return
       elif [[ "$REMOTE_MODEL_STATUS" == error ]]; then
@@ -1436,7 +1440,7 @@ _remote_server_handle_connection() {
         _remote_http_error "$fd" 500 "could not start the remote turn"
         return
       fi
-      json_quote "$REPLY"; turn_json="$REPLY"
+      zjson_quote "$REPLY"; turn_json="$REPLY"
       _remote_http_send "$fd" 202 "{\"turn_id\":${turn_json}}"
       ;;
     GET:/v1/events\?after=*)
@@ -1492,7 +1496,7 @@ _remote_server_handle_connection() {
         _remote_http_error "$fd" 500 "could not create a remote session"
         return
       fi
-      json_quote "$REMOTE_SESSION_ID"; id="$REPLY"
+      zjson_quote "$REMOTE_SESSION_ID"; id="$REPLY"
       _remote_http_send "$fd" 200 "{\"id\":${id}}"
       ;;
     POST:/v1/approval)

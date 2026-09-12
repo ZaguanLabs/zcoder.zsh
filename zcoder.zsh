@@ -16,7 +16,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.15.6"
+typeset -gr ZCODER_VERSION="0.16.0"
 
 typeset -gr ZCODER_DIR="${0:A:h}"
 
@@ -28,8 +28,8 @@ zcoder_require() {
   local lib=""
   for lib in "$@"; do
     (( ${+ZCODER_LOADED_LIBS[$lib]} )) && continue
+    source "${ZCODER_DIR}/lib/${lib}.zsh" || return $?
     ZCODER_LOADED_LIBS[$lib]=1
-    source "${ZCODER_DIR}/lib/${lib}.zsh"
   done
 }
 
@@ -38,7 +38,7 @@ zcoder_require() {
 # full agent runtime.
 if [[ "${1:-}" == mcp ]]; then
   shift
-  zcoder_require util json instructions mcp
+  zcoder_require util json instructions mcp || exit $?
   mcp_cli "$@"
   typeset -i mcp_status=$?
   mcp_shutdown_all
@@ -46,7 +46,7 @@ if [[ "${1:-}" == mcp ]]; then
   exit "$mcp_status"
 fi
 
-zcoder_require util json mcp http instructions skills transcript tools compact goal agent state input_queue
+zcoder_require util json mcp http instructions skills transcript tools compact goal agent state input_queue || exit $?
 
 # The remote-mode default participates in option parsing before lib/remote.zsh
 # loads; that library preserves any value already set here.

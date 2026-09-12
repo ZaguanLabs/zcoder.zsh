@@ -251,8 +251,8 @@ skills_build_catalog() {
       SKILL_CATALOG_TRUNCATED=1
       break
     }
-    json_quote "$name"; name_json="$REPLY"
-    json_quote "$description"; description_json="$REPLY"
+    zjson_quote "$name"; name_json="$REPLY"
+    zjson_quote "$description"; description_json="$REPLY"
     entry="{\"name\":${name_json},\"description\":${description_json}}"
     catalog+="${comma}${entry}"
     SKILL_CATALOG_NAMES+=("$name")
@@ -395,7 +395,7 @@ skills_tools_schema_json() {
     _skills_is_active "$name" || (( inactive_count++ ))
   done
   for name in "${SKILL_ACTIVE_NAMES[@]}"; do
-    json_quote "$name"
+    zjson_quote "$name"
     name_json="$REPLY"
     active_json+="${active_comma}${name_json}"
     active_comma=","

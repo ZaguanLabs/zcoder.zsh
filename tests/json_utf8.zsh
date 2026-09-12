@@ -17,31 +17,31 @@
   )
   local -i i padding
   for (( i=1; i<=${#cases}; i+=2 )); do
-    json_quote "${cases[i]}"; quoted="$REPLY"
-    json_begin "$quoted"
+    zjson_quote "${cases[i]}"; quoted="$REPLY"
+    zjson_begin "$quoted"
     assert_success 'malformed UTF-8 still produces a JSON string' $?
-    assert_eq "${cases[i+1]}" "$JSON_TOKEN_VALUE" 'JSON replaces malformed prefixes and retains following text'
+    assert_eq "${cases[i+1]}" "$ZJSON_TOKEN_VALUE" 'JSON replaces malformed prefixes and retains following text'
   done
   # Boundary values exclude overlong forms, surrogates, and values > U+10FFFF.
   sample=$'\xc2\x80\xdf\xbf\xe0\xa0\x80\xed\x9f\xbf\xee\x80\x80\xef\xbf\xbf\xf0\x90\x80\x80\xf4\x8f\xbf\xbf'
-  json_quote "$sample"
+  zjson_quote "$sample"
   assert_eq "\"$sample\"" "$REPLY" 'JSON preserves all valid UTF-8 boundary encodings'
   for padding in 1021 1022 1023 1024; do
     prefix=${(pl:$padding::a:)}
     for sample in é € 😀 $'\xe2\x82A'; do
-      _json_utf8_text "$sample"; expected="${prefix}${REPLY}tail"
-      json_quote "${prefix}${sample}tail"
+      zjson_utf8_repair "$sample"; expected="${prefix}${REPLY}tail"
+      zjson_quote "${prefix}${sample}tail"
       assert_eq "\"$expected\"" "$REPLY" 'UTF-8 repair preserves characters across block boundaries'
     done
   done
   sample=${(pl:100000::é😀:)}
-  json_quote "$sample"
+  zjson_quote "$sample"
   assert_eq "\"$sample\"" "$REPLY" 'large Unicode strings encode without unbounded glob recursion'
   # Encoding must not depend on the caller's locale or MULTIBYTE setting.
   (
     local LC_ALL=C
     unsetopt multibyte
-    json_quote $'\xc3\xa9\xff\xf0\x9f\x98\x80'
+    zjson_quote $'\xc3\xa9\xff\xf0\x9f\x98\x80'
     [[ "$REPLY" == $'"\xc3\xa9\xef\xbf\xbd\xf0\x9f\x98\x80"' ]]
   )
   assert_success 'JSON repairs UTF-8 in the C locale with MULTIBYTE disabled' $?
@@ -89,7 +89,7 @@ assert event["role"] == "tool" and event["seq"] == 2
 ' "$TEST_TMP/utf8-response.http"
     assert_success 'strict UTF-8 client loads the complete repaired HTTP response' $?
   fi
-  # Cached live events bypass json_quote when replayed. Repair their already
+  # Cached live events bypass zjson_quote when replayed. Repair their already
   # serialized JSON at the HTTP boundary without changing framing or escaping.
   local cached=$'{"event":"message","role":"tool","content":"old\xff\\ntext"}'
   local response='' body=''

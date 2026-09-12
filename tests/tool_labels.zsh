@@ -6,7 +6,7 @@ tool_label_tests() {
   local -a labels=(Read 'Read File Range' 'Write File' 'Replace Text' 'List Files' Search)
   zf_mkdir -p "$ZCODER_WORKSPACE/src"
   original_path="$ZCODER_WORKSPACE/src/[draft].zsh"
-  json_quote "$original_path"
+  zjson_quote "$original_path"
   args='{"path":'"$REPLY"',"start_line":2,"end_line":9}'
   for (( i=1; i<=${#names}; i++ )); do
     transcript_reset

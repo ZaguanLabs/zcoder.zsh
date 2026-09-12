@@ -51,12 +51,12 @@ mapfile[$fixture_base.modal_closed]="${UI_MODAL_ACTIVE}:${UI_ACTIVITY_DEPTH}:$((
 # Collection must leave an in-progress JSON parse and generation result intact.
 HTTP_BODY='generation body'; HTTP_ERROR='generation error'
 JSON_RESPONSE_CONTENT='assistant response'; JSON_TOOL_NAMES=(read_file)
-json_begin '{"sentinel":42}'
-typeset -g expected_parser="$JSON_SOURCE:$JSON_POS:$JSON_TOKEN_TYPE:$JSON_TOKEN_VALUE"
+zjson_begin '{"sentinel":42}'
+typeset -g expected_parser="$ZJSON_SOURCE:$ZJSON_POS:$ZJSON_TOKEN_TYPE:$ZJSON_TOKEN_VALUE"
 REPLY=sentinel
 fixture_wait_context
 mapfile[$fixture_base.modal_result]="${AGENT_CONTEXT_WINDOW}:${AGENT_CONTEXT_DISCOVERY_PENDING}:${HTTP_BODY}:${HTTP_ERROR}:${JSON_RESPONSE_CONTENT}:${JSON_TOOL_NAMES[1]}"
-mapfile[$fixture_base.parser_preserved]="$([[ "$JSON_SOURCE:$JSON_POS:$JSON_TOKEN_TYPE:$JSON_TOKEN_VALUE" == "$expected_parser" ]] && print 1)"
+mapfile[$fixture_base.parser_preserved]="$([[ "$ZJSON_SOURCE:$ZJSON_POS:$ZJSON_TOKEN_TYPE:$ZJSON_TOKEN_VALUE" == "$expected_parser" ]] && print 1)"
 
 for phase in malformed timeout stale shutdown; do
   mapfile[$fixture_base.phase]="$phase"

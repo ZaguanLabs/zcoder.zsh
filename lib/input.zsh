@@ -261,7 +261,7 @@ input_decode_terminal_event() {
     PASTE_BEGIN|PASTE_PENDING|PASTE_REJECTED|PASTE)
       INPUT_TERM_STATE=normal; INPUT_ESCAPE_BUF=''
       if [[ $key == PASTE ]]; then
-        _json_utf8_text "${TERMINAL_EVENT_TEXT:-}"
+        zjson_utf8_repair "${TERMINAL_EVENT_TEXT:-}"
         INPUT_EVENT_TEXT=${REPLY//$'\r\n'/$'\n'}
         INPUT_EVENT_TEXT=${INPUT_EVENT_TEXT//$'\r'/$'\n'}
         INPUT_EVENT_TEXT=${INPUT_EVENT_TEXT//$'\t'/    }

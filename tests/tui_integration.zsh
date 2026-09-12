@@ -104,8 +104,12 @@ assert_eq '1001:501' "${mapfile[$integration_base.long.resize]:-}" "narrowing a 
 # zsh -n accepts one script, with subsequent words becoming its arguments.
 # Exercise the real Makefile in isolation to ensure later files are checked.
 integration_check_root="$TEST_TMP/syntax-check"
-zf_mkdir -p "$integration_check_root/lib" "$integration_check_root/scripts" "$integration_check_root/tests/fixtures"
+zf_mkdir -p "$integration_check_root/lib" "$integration_check_root/scripts" "$integration_check_root/tests/fixtures" "$integration_check_root/vendor/zjson/lib"
 zcoder_write_text_file "$integration_check_root/Makefile" "${mapfile[$PROJECT_DIR/Makefile]}"
+zcoder_write_text_file "$integration_check_root/scripts/setup-json.zsh" "${mapfile[$PROJECT_DIR/scripts/setup-json.zsh]}"
+for integration_check_file in "$PROJECT_DIR/vendor/zjson/zjson.zsh" "$PROJECT_DIR"/vendor/zjson/lib/*.zsh; do
+  zcoder_write_text_file "$integration_check_root/${integration_check_file#$PROJECT_DIR/}" "${mapfile[$integration_check_file]}"
+done
 for integration_check_file in zcoder.zsh chat.sh lib/valid.zsh scripts/valid.zsh tests/valid.zsh; do
   zcoder_write_text_file "$integration_check_root/$integration_check_file" ':'
 done

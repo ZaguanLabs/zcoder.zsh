@@ -4,3 +4,6 @@
 [submodule "vendor/zmdown"]
 	path = vendor/zmdown
 	url = https://github.com/ZaguanLabs/zmdown.git
+[submodule "vendor/zjson"]
+	path = vendor/zjson
+	url = https://github.com/ZaguanLabs/zjson.git

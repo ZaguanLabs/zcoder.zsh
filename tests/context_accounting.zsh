@@ -44,10 +44,14 @@ context_accounting_tests() {
     agent_add_message tool "$TOOL_RESULT" read_skill_resource
     assert_success 'Skill resource contents immediately increase the status estimate' $(( AGENT_ESTIMATED_TOKENS > baseline + 900 ? 0 : 1 ))
 
-    local JSON_RESPONSE_THINKING=sentinel JSON_SOURCE=sentinel
+    local JSON_RESPONSE_THINKING=sentinel ZJSON_SOURCE=sentinel
+    zjson_validate $'{\n"invalid":01}'
+    local parser_diagnostic="$ZJSON_ERROR|$ZJSON_ERROR_CODE|$ZJSON_ERROR_OFFSET|$ZJSON_ERROR_LINE|$ZJSON_ERROR_COLUMN"
+    ZJSON_SOURCE=sentinel
     agent_context_bill
     assert_eq sentinel "$JSON_RESPONSE_THINKING" 'context attribution preserves the current response reasoning'
-    assert_eq sentinel "$JSON_SOURCE" 'context attribution preserves tokenizer state'
+    assert_eq sentinel "$ZJSON_SOURCE" 'context attribution preserves tokenizer state'
+    assert_eq "$parser_diagnostic" "$ZJSON_ERROR|$ZJSON_ERROR_CODE|$ZJSON_ERROR_OFFSET|$ZJSON_ERROR_LINE|$ZJSON_ERROR_COLUMN" 'context attribution preserves outer parser diagnostics'
     reasoning_index=${AGENT_CONTEXT_COMPONENT_LABELS[(Ie)Reasoning]}
     resources_index=${AGENT_CONTEXT_COMPONENT_LABELS[(Ie)Skill resources]}
     skills_index=${AGENT_CONTEXT_COMPONENT_LABELS[(Ie)Skills]}
@@ -64,7 +68,7 @@ context_accounting_tests() {
     UI_ACTIVE=1
     baseline=$AGENT_ESTIMATED_TOKENS
     agent_stream_reset
-    json_quote "$reasoning"
+    zjson_quote "$reasoning"
     agent_stream_record '{"message":{"thinking":'"$REPLY"'},"done":false}'
     assert_success 'reasoning-only streaming records update accounting' $?
     assert_success 'live reasoning increases the context estimate before visible answer text' $(( AGENT_ESTIMATED_TOKENS > baseline + 2500 ? 0 : 1 ))

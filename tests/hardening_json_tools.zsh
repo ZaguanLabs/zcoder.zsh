@@ -14,7 +14,7 @@
     assert_success "flat JSON accepts ${(qqq)sample}" $?
   done
   for malformed in '{"x":[1,]}' '{"x":{"y":1,}}'; do
-    json_begin "$malformed" && json_capture_value
+    zjson_begin "$malformed" && zjson_capture_value
     assert_failure "nested JSON rejects trailing comma ${(qqq)malformed}" $?
   done
   json_parse_models '{"models":[]} true'
@@ -23,27 +23,31 @@
   assert_failure 'running model parser requires EOF' $?
   json_parse_ollama_response '{"message":{"tool_calls":[{"function":{"name":"read_file","arguments":{"path":"x",}}}]}}'
   assert_failure 'Ollama rejects malformed nested tool arguments' $?
+  json_parse_ollama_response $'{"message":{"tool_calls":[{"function":{"name":"read_file","arguments":{"path":"x"}}}]},"extra":"\xff"}'
+  assert_failure 'Ollama rejects invalid UTF-8 even in an unused field' $?
+  assert_eq invalid_utf8 "$ZJSON_ERROR_CODE" 'Ollama exposes the zjson validation diagnostic'
+  assert_eq 0 "${#JSON_TOOL_NAMES}" 'invalid UTF-8 cannot publish executable tool calls'
 
   for (( code=0; code<32; code++ )); do
     printf -v encoded '\\x%02x' "$code"
     printf -v ch '%b' "$encoded"
     sample="${ch}é${ch}"
-    json_quote "$sample"; quoted="$REPLY"
-    json_begin "$quoted"
+    zjson_quote "$sample"; quoted="$REPLY"
+    zjson_begin "$quoted"
     assert_success "JSON encodes and decodes control $code" $?
-    assert_eq "$sample" "$JSON_TOKEN_VALUE" "JSON preserves control $code at both string boundaries"
-    json_begin "\"${sample}\""
+    assert_eq "$sample" "$ZJSON_TOKEN_VALUE" "JSON preserves control $code at both string boundaries"
+    zjson_begin "\"${sample}\""
     assert_failure "JSON rejects literal control $code" $?
   done
   sample=$'é\177é'
-  json_quote "$sample"; quoted="$REPLY"
+  zjson_quote "$sample"; quoted="$REPLY"
   assert_eq "\"${sample}\"" "$quoted" 'DEL stays literal in valid JSON'
-  json_begin '"\ud800\u0041\udc00"'
+  zjson_begin '"\ud800\u0041\udc00"'
   assert_success 'strict JSON preserves surrogate recovery' $?
-  assert_eq $'�A�' "$JSON_TOKEN_VALUE" 'unpaired surrogates still become replacement characters'
-  json_begin $'"\\u0041\1"'
+  assert_eq $'�A�' "$ZJSON_TOKEN_VALUE" 'unpaired surrogates still become replacement characters'
+  zjson_begin $'"\\u0041\1"'
   assert_failure 'slow Unicode scanner rejects literal controls' $?
-  json_begin $'"\\n\1"'
+  zjson_begin $'"\\n\1"'
   assert_failure 'simple escape scanner rejects literal controls' $?
 
   local fixture="$TEST_TMP/hardening-json-tools"

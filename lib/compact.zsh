@@ -88,15 +88,18 @@ agent_context_discovery_start() {
 
 agent_context_discovery_poll() {
   [[ -n "$AGENT_CONTEXT_PID" ]] || return 0
+  zjson_with_context _agent_context_discovery_poll "$@"
+}
+
+_agent_context_discovery_poll() {
+  setopt localoptions extendedglob nonomatch
   if [[ "$AGENT_CONTEXT_REQUEST_MODEL" != "$ZCODER_MODEL" || "$AGENT_CONTEXT_REQUEST_HOST" != "$OLLAMA_HOST" || "$ZCODER_CONTEXT_WINDOW" != auto ]] || (( ! ${UI_ACTIVE:-0} )); then
     agent_context_discovery_cancel
     return 0
   fi
   local HTTP_ASYNC_PID="$AGENT_CONTEXT_PID" HTTP_ASYNC_BASE="$AGENT_CONTEXT_BASE" HTTP_ASYNC_STREAM_FD=''
   local HTTP_BODY='' HTTP_ERROR='' REPLY=''
-  local JSON_SOURCE='' JSON_TOKEN_TYPE='' JSON_TOKEN_VALUE='' JSON_ERROR=''
-  local -a JSON_CHARS=()
-  local -i JSON_POS=1 JSON_LEN=0 JSON_TOKEN_START=1 JSON_RUNNING_MODEL_CONTEXT=0
+  local -i JSON_RUNNING_MODEL_CONTEXT=0
   {
     if http_async_ready; then
       if http_async_collect && json_parse_running_model_context "$HTTP_BODY" "$AGENT_CONTEXT_REQUEST_MODEL" && (( JSON_RUNNING_MODEL_CONTEXT > 0 )); then
@@ -195,7 +198,7 @@ agent_pinned_user_json() {
     [[ -n "${selected[$i]:-}" ]] || continue
     message="${AGENT_USER_MESSAGES[i]}"
     AGENT_PINNED_USER_MESSAGES+=("$message")
-    json_quote "$message"; item_json="$REPLY"
+    zjson_quote "$message"; item_json="$REPLY"
     output+="${comma}${item_json}"
     comma=","
   done
@@ -218,19 +221,19 @@ agent_compaction_prompt_block() {
 
 _agent_compaction_parse_string_array() {
   local key="$1"
-  [[ "$JSON_TOKEN_TYPE" == '[' ]] || { JSON_ERROR="checkpoint field $key must be an array"; return 1; }
-  json_next || return 1
-  while [[ "$JSON_TOKEN_TYPE" != ']' ]]; do
-    [[ "$JSON_TOKEN_TYPE" == string ]] || { JSON_ERROR="checkpoint field $key may contain only strings"; return 1; }
-    json_next || return 1
-    if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
-      json_next || return 1
-    elif [[ "$JSON_TOKEN_TYPE" != ']' ]]; then
-      JSON_ERROR="expected comma or closing bracket in checkpoint"
+  [[ "$ZJSON_TOKEN_TYPE" == '[' ]] || { ZJSON_ERROR="checkpoint field $key must be an array"; return 1; }
+  zjson_next || return 1
+  while [[ "$ZJSON_TOKEN_TYPE" != ']' ]]; do
+    [[ "$ZJSON_TOKEN_TYPE" == string ]] || { ZJSON_ERROR="checkpoint field $key may contain only strings"; return 1; }
+    zjson_next || return 1
+    if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
+      zjson_next || return 1
+    elif [[ "$ZJSON_TOKEN_TYPE" != ']' ]]; then
+      ZJSON_ERROR="expected comma or closing bracket in checkpoint"
       return 1
     fi
   done
-  json_next
+  zjson_next
 }
 
 # Validate the model-authored checkpoint before it can replace exact history.
@@ -239,49 +242,49 @@ _agent_compaction_parse_string_array() {
 agent_parse_compaction_summary() {
   local source="$1" key=""
   local -A seen=()
-  json_begin "$source" || return 1
-  [[ "$JSON_TOKEN_TYPE" == '{' ]] || { JSON_ERROR="checkpoint must be a JSON object"; return 1; }
-  json_next || return 1
-  while [[ "$JSON_TOKEN_TYPE" != '}' ]]; do
-    [[ "$JSON_TOKEN_TYPE" == string ]] || { JSON_ERROR="checkpoint object key expected"; return 1; }
-    key="$JSON_TOKEN_VALUE"
-    json_next || return 1
-    [[ "$JSON_TOKEN_TYPE" == ':' ]] || { JSON_ERROR="checkpoint colon expected"; return 1; }
-    json_next || return 1
+  zjson_begin "$source" || return 1
+  [[ "$ZJSON_TOKEN_TYPE" == '{' ]] || { ZJSON_ERROR="checkpoint must be a JSON object"; return 1; }
+  zjson_next || return 1
+  while [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; do
+    [[ "$ZJSON_TOKEN_TYPE" == string ]] || { ZJSON_ERROR="checkpoint object key expected"; return 1; }
+    key="$ZJSON_TOKEN_VALUE"
+    zjson_next || return 1
+    [[ "$ZJSON_TOKEN_TYPE" == ':' ]] || { ZJSON_ERROR="checkpoint colon expected"; return 1; }
+    zjson_next || return 1
     case "$key" in
       schema_version)
-        [[ "$JSON_TOKEN_TYPE" == number && "$JSON_TOKEN_VALUE" == 1 ]] || {
-          JSON_ERROR="checkpoint schema_version must be 1"
+        [[ "$ZJSON_TOKEN_TYPE" == number && "$ZJSON_TOKEN_VALUE" == 1 ]] || {
+          ZJSON_ERROR="checkpoint schema_version must be 1"
           return 1
         }
         seen[$key]=1
-        json_next || return 1
+        zjson_next || return 1
         ;;
       objective)
-        [[ "$JSON_TOKEN_TYPE" == string && -n "$JSON_TOKEN_VALUE" ]] || {
-          JSON_ERROR="checkpoint objective must be a non-empty string"
+        [[ "$ZJSON_TOKEN_TYPE" == string && -n "$ZJSON_TOKEN_VALUE" ]] || {
+          ZJSON_ERROR="checkpoint objective must be a non-empty string"
           return 1
         }
         seen[$key]=1
-        json_next || return 1
+        zjson_next || return 1
         ;;
       constraints|decisions|artifacts|facts|completed|active|blocked|next)
         _agent_compaction_parse_string_array "$key" || return 1
         seen[$key]=1
         ;;
-      *) json_discard_value || return 1 ;;
+      *) zjson_discard_value || return 1 ;;
     esac
-    if [[ "$JSON_TOKEN_TYPE" == ',' ]]; then
-      json_next || return 1
-    elif [[ "$JSON_TOKEN_TYPE" != '}' ]]; then
-      JSON_ERROR="checkpoint comma or closing brace expected"
+    if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
+      zjson_next || return 1
+    elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
+      ZJSON_ERROR="checkpoint comma or closing brace expected"
       return 1
     fi
   done
-  json_next || return 1
-  [[ "$JSON_TOKEN_TYPE" == eof ]] || { JSON_ERROR="unexpected text after checkpoint"; return 1; }
+  zjson_next || return 1
+  [[ "$ZJSON_TOKEN_TYPE" == eof ]] || { ZJSON_ERROR="unexpected text after checkpoint"; return 1; }
   for key in schema_version objective constraints decisions artifacts facts completed active blocked next; do
-    [[ -n "${seen[$key]:-}" ]] || { JSON_ERROR="checkpoint missing required field: $key"; return 1; }
+    [[ -n "${seen[$key]:-}" ]] || { ZJSON_ERROR="checkpoint missing required field: $key"; return 1; }
   done
   return 0
 }
@@ -380,9 +383,9 @@ agent_build_compaction_payload() {
   instruction="${pinned_context}"$'\n\n'"$AGENT_COMPACTION_PROMPT"
   [[ -n "$retry_instruction" ]] && instruction+=$'\n\n'"$retry_instruction"
   agent_resolve_system_prompt
-  json_quote "$REPLY"; system_json="$REPLY"
-  json_quote "$instruction"; user_json="$REPLY"
-  json_quote "$ZCODER_MODEL"; model_json="$REPLY"
+  zjson_quote "$REPLY"; system_json="$REPLY"
+  zjson_quote "$instruction"; user_json="$REPLY"
+  zjson_quote "$ZCODER_MODEL"; model_json="$REPLY"
   messages+="{\"role\":\"system\",\"content\":${system_json}}"
   if (( start <= ${#AGENT_MESSAGES} )); then
     agent_history_payload_json "$start"
@@ -544,7 +547,7 @@ agent_compact_history() {
       checkpoint_error=""
       summary=""
       if ! json_parse_ollama_response "$response"; then
-        checkpoint_error="could not parse the Ollama response: ${JSON_ERROR:-unknown JSON error}"
+        checkpoint_error="could not parse the Ollama response: ${ZJSON_ERROR:-unknown JSON error}"
       elif [[ -n "$JSON_RESPONSE_ERROR" ]]; then
         HTTP_ERROR="$JSON_RESPONSE_ERROR"
         return 1
@@ -553,7 +556,7 @@ agent_compact_history() {
         if [[ -z "$summary" ]]; then
           checkpoint_error="Ollama returned an empty checkpoint"
         elif ! agent_parse_compaction_summary "$summary"; then
-          checkpoint_error="checkpoint validation failed: ${JSON_ERROR:-schema validation failed}"
+          checkpoint_error="checkpoint validation failed: ${ZJSON_ERROR:-schema validation failed}"
         fi
       fi
       [[ -z "$checkpoint_error" ]] && break

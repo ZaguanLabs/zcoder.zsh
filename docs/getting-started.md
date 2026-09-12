@@ -9,6 +9,7 @@ commands as it works toward an outcome.
 For normal interactive use:
 
 - Zsh 5.8 or newer, with its standard loadable modules
+- the pinned zjson sources (initialized by `make` or `make compile`)
 - a running Ollama server and a model with tool-calling support
 - `ripgrep` (`rg`) for file listing and search
 - `git` or `patch` for applying patches; install both for the broadest format support
@@ -54,8 +55,8 @@ structured tool calls for agent work.
 ## Enhanced curses module
 
 Plain `make` (or `make setup`) builds the enhanced interface, including zdraw
-and zmdown. It initializes both pinned submodules, downloads Zsh 5.9.2 from
-zsh.org, verifies its pinned SHA-256 checksum, and builds a private shell with
+and zmdown. It initializes the pinned zjson, zdraw and zmdown submodules,
+downloads Zsh 5.9.2 from zsh.org, verifies its pinned SHA-256 checksum, and builds a private shell with
 both modules. You do not need to find or configure your system shell's sources.
 
 Build requirements:
@@ -91,10 +92,13 @@ when the build exits, including after interruption. Inspect
 
 `make native` builds only the runtime and modules. `make curses` and
 `make markdown` also prepare the matched set unless you explicitly supply
-`ZSH_BUILD_ROOT` for an advanced system-shell build. `make compile` still only
-compiles application libraries and never downloads or builds C code, so headless
-farm deployments retain their lightweight workflow. You can skip native setup
-entirely and run the script with the existing Zsh renderer.
+`ZSH_BUILD_ROOT` for an advanced system-shell build. `make compile` initializes
+zjson if missing and compiles the application and zjson libraries. It never
+downloads or builds C code, so headless farm deployments retain their lightweight
+workflow. Use it to skip native setup and run with the existing Zsh renderer.
+For source-only use without wordcode compilation, run `make json` or
+`git submodule update --init --recursive -- vendor/zjson` before launching.
+zjson adds no external runtime command or native module.
 
 `/terminal` reports `private` when the private zdraw module is selected and
 `zmdown` when native Markdown is active. Use a UTF-8 locale for that rendering

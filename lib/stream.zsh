@@ -161,7 +161,7 @@ agent_stream_record() {
   [[ -n "${record//[[:space:]]/}" ]] || return 0
   (( ! AGENT_STREAM_DONE )) || { AGENT_STREAM_ERROR="data after Ollama's final stream record"; return 1; }
   if ! json_parse_ollama_response "$record"; then
-    AGENT_STREAM_ERROR="invalid Ollama stream JSON: ${JSON_ERROR:-malformed record}"; return 1
+    AGENT_STREAM_ERROR="invalid Ollama stream JSON: ${ZJSON_ERROR:-malformed record}"; return 1
   fi
   [[ -z "$JSON_RESPONSE_ERROR" ]] || { AGENT_STREAM_ERROR="$JSON_RESPONSE_ERROR"; return 1; }
   (( JSON_RESPONSE_DONE >= 0 )) || { AGENT_STREAM_ERROR="Ollama stream record lacks a boolean done field"; return 1; }
@@ -251,8 +251,8 @@ agent_stream_ready() {
 
 agent_stream_response() {
   local content="" thinking=""
-  json_quote "$AGENT_STREAM_CONTENT"; content="$REPLY"
-  json_quote "$AGENT_STREAM_THINKING"; thinking="$REPLY"
+  zjson_quote "$AGENT_STREAM_CONTENT"; content="$REPLY"
+  zjson_quote "$AGENT_STREAM_THINKING"; thinking="$REPLY"
   REPLY="{\"message\":{\"role\":\"assistant\",\"content\":${content},\"thinking\":${thinking},\"tool_calls\":[${AGENT_STREAM_CALLS}]},\"done\":true,\"prompt_eval_count\":${AGENT_STREAM_PROMPT_TOKENS},\"eval_count\":${AGENT_STREAM_OUTPUT_TOKENS}}"
 }
 

@@ -338,7 +338,7 @@ ollama_get_models() {
     http_request GET /api/tags "" "$host" || return 1
   fi
   if ! json_parse_models "$HTTP_BODY"; then
-    HTTP_ERROR="could not parse Ollama model list: ${JSON_ERROR:-invalid JSON}"
+    HTTP_ERROR="could not parse Ollama model list: ${ZJSON_ERROR:-invalid JSON}"
     return 1
   fi
   OLLAMA_MODELS=("${JSON_MODEL_NAMES[@]}")
@@ -377,7 +377,7 @@ ollama_get_running_context() {
   OLLAMA_RUNNING_CONTEXT=0
   http_request GET /api/ps "" "$host" || return 1
   if ! json_parse_running_model_context "$HTTP_BODY" "$model"; then
-    HTTP_ERROR="could not parse Ollama running-model list: ${JSON_ERROR:-invalid JSON}"
+    HTTP_ERROR="could not parse Ollama running-model list: ${ZJSON_ERROR:-invalid JSON}"
     return 1
   fi
   OLLAMA_RUNNING_CONTEXT="$JSON_RUNNING_MODEL_CONTEXT"

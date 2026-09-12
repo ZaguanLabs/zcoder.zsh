@@ -34,7 +34,7 @@ zsystem flock -t 0 -f lock_fd "$cache/lock" 2>/dev/null || {
 TRAPZERR() { print -ru2 -- "Native setup failed. Details: $cache/build.log"; }
 print -r -- "Preparing zdraw and zmdown (build log: $cache/build.log)"
 # Update to the parent's pinned revisions; never overwrite edits in a dependency.
-for dependency in zdraw zmdown; do
+for dependency in zdraw zmdown zjson; do
   if [[ -f $project_root/vendor/$dependency/.git ]]; then
     [[ -z $(git -C "$project_root/vendor/$dependency" status --porcelain --untracked-files=no) ]] || {
       print -ru2 -- "vendor/$dependency has local edits. Commit or save them before setup."

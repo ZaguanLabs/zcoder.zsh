@@ -67,7 +67,7 @@ make check
 ```
 
 Run `make compile` after changes and after a Git push. It also runs the syntax
-checks, then compiles the libraries with the installed Zsh. These commands do
+checks, then compiles application and zjson libraries with the installed Zsh. These commands do
 not substitute for executing the suite on Zsh 5.8 when checking that minimum
 version specifically. Run the suite using an actual Zsh 5.8 runtime to establish
 that compatibility; source parsing and wordcode compilation on the development
@@ -98,6 +98,32 @@ with measured usage followed by a final response without a prompt count.
 all tool results must precede steering, and follow-ups must wait for completion.
 Its PTY fixture checks Enter, Ctrl+G, Unicode/multiline paste, draft preservation,
 and cancellation using the actual editor and queue.
+
+## JSON dependency
+
+`vendor/zjson` is pinned to `2f9b6d3f9df8adbab33636965d46fa9d5c0baad5`
+from `https://github.com/ZaguanLabs/zjson.git`. `make json` initializes it when
+sources are missing; `make check`, `make compile` and test targets do this first.
+Complete checkouts need no network access. Existing local edits are preserved;
+an incomplete edited checkout is rejected rather than reset. After updating the
+parent revision, run `git submodule sync --recursive` and
+`git submodule update --init --recursive` to select the newly pinned sources.
+
+Compilation includes the public entrypoint and its implementation files.
+Generated `*.zwc` files are excluded through the submodule's local Git exclude
+file; `make clean` removes them. Source-only copies need no Git metadata to run.
+
+zcoder's suite exercises application codecs, protocol validation, parser context
+preservation and UTF-8 repair at application boundaries. The upstream matrix is
+separate, avoiding thousands of duplicated generic-parser assertions in every
+application run:
+
+```sh
+zsh -df vendor/zjson/tests/matrix.zsh /path/to/zsh-5.8 /path/to/zsh-5.9.2
+```
+
+Both versions are supported, with C and UTF-8 locale checks. See the dependency's
+`docs/embedding.md` for context/output ownership and public repair semantics.
 
 ## Building the native dependencies
 

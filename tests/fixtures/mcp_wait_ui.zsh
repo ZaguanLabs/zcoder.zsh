@@ -8,8 +8,8 @@ typeset -g ZCODER_NAME=zcoder ZCODER_VERSION=test ZCODER_MODEL=fixture ZCODER_PR
 typeset -g ZCODER_WORKSPACE="${fixture_base}.workspace" ZCODER_HOME="${fixture_base}.home" ZCODER_SYNC_OUTPUT=false
 typeset -gi STATE_ENABLED=0 fixture_approvals=0 MCP_REQUEST_TIMEOUT=10
 zf_mkdir -p "$ZCODER_WORKSPACE" "$ZCODER_HOME"
-json_quote "$fixture_root/tests/fixtures/mcp_wait_server.zsh"; fixture_server_json="$REPLY"
-json_quote "$fixture_base"; fixture_base_json="$REPLY"
+zjson_quote "$fixture_root/tests/fixtures/mcp_wait_server.zsh"; fixture_server_json="$REPLY"
+zjson_quote "$fixture_base"; fixture_base_json="$REPLY"
 mapfile[$ZCODER_HOME/mcp.json]='{"mcpServers":{"fixture":{"command":"zsh","args":['"$fixture_server_json,$fixture_base_json"']}}}'
 trap 'mapfile[${fixture_base}.parent_exit]=1; mcp_shutdown_all; ui_end' EXIT
 mcp_load; mcp_connect fixture || exit 1
