@@ -1173,7 +1173,7 @@ agent_tool_event() {
   elif (( ${REMOTE_SERVER_WORKER:-0} && $+functions[remote_server_worker_tool_event] )); then
     remote_server_worker_tool_event "$@"
   elif (( ${UI_ACTIVE:-0} && $+functions[transcript_tool_event] )); then
-    transcript_tool_event "$@" || return $?
+    transcript_tool_event "$1" "$2" "${3:-}" "${4:-}" "${5:-0}" '' "${6:-}" || return $?
     ui_refresh_all
   fi
 }
@@ -1776,7 +1776,7 @@ _agent_run_turn_body() {
         tool_dispatch "$tool_name" "$tool_args"
       fi
       result="$TOOL_RESULT"
-      agent_tool_event complete "$tool_name" "$tool_args" "$result" "$TOOL_RESULT_OK"
+      agent_tool_event complete "$tool_name" "$tool_args" "$result" "$TOOL_RESULT_OK" "${TOOL_DIFF:-}"
       zcoder_debug tool_result "step=$step index=$i name=${(qqq)tool_name} ok=$TOOL_RESULT_OK result_chars=${#result} result_head=${(qqq)${result[1,500]}}"
       outcome_signature+="${TOOL_RESULT_OK}:${#result}:$result"
       agent_add_message tool "$result" "$tool_name"

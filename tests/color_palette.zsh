@@ -46,11 +46,13 @@ ui_widget_theme
 [[ $UI_THEME_COLORS[surface] != $local_palette[surface] &&
    $UI_THEME_COLORS[accent] != $local_palette[accent] &&
    $zdraw_ui_theme[accent] == $UI_THEME_COLORS[accent] ]] || fail 'remote tint or widget palette'
+[[ $UI_THEME_COLORS[header] == 108 ]] || fail 'remote header retains green in 256 colors'
 for role in success warning error syntax info; do
   [[ $UI_THEME_COLORS[$role] == $local_palette[$role] ]] || fail "remote changed $role meaning"
 done
 ZCODER_COLOR=basic ui_theme_init
 [[ $UI_THEME_COLORS[accent] == 5 && $UI_THEME_COLORS[border] == 5 &&
+   $UI_THEME_COLORS[header] == 2 &&
    $UI_THEME_COLORS[success] == 2 && $UI_THEME_COLORS[warning] == 3 &&
    $UI_THEME_COLORS[error] == 1 ]] || fail 'remote basic colors'
 NO_COLOR=1 ui_theme_init

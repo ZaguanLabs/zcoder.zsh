@@ -18,9 +18,10 @@ preserving bold and reverse emphasis. Explicit `ZCODER_COLOR=basic` overrides it
 
 Remote zcoder connections (`--connect`) use a slightly warmer dark surface and
 muted lavender accents. Basic mode uses magenta accents, while success, warning
-and error keep their usual colors. A `REMOTE` label in the header's top border
-identifies the connection in every color mode, including monochrome, even when
-the model and server names are clipped. The palette is selected automatically.
+and error keep their usual colors. The header border and its `REMOTE` label use
+soft green. The label identifies the connection in every color mode, including
+monochrome, even when the model and server names are clipped. The palette is
+selected automatically.
 
 Truecolor is enabled only when curses reports support through an appropriate
 direct-color terminal description. `COLORTERM=truecolor` alone does not enable
@@ -161,6 +162,14 @@ completed or failed. Their details start collapsed; expand them to inspect the
 arguments and retained result, including read-file and MCP output. File writes
 and patches also retain their styled previews. Status text remains readable
 without relying on color. Incoming activity preserves a manually scrolled view.
+
+Successful `apply_patch` and `replace_text` calls open their change preview
+automatically. The native zdraw gutter shows line numbers, red removals and green
+additions; plus and minus markers also distinguish changes in monochrome.
+Replacement previews derive their line numbers from the edited file; patch
+previews use the accepted diff's hunk numbers. Long lines clip horizontally and
+large previews show a limit notice. These previews remain available in saved
+sessions and through remote connections.
 
 Local sessions retain selection and expansion state. Older saved transcripts
 remain readable with their original bodies expanded. An unfinished tool restored

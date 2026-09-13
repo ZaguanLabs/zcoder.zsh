@@ -3,6 +3,7 @@
 
 typeset -ga UI_ROLES=() UI_CONTENTS=() UI_THINKINGS=() UI_TIMES=() UI_REASONING_OPEN=()
 typeset -ga UI_IDS=() UI_BLOCK_OPEN=() UI_TOOL_NAMES=() UI_TOOL_SUMMARIES=() UI_TOOL_ARGS=() UI_TOOL_RESULTS=() UI_TOOL_STATES=()
+typeset -ga UI_TOOL_DIFFS=()
 typeset -gi UI_SELECTED_EVENT=0 UI_CURRENT_TOOL=0 UI_TRANSCRIPT_GENERATION=0
 typeset -gi UI_RENDER_DIRTY_FROM=0 UI_PERSIST_DIRTY_FROM=0
 typeset -gi UI_STREAM_INDEX=0
@@ -11,6 +12,7 @@ transcript_reset() {
   emulate -L zsh
   UI_ROLES=(); UI_CONTENTS=(); UI_THINKINGS=(); UI_TIMES=(); UI_REASONING_OPEN=()
   UI_IDS=(); UI_BLOCK_OPEN=(); UI_TOOL_NAMES=(); UI_TOOL_SUMMARIES=(); UI_TOOL_ARGS=(); UI_TOOL_RESULTS=(); UI_TOOL_STATES=()
+  UI_TOOL_DIFFS=()
   UI_SELECTED_EVENT=0; UI_CURRENT_TOOL=0
   UI_STREAM_INDEX=0
   UI_RENDER_DIRTY_FROM=0; UI_PERSIST_DIRTY_FROM=0
@@ -37,6 +39,7 @@ transcript_default_metadata() {
   UI_BLOCK_OPEN[index]=1
   UI_TOOL_NAMES[index]=""; UI_TOOL_ARGS[index]=""; UI_TOOL_RESULTS[index]=""; UI_TOOL_STATES[index]=""
   UI_TOOL_SUMMARIES[index]=""
+  UI_TOOL_DIFFS[index]=''
 }
 
 ui_append_message() {
@@ -142,6 +145,11 @@ transcript_tool_event() {
     running) UI_TOOL_STATES[index]=running ;;
     complete)
       UI_TOOL_RESULTS[index]="$result"
+      UI_TOOL_DIFFS[index]=''
+      if [[ "$succeeded" == 1 && ( "$name" == apply_patch || "$name" == replace_text ) && -n "${7:-}" ]]; then
+        UI_TOOL_DIFFS[index]="$7"
+        UI_BLOCK_OPEN[index]=1
+      fi
       [[ "$succeeded" == 1 ]] && UI_TOOL_STATES[index]=completed || UI_TOOL_STATES[index]=failed
       if (( $+functions[agent_format_tool_ui_result] )); then
         agent_format_tool_ui_result "$name" "${UI_TOOL_ARGS[index]}" "$result" "$succeeded"
@@ -159,8 +167,8 @@ transcript_metadata_json() {
   local -i index=$1
   local output="" key="" value=""
   local -a values=("${UI_IDS[index]:-event_${index}}" "${UI_BLOCK_OPEN[index]:-1}"
-    "${UI_TOOL_NAMES[index]}" "${UI_TOOL_ARGS[index]}" "${UI_TOOL_RESULTS[index]}" "${UI_TOOL_STATES[index]}" "${UI_TOOL_SUMMARIES[index]}")
-  for key in id open name args result state summary; do
+    "${UI_TOOL_NAMES[index]}" "${UI_TOOL_ARGS[index]}" "${UI_TOOL_RESULTS[index]}" "${UI_TOOL_STATES[index]}" "${UI_TOOL_SUMMARIES[index]}" "${UI_TOOL_DIFFS[index]}")
+  for key in id open name args result state summary diff; do
     value="${values[1]}"; shift values
     zjson_quote "$value"
     output+="${output:+,}\"${key}\":${REPLY}"
@@ -208,6 +216,7 @@ transcript_restore_metadata() {
   UI_TOOL_ARGS[index]="${JSON_OBJECT[args]:-}"
   UI_TOOL_RESULTS[index]="${JSON_OBJECT[result]:-}"
   UI_TOOL_STATES[index]="${JSON_OBJECT[state]}"
+  UI_TOOL_DIFFS[index]="${JSON_OBJECT[diff]:-}"
   if transcript_tool_summary "${UI_TOOL_NAMES[index]}" "${UI_TOOL_ARGS[index]}"; then
     UI_TOOL_SUMMARIES[index]="$REPLY"
   fi

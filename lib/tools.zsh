@@ -4,6 +4,7 @@ typeset -g ZCODER_WORKSPACE="${ZCODER_WORKSPACE:-$PWD}"
 typeset -g ZCODER_COMMAND_POLICY="${ZCODER_COMMAND_POLICY:-ask}"
 typeset -gi ZCODER_MAX_TOOL_OUTPUT="${ZCODER_MAX_TOOL_OUTPUT:-32768}"
 typeset -g TOOL_RESULT=""
+typeset -g TOOL_DIFF=""
 typeset -gi TOOL_RESULT_OK=0
 typeset -gi TOOL_CANCELLED=0
 typeset -g TOOL_SAFETY_REASON=""
@@ -326,9 +327,46 @@ tool_write_file() {
   _tool_succeed "Wrote ${#content} characters to ${resolved_path#$ZCODER_WORKSPACE/}"
 }
 
+# A literal replacement changes one contiguous region. Compare complete lines
+# to retain correct file line numbers and a small amount of surrounding context.
+_tool_replacement_diff() {
+  emulate -L zsh
+  local file="$1" old="$2" new="$3" line=''
+  local -a old_lines=() new_lines=() output=()
+  local -i prefix=0 suffix=0 first=0 last_old=0 last_new=0 i old_count new_count eof_changed=0
+  [[ "$old" == "$new" ]] && { REPLY=''; return; }
+  [[ -z "$old" ]] || old_lines=("${(@f)${old%$'\n'}}")
+  [[ -z "$new" ]] || new_lines=("${(@f)${new%$'\n'}}")
+  if [[ "$old" == *$'\n' && "$new" != *$'\n' || "$old" != *$'\n' && "$new" == *$'\n' ]]; then eof_changed=1; fi
+  while (( prefix < ${#old_lines} && prefix < ${#new_lines} )) &&
+      (( !eof_changed || (prefix+1 < ${#old_lines} && prefix+1 < ${#new_lines}) )) &&
+      [[ "${old_lines[prefix+1]}" == "${new_lines[prefix+1]}" ]]; do (( prefix++ )); done
+  while (( !eof_changed && suffix < ${#old_lines}-prefix && suffix < ${#new_lines}-prefix )) &&
+      [[ "${old_lines[-suffix-1]}" == "${new_lines[-suffix-1]}" ]]; do (( suffix++ )); done
+  first=$(( prefix > 3 ? prefix-2 : 1 ))
+  last_old=$(( ${#old_lines} - (suffix > 3 ? suffix-3 : 0) ))
+  last_new=$(( ${#new_lines} - (suffix > 3 ? suffix-3 : 0) ))
+  old_count=$(( last_old-first+1 )); new_count=$(( last_new-first+1 ))
+  # Display paths are literal labels, never another patch parser input.
+  file="${file//$'\n'/\\n}"
+  output=("--- a/$file" "+++ b/$file" "@@ -$(( old_count ? first : first-1 )),$old_count +$(( new_count ? first : first-1 )),$new_count @@")
+  for (( i=first; i<=prefix; i++ )); do output+=(" ${old_lines[i]}"); done
+  for (( i=prefix+1; i<=${#old_lines}-suffix; i++ )); do
+    output+=("-${old_lines[i]}")
+    (( i == ${#old_lines} )) && [[ "$old" != *$'\n' ]] && output+=('\ No newline at end of file')
+  done
+  for (( i=prefix+1; i<=${#new_lines}-suffix; i++ )); do
+    output+=("+${new_lines[i]}")
+    (( i == ${#new_lines} )) && [[ "$new" != *$'\n' ]] && output+=('\ No newline at end of file')
+  done
+  for (( i=${#old_lines}-suffix+1; i<=last_old; i++ )); do output+=(" ${old_lines[i]}"); done
+  REPLY="${(F)output}"
+}
+
 tool_replace_text() {
   local requested="$1" old_text="$2" new_text="$3"
   local resolved_path="" content="" escaped_old="" before="" after=""
+  TOOL_DIFF=''
   if (( TOOL_PATCH_RETRY_REQUIRED )); then
     _tool_fail "replace_text is temporarily unavailable because apply_patch failed. Re-read the exact target lines and submit a corrected apply_patch instead."
     return 1
@@ -347,6 +385,8 @@ tool_replace_text() {
     _tool_fail "could not safely update file: $requested"
     return 1
   }
+  _tool_replacement_diff "$requested" "$content" "${before}${new_text}${after}"
+  TOOL_DIFF="$REPLY"
   _tool_succeed "Replaced one exact text occurrence in ${resolved_path#$ZCODER_WORKSPACE/}"
 }
 
@@ -429,6 +469,7 @@ tool_apply_patch() {
   local git_error="" patch_error="" output="" engine="" guidance="" success_message=""
   local -i exit_code=1 strip=0 patch_process_aborted=0
   local patch_process_error=''
+  TOOL_DIFF=''
   TOOL_CANCELLED=0
   TOOL_PATCH_RETRY_REQUIRED=1
   [[ -n "$patch_text" ]] || { _tool_fail "patch is empty"; return 1; }
@@ -492,6 +533,7 @@ tool_apply_patch() {
       return 1
     fi
     TOOL_PATCH_RETRY_REQUIRED=0
+    TOOL_DIFF="$patch_text"
     success_message="Patch applied successfully with ${engine}."
     [[ -n "$output" ]] && success_message+=$'\n'"$output"
     _tool_succeed "$success_message"
@@ -836,6 +878,7 @@ tool_run_command() {
 tool_dispatch() {
   local name="$1" args_json="$2" effect="" action_summary="" key=""
   TOOL_CANCELLED=0
+  TOOL_DIFF=''
   if (( $+functions[agent_tool_is_admitted] )) && ! agent_tool_is_admitted "$name"; then
     _tool_fail "tool $name is not enabled in the current tool-exposure phase"
     return 1

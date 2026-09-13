@@ -1157,57 +1157,60 @@ functions[agent_build_warmup_payload]="$saved_remote_payload_builder"
 functions[http_async_start]="$saved_remote_async_start"
 REMOTE_LISTEN_FD="$saved_remote_listen_fd"
 
-typeset -gi MOCK_REMOTE_CONTEXT_CHECKS=0 MOCK_REMOTE_WARMUP_STARTS=0
-ollama_get_running_context() {
-  (( MOCK_REMOTE_CONTEXT_CHECKS++ ))
-  OLLAMA_RUNNING_CONTEXT=32768
+typeset -gi MOCK_REMOTE_CONTEXT_CHECKS=0 MOCK_REMOTE_WARMUP_STARTS=0 MOCK_REMOTE_COLLECTS=0
+http_async_start() {
+  [[ "$2" == /api/ps ]] && (( MOCK_REMOTE_CONTEXT_CHECKS++ ))
+  return 0
+}
+http_async_ready() { return 1; }
+http_async_collect() {
+  (( MOCK_REMOTE_COLLECTS++ ))
+  HTTP_BODY="$MOCK_REMOTE_MODEL_RESPONSE"
   HTTP_ERROR=""
   return 0
 }
 _remote_server_model_start_warmup() {
   (( MOCK_REMOTE_WARMUP_STARTS++ ))
-  REMOTE_MODEL_STATUS="warming"
+  REMOTE_MODEL_STATUS=warming
+  REMOTE_MODEL_REQUEST_KIND=warmup
+  REMOTE_MODEL_DEADLINE=$(( EPOCHREALTIME + 30 ))
   return 0
 }
-ZCODER_WARMUP=true
-REMOTE_MODEL_STATUS="unknown"
+REMOTE_MODEL_STATUS=unknown
 _remote_server_model_ensure 1
-assert_success "remote residency checks accept an already loaded configured model" $?
-assert_eq "ready" "$REMOTE_MODEL_STATUS" "resident remote models become ready without a warm-up"
-assert_eq "0" "$MOCK_REMOTE_WARMUP_STARTS" "resident remote models do not start a warm-up request"
-assert_eq "32768" "$AGENT_CONTEXT_WINDOW" "remote residency checks retain the loaded context allocation"
-
-ollama_get_running_context() {
-  (( MOCK_REMOTE_CONTEXT_CHECKS++ ))
-  OLLAMA_RUNNING_CONTEXT=0
-  HTTP_ERROR=""
-  return 1
-}
-REMOTE_MODEL_STATUS="ready"
+assert_eq 1 "$?" "remote residency checks begin asynchronously"
+assert_eq check "$REMOTE_MODEL_REQUEST_KIND" "model preparation first checks residency"
 _remote_server_model_ensure 1
-remote_missing_status=$?
-assert_eq "1" "$remote_missing_status" "an evicted remote model reports warm-up in progress"
-assert_eq "warming" "$REMOTE_MODEL_STATUS" "an evicted remote model enters the warming state"
-assert_eq "1" "$MOCK_REMOTE_WARMUP_STARTS" "a forced pre-turn check starts warm-up after eviction"
-
-typeset -gi MOCK_REMOTE_COLLECTS=0 MOCK_REMOTE_REFRESHES=0
-http_async_ready() { return 1; }
-REMOTE_MODEL_STATUS="warming"
-_remote_server_model_poll
-assert_eq "1" "$?" "an unfinished remote warm-up remains pending"
+assert_eq 1 "$MOCK_REMOTE_CONTEXT_CHECKS" "concurrent clients share one residency check"
 http_async_ready() { return 0; }
-http_async_collect() {
-  (( MOCK_REMOTE_COLLECTS++ ))
-  HTTP_BODY='{"message":{"content":"Ready"},"done":true}'
-  HTTP_ERROR=""
-  return 0
-}
-agent_context_refresh_after_response() { (( MOCK_REMOTE_REFRESHES++ )); }
+zjson_quote "$ZCODER_MODEL"
+MOCK_REMOTE_MODEL_RESPONSE='{"models":[{"name":'"$REPLY"',"context_length":32768}]}'
 _remote_server_model_poll
-assert_success "a completed remote warm-up is collected" $?
-assert_eq "ready" "$REMOTE_MODEL_STATUS" "a successful remote warm-up changes model state to ready"
-assert_eq "1" "$MOCK_REMOTE_COLLECTS" "remote warm-up completion collects its HTTP worker"
-assert_eq "1" "$MOCK_REMOTE_REFRESHES" "remote warm-up completion refreshes context allocation"
+assert_success "asynchronous residency checks accept an already loaded model" $?
+assert_eq ready "$REMOTE_MODEL_STATUS" "resident models become ready without warm-up"
+assert_eq 32768 "$AGENT_CONTEXT_WINDOW" "residency checks retain the loaded context allocation"
+assert_eq 0 "$MOCK_REMOTE_WARMUP_STARTS" "resident models do not start warm-up"
+_remote_server_model_ensure 1
+MOCK_REMOTE_MODEL_RESPONSE='{"models":[]}'
+_remote_server_model_poll
+assert_eq 1 "$?" "an evicted model starts warming asynchronously"
+assert_eq warmup "$REMOTE_MODEL_REQUEST_KIND" "missing residency advances to warm-up"
+assert_eq 1 "$MOCK_REMOTE_WARMUP_STARTS" "eviction starts exactly one warm-up request"
+http_async_ready() { return 1; }
+_remote_server_model_poll
+assert_eq 1 "$?" "unfinished model preparation remains pending"
+http_async_ready() { return 0; }
+MOCK_REMOTE_MODEL_RESPONSE='{"message":{"content":"Ready"},"done":true}'
+_remote_server_model_poll
+assert_eq 1 "$?" "warm-up completion starts an asynchronous context refresh"
+assert_eq refresh "$REMOTE_MODEL_REQUEST_KIND" "context refresh never blocks the listener"
+zjson_quote "$ZCODER_MODEL"
+MOCK_REMOTE_MODEL_RESPONSE='{"models":[{"name":'"$REPLY"',"context_length":65536}]}'
+_remote_server_model_poll
+assert_success "context refresh completes model preparation" $?
+assert_eq ready "$REMOTE_MODEL_STATUS" "a refreshed warmed model becomes ready"
+assert_eq 65536 "$AGENT_CONTEXT_WINDOW" "warm-up retains the actual loaded context allocation"
+functions[http_async_start]="$saved_remote_async_start"
 
 typeset -ga MOCK_REMOTE_CLIENT_REQUESTS=()
 typeset -g MOCK_REMOTE_CLIENT_STATUS=""
@@ -3236,6 +3239,8 @@ test_section markdown
 source "${TEST_DIR}/markdown.zsh"
 test_section transcript
 source "${TEST_DIR}/transcript.zsh"
+test_section diff
+source "${TEST_DIR}/diff.zsh"
 test_section overlays
 source "${TEST_DIR}/overlays.zsh"
 test_section slash
@@ -3317,6 +3322,7 @@ zsh -df "${TEST_DIR}/color_palette.zsh"
 assert_success "color palettes preserve policy and recover from allocation failures" $?
 if test_integration drawing; then
   source "${TEST_DIR}/drawing.zsh"
+  source "${TEST_DIR}/diff_ui.zsh"
 fi
 if test_integration picker; then
   zsh -df "${TEST_DIR}/picker.zsh"
@@ -3338,6 +3344,12 @@ if test_integration tool_wait; then
 fi
 if test_integration mcp_connect_wait; then
   source "${TEST_DIR}/mcp_connect_wait.zsh"
+fi
+test_section remote_request
+source "${TEST_DIR}/remote_request.zsh"
+if test_integration remote_connections; then
+  zsh -df "${TEST_DIR}/remote_connections.zsh"
+  assert_success "concurrent remote sockets preserve admission, cancellation and cleanup" $?
 fi
 if test_integration remote_wait; then
   source "${TEST_DIR}/remote_wait.zsh"

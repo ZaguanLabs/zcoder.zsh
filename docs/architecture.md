@@ -617,6 +617,32 @@ Remote mode moves the complete agent loop behind a small authenticated HTTP API.
 The local TUI submits a turn and polls ordered, sequence-numbered events. A
 server worker owns the Ollama request, tools, and session state.
 
+The listener admits up to sixteen connections, including response writers.
+`zselect` watches pending input; each ready peer contributes at most one 32 KiB
+read per iteration, and each iteration accepts at most four new connections.
+Each request has one ten-second read deadline shared by headers and body;
+receiving another fragment does not renew that budget. Headers are capped at
+64 KiB and the configured body limit applies independently to each connection.
+The bearer credential is checked after parsing headers and before reading any
+remaining body. Invalid credentials receive `401` even when the declared body
+never arrives. At capacity, excess connections are closed without starting an
+additional response writer.
+
+Complete authenticated requests dispatch sequentially in the listener. Parsed
+fields stay with their connection until dispatch, so a partial request cannot
+borrow another request's method, target or body. The listener remains the owner
+of session selection, turn admission, approvals and cancellation. Concurrent
+socket I/O does not permit concurrent active turns.
+
+Responses are written by disposable child processes because native `syswrite`
+has no timeout. The listener closes each connection and reaps its writer after
+completion, or kills and reaps a stalled writer at its ten-second write deadline.
+Writers close all unrelated accepted sockets and the listening socket; turn and
+warm-up workers also close the entire inherited connection pool. Shutdown closes
+all pooled sockets and terminates response writers. No coordination files are
+needed for response completion. Deadline checks run on the listener's regular
+polls; synchronous application handlers can still delay those polls.
+
 Protocol-1 handshakes advertise goal support with `"goals":true`. Goal slash
 commands use the ordinary authenticated turn/event channel, and older servers
 that omit the capability remain usable but reject goal commands client-side.
@@ -625,7 +651,12 @@ The initial handshake and every turn boundary check whether the server's
 configured model is resident in Ollama. An absent model is warmed
 asynchronously with the same disposable stable-prefix request used locally,
 and the client polls explicit model status for its `[ Warming Up ]` badge. The
-server does not warm models merely because configured server processes exist.
+residency lookup and post-warm-up context refresh also use disposable HTTP
+workers, each with a ten-second deadline. The listener collects their results
+between socket polls, so a stalled Ollama lookup does not block cancellation or
+other clients. Concurrent preparation requests share the existing worker; all
+three phases retain the protocol-1 `warming` state until readiness is confirmed.
+The server does not warm models merely because configured server processes exist.
 If eviction races with prompt submission, the prompt is stored privately and
 starts only after warm-up succeeds.
 

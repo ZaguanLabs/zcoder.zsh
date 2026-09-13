@@ -53,6 +53,13 @@ for (( col=2; col<=9; col++ )); do
 done
 if [[ $REMOTE_MODE == client ]]; then
   [[ $connection_label == *REMOTE* ]] || exit 24
+  if [[ $UI_COLOR_MODE != mono ]]; then
+    for col in 0 3; do
+      zcoder_curses move top_win 0 $col
+      zcoder_curses querychar top_win cell || exit 26
+      [[ $cell[2] == "$UI_THEME_COLORS[header]/$UI_THEME_COLORS[surface]" ]] || exit 27
+    done
+  fi
 else
   [[ $connection_label != *REMOTE* ]] || exit 25
 fi

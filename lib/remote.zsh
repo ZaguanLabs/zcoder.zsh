@@ -20,6 +20,8 @@ typeset -g REMOTE_IDLE_PID='' REMOTE_IDLE_BASE='' REMOTE_IDLE_ENDPOINT=''
 typeset -gF REMOTE_IDLE_DEADLINE=0.0
 typeset -g REMOTE_MODEL_STATUS="unknown"
 typeset -g REMOTE_MODEL_ERROR=""
+typeset -g REMOTE_MODEL_REQUEST_KIND=''
+typeset -gF REMOTE_MODEL_DEADLINE=0.0 REMOTE_SERVER_MODEL_CHECK_TIMEOUT=10.0
 typeset -g REMOTE_GIT_STATUS='Git: unavailable'
 typeset -gi REMOTE_GIT_SUPPORTED=0
 typeset -g REMOTE_HARNESSES=""
@@ -32,6 +34,14 @@ typeset -gi REMOTE_SERVER_TOOL_SEQUENCE=0
 typeset -g REMOTE_SERVER_TOOL_CALL_ID=""
 typeset -gi REMOTE_STRUCTURED_TOOL_EVENTS=0
 typeset -gi REMOTE_MAX_REQUEST_BYTES="${ZCODER_REMOTE_MAX_REQUEST_BYTES:-1048576}"
+typeset -gF REMOTE_SERVER_READ_TIMEOUT=10.0
+typeset -gF REMOTE_SERVER_WRITE_TIMEOUT=10.0
+typeset -gi REMOTE_SERVER_MAX_CONNECTIONS=16
+# Only the listener mutates this pool. Writers inherit it solely to close
+# unrelated sockets; application requests continue to run in the listener.
+typeset -gA REMOTE_CONNECTION_PHASE=() REMOTE_CONNECTION_BUFFER=() REMOTE_CONNECTION_DEADLINE=()
+typeset -gA REMOTE_CONNECTION_LENGTH=() REMOTE_CONNECTION_METHOD=() REMOTE_CONNECTION_TARGET=()
+typeset -gA REMOTE_CONNECTION_AUTHORIZATION=() REMOTE_CONNECTION_WRITER=()
 typeset -gi REMOTE_APPROVAL_TIMEOUT="${ZCODER_REMOTE_APPROVAL_TIMEOUT:-300}"
 typeset -gF REMOTE_CLIENT_NEXT_MODEL_POLL=0.0
 typeset -grF REMOTE_CLIENT_MODEL_POLL_INTERVAL=0.5
@@ -40,6 +50,7 @@ typeset -g REMOTE_REQUEST_METHOD=""
 typeset -g REMOTE_REQUEST_TARGET=""
 typeset -g REMOTE_REQUEST_BODY=""
 typeset -g REMOTE_REQUEST_AUTHORIZATION=""
+typeset -gi REMOTE_REQUEST_LENGTH=0
 
 remote_normalize_endpoint() {
   local endpoint="$1"
@@ -701,7 +712,7 @@ _remote_client_user_turn() {
         if (( ${ACP_WORKER_ACTIVE:-0} && $+functions[acp_worker_tool_event] )); then
           acp_worker_tool_event "$tool_phase" "$tool_name" "$tool_args" "$tool_result" "$tool_succeeded"
         elif (( ${UI_ACTIVE:-0} )); then
-          transcript_tool_event "$tool_phase" "$tool_name" "$tool_args" "$tool_result" "$tool_succeeded" "$tool_id" && structured_tool_seen=1
+          transcript_tool_event "$tool_phase" "$tool_name" "$tool_args" "$tool_result" "$tool_succeeded" "$tool_id" "${JSON_OBJECT[diff]:-}" && structured_tool_seen=1
           ui_draw_chat
         fi
         ;;
@@ -874,7 +885,7 @@ remote_server_worker_status() {
 
 remote_server_worker_tool_event() {
   local phase="$1" name="$2" args="{}" result="${4:-}" succeeded="${5:-0}"
-  local id_json="" name_json="" args_json="" result_json=""
+  local id_json="" name_json="" args_json="" result_json="" diff="${6:-}" diff_json=''
   (( REMOTE_STRUCTURED_TOOL_EVENTS )) || return 0
   [[ -z "${3:-}" ]] || args="$3"
   case "$phase" in
@@ -885,12 +896,13 @@ remote_server_worker_tool_event() {
     running|complete) [[ -n "$REMOTE_SERVER_TOOL_CALL_ID" ]] || return 0 ;;
     *) return 0 ;;
   esac
-  transcript_tool_event "$phase" "$name" "$args" "$result" "$succeeded" "$REMOTE_SERVER_TOOL_CALL_ID"
+  transcript_tool_event "$phase" "$name" "$args" "$result" "$succeeded" "$REMOTE_SERVER_TOOL_CALL_ID" "$diff"
   zjson_quote "$REMOTE_SERVER_TOOL_CALL_ID"; id_json="$REPLY"
   zjson_quote "$name"; name_json="$REPLY"
   zjson_quote "$args"; args_json="$REPLY"
   zjson_quote "$result"; result_json="$REPLY"
-  _remote_server_publish_json "{\"event\":\"tool\",\"phase\":\"${phase}\",\"tool_call_id\":${id_json},\"name\":${name_json},\"args\":${args_json},\"result\":${result_json},\"succeeded\":${succeeded}}"
+  zjson_quote "$diff"; diff_json="$REPLY"
+  _remote_server_publish_json "{\"event\":\"tool\",\"phase\":\"${phase}\",\"tool_call_id\":${id_json},\"name\":${name_json},\"args\":${args_json},\"result\":${result_json},\"succeeded\":${succeeded},\"diff\":${diff_json}}"
   [[ "$phase" == complete ]] && REMOTE_SERVER_TOOL_CALL_ID=""
   return 0
 }
@@ -913,22 +925,47 @@ _remote_server_git_json() {
 }
 
 _remote_server_model_poll() {
-  local response="" error=""
+  local response="" error="" kind="$REMOTE_MODEL_REQUEST_KIND"
   local -i request_status=0 parse_status=0
   [[ "$REMOTE_MODEL_STATUS" == warming ]] || return 0
+  if (( EPOCHREALTIME >= REMOTE_MODEL_DEADLINE )); then
+    http_async_cancel
+    REMOTE_MODEL_REQUEST_KIND=''
+    REMOTE_MODEL_STATUS=error
+    REMOTE_MODEL_ERROR='Ollama model preparation timed out'
+    return 2
+  fi
   http_async_ready || return 1
   http_async_collect
   request_status=$?
   response="$HTTP_BODY"
+  REMOTE_MODEL_REQUEST_KIND=''
+  if (( request_status == 0 )) && [[ "$kind" == check || "$kind" == refresh ]]; then
+    if ! json_parse_running_model_context "$response" "$ZCODER_MODEL"; then
+      error="could not parse Ollama running-model list: ${ZJSON_ERROR:-invalid JSON}"
+    elif (( JSON_RUNNING_MODEL_CONTEXT > 0 )); then
+      AGENT_CONTEXT_WINDOW=$JSON_RUNNING_MODEL_CONTEXT
+      AGENT_CONTEXT_MODEL="$ZCODER_MODEL"
+      AGENT_CONTEXT_DISCOVERY_PENDING=0
+      REMOTE_MODEL_STATUS=ready
+      REMOTE_MODEL_ERROR=''
+      return 0
+    elif [[ "$kind" == check ]]; then
+      _remote_server_model_start_warmup || return 2
+      return 1
+    else
+      error='configured model is not resident after warm-up'
+    fi
+    REMOTE_MODEL_STATUS=error
+    REMOTE_MODEL_ERROR="$error"
+    return 2
+  fi
   if (( request_status == 0 )); then
     json_parse_ollama_response "$response" || parse_status=$?
   fi
   if (( request_status == 0 && parse_status == 0 )) && [[ -z "$JSON_RESPONSE_ERROR" ]]; then
-    REMOTE_MODEL_STATUS="ready"
-    REMOTE_MODEL_ERROR=""
-    agent_context_refresh_after_response
-    zcoder_debug remote_warmup_complete "model=${(qqq)ZCODER_MODEL} host=${(qqq)OLLAMA_HOST}"
-    return 0
+    _remote_server_model_start_check refresh || return 2
+    return 1
   fi
   if (( request_status != 0 )); then
     error="${HTTP_ERROR:-Ollama warm-up request failed}"
@@ -943,17 +980,33 @@ _remote_server_model_poll() {
   return 2
 }
 
+_remote_server_model_start_check() {
+  local kind="${1:-check}" connection_fd="${2:-}"
+  if ! http_async_start GET /api/ps '' "$OLLAMA_HOST" "$REMOTE_LISTEN_FD" "$connection_fd" "${(@k)REMOTE_CONNECTION_PHASE}"; then
+    REMOTE_MODEL_STATUS=error
+    REMOTE_MODEL_ERROR="${HTTP_ERROR:-could not check Ollama model residency}"
+    return 1
+  fi
+  REMOTE_MODEL_REQUEST_KIND="$kind"
+  REMOTE_MODEL_DEADLINE=$(( EPOCHREALTIME + REMOTE_SERVER_MODEL_CHECK_TIMEOUT ))
+  # Preserve the protocol-1 preparation state understood by older clients.
+  REMOTE_MODEL_STATUS=warming
+  REMOTE_MODEL_ERROR=''
+}
+
 _remote_server_model_start_warmup() {
   local connection_fd="${1:-}" payload=""
   agent_build_warmup_payload
   payload="$REPLY"
-  if ! http_async_start POST /api/chat "$payload" "$OLLAMA_HOST" "$REMOTE_LISTEN_FD" "$connection_fd"; then
+  if ! http_async_start POST /api/chat "$payload" "$OLLAMA_HOST" "$REMOTE_LISTEN_FD" "$connection_fd" "${(@k)REMOTE_CONNECTION_PHASE}"; then
     REMOTE_MODEL_STATUS="error"
     REMOTE_MODEL_ERROR="${HTTP_ERROR:-could not start Ollama warm-up}"
     zcoder_debug remote_warmup_start_error "model=${(qqq)ZCODER_MODEL} host=${(qqq)OLLAMA_HOST} error=${(qqq)REMOTE_MODEL_ERROR}"
     return 1
   fi
   REMOTE_MODEL_STATUS="warming"
+  REMOTE_MODEL_REQUEST_KIND=warmup
+  REMOTE_MODEL_DEADLINE=$(( EPOCHREALTIME + HTTP_READ_TIMEOUT ))
   REMOTE_MODEL_ERROR=""
   zcoder_debug remote_warmup_start "model=${(qqq)ZCODER_MODEL} host=${(qqq)OLLAMA_HOST} payload_chars=${#payload}"
 }
@@ -962,33 +1015,16 @@ _remote_server_model_start_warmup() {
 # before a turn. Status polling merely collects an existing warm-up so several
 # configured servers do not continually fight over constrained model memory.
 _remote_server_model_ensure() {
-  local -i force="${1:-0}" poll_status=0
+  local -i force="${1:-0}"
   local connection_fd="${2:-}"
   if [[ "$REMOTE_MODEL_STATUS" == warming ]]; then
     _remote_server_model_poll
-    poll_status=$?
-    (( poll_status == 1 )) && return 1
-    (( poll_status == 2 )) && return 2
-    (( force )) || return 0
+    return $?
   fi
   if (( ! force )) && [[ "$REMOTE_MODEL_STATUS" == ready ]]; then
     return 0
   fi
-  REMOTE_MODEL_STATUS="checking"
-  REMOTE_MODEL_ERROR=""
-  if ollama_get_running_context "$ZCODER_MODEL" "$OLLAMA_HOST"; then
-    REMOTE_MODEL_STATUS="ready"
-    AGENT_CONTEXT_WINDOW="$OLLAMA_RUNNING_CONTEXT"
-    AGENT_CONTEXT_MODEL="$ZCODER_MODEL"
-    return 0
-  fi
-  if [[ -n "$HTTP_ERROR" ]]; then
-    REMOTE_MODEL_STATUS="error"
-    REMOTE_MODEL_ERROR="$HTTP_ERROR"
-    zcoder_debug remote_model_check_error "model=${(qqq)ZCODER_MODEL} host=${(qqq)OLLAMA_HOST} error=${(qqq)REMOTE_MODEL_ERROR}"
-    return 2
-  fi
-  _remote_server_model_start_warmup "$connection_fd" || return 2
+  _remote_server_model_start_check check "$connection_fd" || return 2
   return 1
 }
 
@@ -1163,6 +1199,10 @@ _remote_http_send() {
 "Cache-Control: no-store"$'\r\n'\
 "Connection: close"$'\r\n'\
 "Content-Length: ${body_bytes}"$'\r\n\r\n'"${body}"
+  if [[ -n "${REMOTE_CONNECTION_PHASE[$fd]:-}" ]]; then
+    _remote_server_connection_send "$fd" "$response"
+    return $?
+  fi
   zcoder_syswrite_all "$fd" "$response"
 }
 
@@ -1172,23 +1212,19 @@ _remote_http_error() {
   _remote_http_send "$fd" "$status_code" "{\"error\":${message_json}}"
 }
 
-_remote_http_read_request() {
-  setopt localoptions nomultibyte
-  local fd="$1" raw="" chunk="" header="" request_line="" line="" key="" value="" body=""
+_remote_http_parse_headers() {
+  setopt localoptions extendedglob nomultibyte
+  local header="$1" request_line="" line="" key="" value="" content_length=0
+  local expected_authorization="${2:-}"
+  local maximum="$REMOTE_MAX_REQUEST_BYTES"
   local -a lines=()
-  local -i content_length=0 header_bytes=0
+  REMOTE_ERROR=""
   REMOTE_REQUEST_METHOD=""
   REMOTE_REQUEST_TARGET=""
   REMOTE_REQUEST_BODY=""
   REMOTE_REQUEST_AUTHORIZATION=""
-  while [[ "$raw" != *$'\r\n\r\n'* ]]; do
-    sysread -i "$fd" -s 32768 -t 10 chunk 2>/dev/null || { REMOTE_ERROR="request header timed out"; return 1; }
-    raw+="$chunk"
-    (( ${#raw} <= 65536 )) || { REMOTE_ERROR="request header is too large"; return 2; }
-  done
-  header="${raw%%$'\r\n\r\n'*}"
-  header_bytes=$(( ${#header} + 4 ))
-  body="${raw[$(( header_bytes + 1 )),-1]}"
+  REMOTE_REQUEST_LENGTH=0
+  (( ${#header} + 4 <= 65536 )) || { REMOTE_ERROR="request header is too large"; return 2; }
   lines=("${(@f)${header//$'\r'/}}")
   request_line="${lines[1]:-}"
   REMOTE_REQUEST_METHOD="${request_line%% *}"
@@ -1207,16 +1243,60 @@ _remote_http_read_request() {
     case "$key" in
       content-length)
         [[ "$value" == <0-> ]] || { REMOTE_ERROR="invalid Content-Length"; return 1; }
-        content_length="$value"
+        # Bound decimal text before arithmetic so a huge length cannot wrap
+        # around the integer limit and bypass the per-connection memory cap.
+        content_length="${value##0#}"
+        content_length="${content_length:-0}"
         ;;
       authorization) REMOTE_REQUEST_AUTHORIZATION="$value" ;;
     esac
   done
-  (( content_length <= REMOTE_MAX_REQUEST_BYTES )) || { REMOTE_ERROR="request body is too large"; return 2; }
+  if [[ -n "$expected_authorization" && "$REMOTE_REQUEST_AUTHORIZATION" != "$expected_authorization" ]]; then
+    REMOTE_ERROR="authentication required"
+    return 3
+  fi
+  if (( ${#content_length} > ${#maximum} )) ||
+      { (( ${#content_length} == ${#maximum} )) && [[ "$content_length" > "$maximum" ]]; }; then
+    REMOTE_ERROR="request body is too large"
+    return 2
+  fi
+  REMOTE_REQUEST_LENGTH=$(( 10#$content_length ))
+}
+
+# Blocking convenience reader for protocol fixtures and direct dispatch tests.
+# The production listener uses the same header parser with incremental I/O.
+_remote_http_read_request() {
+  setopt localoptions nomultibyte
+  local fd="$1" expected_authorization="${2:-}" raw="" chunk="" header="" body=""
+  local -i content_length=0 header_bytes=0
+  zmodload zsh/datetime || { REMOTE_ERROR="could not load request clock"; return 1; }
+  local -F deadline=$(( EPOCHREALTIME + REMOTE_SERVER_READ_TIMEOUT )) remaining=0
+  REMOTE_REQUEST_BODY=""
+  while [[ "$raw" != *$'\r\n\r\n'* ]]; do
+    remaining=$(( deadline - EPOCHREALTIME ))
+    if (( remaining <= 0 )) || ! sysread -i "$fd" -s 32768 -t "$remaining" chunk 2>/dev/null; then
+      REMOTE_ERROR="request header timed out"
+      return 1
+    fi
+    raw+="$chunk"
+    [[ "$raw" == *$'\r\n\r\n'* ]] || (( ${#raw} <= 65536 )) || {
+      REMOTE_ERROR="request header is too large"; return 2
+    }
+  done
+  header="${raw%%$'\r\n\r\n'*}"
+  header_bytes=$(( ${#header} + 4 ))
+  body="${raw[$(( header_bytes + 1 )),-1]}"
+  _remote_http_parse_headers "$header" "$expected_authorization" || return $?
+  content_length=$REMOTE_REQUEST_LENGTH
   while (( ${#body} < content_length )); do
-    sysread -i "$fd" -s 32768 -t 10 chunk 2>/dev/null || { REMOTE_ERROR="request body timed out"; return 1; }
+    remaining=$(( deadline - EPOCHREALTIME ))
+    if (( remaining <= 0 )) || ! sysread -i "$fd" -s 32768 -t "$remaining" chunk 2>/dev/null; then
+      REMOTE_ERROR="request body timed out"
+      return 1
+    fi
     body+="$chunk"
   done
+  (( EPOCHREALTIME < deadline )) || { REMOTE_ERROR="request timed out"; return 1; }
   REMOTE_REQUEST_BODY="${body[1,$content_length]}"
 }
 
@@ -1237,7 +1317,8 @@ _remote_server_turn_worker() {
   local prompt="$1" session_id="$2" connection_fd="${3:-}" structured_events="${4:-0}" saved_policy="" exit_code=0
   trap 'mcp_shutdown_all >/dev/null 2>&1 || true' EXIT
   trap 'exit 130' INT TERM HUP
-  _http_close_inherited_fds "$REMOTE_LISTEN_FD" "$connection_fd"
+  _http_close_inherited_fds "$REMOTE_LISTEN_FD" "$connection_fd" "${(@k)REMOTE_CONNECTION_PHASE}"
+  REMOTE_CONNECTION_PHASE=()
   REMOTE_LISTEN_FD=""
   REMOTE_SERVER_WORKER=1
   REMOTE_SERVER_TOOL_SEQUENCE=0
@@ -1369,18 +1450,164 @@ _remote_server_hello_json() {
   _remote_server_git_json
 }
 
+_remote_server_connection_close() {
+  local fd="$1" pid="${REMOTE_CONNECTION_WRITER[$1]:-}"
+  if [[ -n "$pid" ]]; then
+    # A response writer owns no application state or subprocesses. SIGKILL
+    # also terminates a syswrite that keeps retrying interrupted writes.
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  fi
+  unset "REMOTE_CONNECTION_PHASE[$fd]" "REMOTE_CONNECTION_BUFFER[$fd]" \
+    "REMOTE_CONNECTION_DEADLINE[$fd]" "REMOTE_CONNECTION_LENGTH[$fd]" \
+    "REMOTE_CONNECTION_METHOD[$fd]" "REMOTE_CONNECTION_TARGET[$fd]" \
+    "REMOTE_CONNECTION_AUTHORIZATION[$fd]" "REMOTE_CONNECTION_WRITER[$fd]"
+  ztcp -c "$fd" 2>/dev/null || true
+}
+
+_remote_server_connection_send() {
+  local fd="$1" response="$2" pid=""
+  [[ "${REMOTE_CONNECTION_PHASE[$fd]:-}" != writing ]] || return 1
+  REMOTE_CONNECTION_PHASE[$fd]=writing
+  REMOTE_CONNECTION_BUFFER[$fd]=''
+  REMOTE_CONNECTION_DEADLINE[$fd]=$(( EPOCHREALTIME + REMOTE_SERVER_WRITE_TIMEOUT ))
+  # Only network output runs in a child. The handler has already made its
+  # state changes in the listener. No completion-file protocol is needed.
+  (
+    trap - EXIT INT TERM HUP WINCH PIPE
+    local other_fd=''
+    for other_fd in "$REMOTE_LISTEN_FD" "${(@k)REMOTE_CONNECTION_PHASE}"; do
+      [[ "$other_fd" == "$fd" ]] || _http_close_inherited_fds "$other_fd"
+    done
+    REMOTE_CONNECTION_PHASE=()
+    zcoder_syswrite_all "$fd" "$response"
+  ) </dev/null >/dev/null 2>&1 &
+  pid=$!
+  REMOTE_CONNECTION_WRITER[$fd]="$pid"
+}
+
+_remote_http_request_error() {
+  case "$2" in
+    2) _remote_http_error "$1" 413 "$REMOTE_ERROR" ;;
+    3) _remote_http_error "$1" 401 "$REMOTE_ERROR" ;;
+    *) _remote_http_error "$1" 400 "$REMOTE_ERROR" ;;
+  esac
+}
+
+# Consume at most one chunk per ready socket per iteration. Headers and body
+# retain the deadline assigned at accept; another readable byte never renews it.
+_remote_server_connection_read() {
+  setopt localoptions nomultibyte
+  local fd="$1" chunk='' raw='' header=''
+  local -i read_status=0 header_bytes=0 read_size=32768
+  if [[ "${REMOTE_CONNECTION_PHASE[$fd]}" == body ]]; then
+    read_size=$(( REMOTE_CONNECTION_LENGTH[$fd] - ${#REMOTE_CONNECTION_BUFFER[$fd]} ))
+    (( read_size > 32768 )) && read_size=32768
+  fi
+  sysread -i "$fd" -s "$read_size" -t 0 chunk 2>/dev/null
+  read_status=$?
+  (( read_status == 4 )) && return 0
+  (( read_status == 0 )) || { _remote_server_connection_close "$fd"; return; }
+  REMOTE_CONNECTION_BUFFER[$fd]+="$chunk"
+  if [[ "${REMOTE_CONNECTION_PHASE[$fd]}" == headers ]]; then
+    raw="${REMOTE_CONNECTION_BUFFER[$fd]}"
+    if [[ "$raw" != *$'\r\n\r\n'* ]]; then
+      if (( ${#raw} > 65536 )); then
+        _remote_http_error "$fd" 413 'request header is too large'
+      fi
+      return
+    fi
+    header="${raw%%$'\r\n\r\n'*}"
+    header_bytes=$(( ${#header} + 4 ))
+    _remote_http_parse_headers "$header" "Bearer ${REMOTE_TOKEN}"
+    read_status=$?
+    (( read_status == 0 )) || { _remote_http_request_error "$fd" "$read_status"; return; }
+    REMOTE_CONNECTION_METHOD[$fd]="$REMOTE_REQUEST_METHOD"
+    REMOTE_CONNECTION_TARGET[$fd]="$REMOTE_REQUEST_TARGET"
+    REMOTE_CONNECTION_AUTHORIZATION[$fd]="$REMOTE_REQUEST_AUTHORIZATION"
+    REMOTE_CONNECTION_LENGTH[$fd]=$REMOTE_REQUEST_LENGTH
+    REMOTE_CONNECTION_BUFFER[$fd]="${raw[$(( header_bytes + 1 )),-1]}"
+    REMOTE_CONNECTION_PHASE[$fd]=body
+  fi
+  if (( ${#REMOTE_CONNECTION_BUFFER[$fd]} >= REMOTE_CONNECTION_LENGTH[$fd] )); then
+    (( EPOCHREALTIME < REMOTE_CONNECTION_DEADLINE[$fd] )) || {
+      _remote_server_connection_close "$fd"; return
+    }
+    # Dispatch owns these globals only until this synchronous call returns.
+    # Each connection carries its own parsed fields until then.
+    REMOTE_REQUEST_METHOD="${REMOTE_CONNECTION_METHOD[$fd]}"
+    REMOTE_REQUEST_TARGET="${REMOTE_CONNECTION_TARGET[$fd]}"
+    REMOTE_REQUEST_AUTHORIZATION="${REMOTE_CONNECTION_AUTHORIZATION[$fd]}"
+    REMOTE_REQUEST_LENGTH=${REMOTE_CONNECTION_LENGTH[$fd]}
+    REMOTE_REQUEST_BODY="${REMOTE_CONNECTION_BUFFER[$fd][1,$REMOTE_REQUEST_LENGTH]}"
+    _remote_server_dispatch_request "$fd"
+    REMOTE_REQUEST_BODY=''
+    [[ "${REMOTE_CONNECTION_PHASE[$fd]:-}" == writing ]] || _remote_server_connection_close "$fd"
+  fi
+}
+
+_remote_server_io_poll() {
+  local fd='' pid=''
+  local -i accepted=0
+  local -a readers=("$REMOTE_LISTEN_FD")
+  local -A ready=()
+  [[ -z "$REMOTE_MODEL_REQUEST_KIND" ]] || _remote_server_model_poll || true
+  for fd in "${(@k)REMOTE_CONNECTION_PHASE}"; do
+    pid="${REMOTE_CONNECTION_WRITER[$fd]:-}"
+    if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid" 2>/dev/null || true
+      unset "REMOTE_CONNECTION_WRITER[$fd]"
+      _remote_server_connection_close "$fd"
+    elif (( EPOCHREALTIME >= REMOTE_CONNECTION_DEADLINE[$fd] )); then
+      _remote_server_connection_close "$fd"
+    elif [[ "${REMOTE_CONNECTION_PHASE[$fd]}" != writing ]]; then
+      readers+=("$fd")
+    fi
+  done
+  # Wake regularly even without traffic to expire readers and reap writers.
+  zselect -A ready -t 5 -r "${readers[@]}" 2>/dev/null || return 0
+  if [[ -n "${ready[$REMOTE_LISTEN_FD]:-}" ]]; then
+    # Bound accept work too: a connection flood must not starve existing peers.
+    for (( accepted=0; accepted<4; accepted++ )); do
+      ztcp -a -t "$REMOTE_LISTEN_FD" 2>/dev/null || break
+      fd="$REPLY"
+      if (( ${#REMOTE_CONNECTION_PHASE} >= REMOTE_SERVER_MAX_CONNECTIONS )); then
+        # Sending a busy response would itself need another writer slot.
+        ztcp -c "$fd" 2>/dev/null
+        continue
+      fi
+      REMOTE_CONNECTION_PHASE[$fd]=headers
+      REMOTE_CONNECTION_BUFFER[$fd]=''
+      REMOTE_CONNECTION_DEADLINE[$fd]=$(( EPOCHREALTIME + REMOTE_SERVER_READ_TIMEOUT ))
+    done
+  fi
+  for fd in "${readers[@]:1}"; do
+    [[ -n "${ready[$fd]:-}" ]] || continue
+    if (( EPOCHREALTIME >= REMOTE_CONNECTION_DEADLINE[$fd] )); then
+      _remote_server_connection_close "$fd"
+    else
+      _remote_server_connection_read "$fd"
+    fi
+  done
+}
+
 _remote_server_handle_connection() {
-  local fd="$1" read_status=0 target="" after="0" prompt="" turn_json="" id="" decision="" session_status=0 structured_events=0
-  _remote_http_read_request "$fd"
+  local fd="$1" read_status=0
+  _remote_http_read_request "$fd" "Bearer ${REMOTE_TOKEN}"
   read_status=$?
   if (( read_status != 0 )); then
-    (( read_status == 2 )) && _remote_http_error "$fd" 413 "$REMOTE_ERROR" || _remote_http_error "$fd" 400 "$REMOTE_ERROR"
+    _remote_http_request_error "$fd" "$read_status"
     return
   fi
   if [[ "$REMOTE_REQUEST_AUTHORIZATION" != "Bearer ${REMOTE_TOKEN}" ]]; then
     _remote_http_error "$fd" 401 "authentication required"
     return
   fi
+  _remote_server_dispatch_request "$fd"
+}
+
+_remote_server_dispatch_request() {
+  local fd="$1" target="" after="0" prompt="" turn_json="" id="" decision="" session_status=0 structured_events=0
   _remote_server_reap_worker
   target="$REMOTE_REQUEST_TARGET"
   case "$REMOTE_REQUEST_METHOD:$target" in
@@ -1552,8 +1779,15 @@ _remote_server_handle_connection() {
 }
 
 remote_server_stop() {
-  local pid="" owner_pid=""
+  local pid="" owner_pid="" fd=""
   local -i owns_runtime=1
+  if [[ -n "$REMOTE_MODEL_REQUEST_KIND" ]]; then
+    http_async_cancel
+    REMOTE_MODEL_REQUEST_KIND=''
+  fi
+  for fd in "${(@k)REMOTE_CONNECTION_PHASE}"; do
+    _remote_server_connection_close "$fd"
+  done
   if [[ -n "$REMOTE_RUNTIME_DIR" ]]; then
     owner_pid="${mapfile[$REMOTE_RUNTIME_DIR/server.pid]:-}"
     [[ -n "$owner_pid" && "$owner_pid" != "${sysparams[pid]:-$$}" ]] && owns_runtime=0
@@ -1601,7 +1835,7 @@ _remote_server_share_legacy_sessions() {
 }
 
 remote_server_main() {
-  local safe_name="" client_fd="" existing_pid="" selected_session="" old_umask="$(umask)"
+  local safe_name="" existing_pid="" selected_session="" old_umask="$(umask)"
   [[ "$REMOTE_SERVER_PORT" == <1-65535> ]] || { print -u2 -- "Error: --port expects an integer from 1 through 65535"; return 2; }
   [[ -n "$REMOTE_SERVER_NAME" ]] || { print -u2 -- "Error: --server requires a non-empty name"; return 2; }
   remote_load_token "$REMOTE_TOKEN_FILE" || { print -u2 -- "Error: $REMOTE_ERROR"; return 2; }
@@ -1658,14 +1892,11 @@ remote_server_main() {
   print -u2 -- "Workspace: ${ZCODER_WORKSPACE:A}"
   print -u2 -- "Model: ${ZCODER_MODEL} (${ZCODER_PROFILE})"
   print -u2 -- "Transport: authenticated plain HTTP; use only on a trusted LAN or through a secure tunnel"
-  while (( RUNNING )); do
-    if ! ztcp -a "$REMOTE_LISTEN_FD" 2>/dev/null; then
-      (( RUNNING )) && print -u2 -- "Error: failed to accept remote connection"
-      break
-    fi
-    client_fd="$REPLY"
-    _remote_server_handle_connection "$client_fd"
-    ztcp -c "$client_fd" 2>/dev/null
-  done
-  remote_server_stop
+  {
+    while (( RUNNING )); do
+      _remote_server_io_poll
+    done
+  } always {
+    remote_server_stop
+  }
 }

@@ -1,6 +1,7 @@
 # Adaptive curses interface for chat, tools, and prompt editing.
 (( ${+functions[zcoder_curses]} )) || source "${${(%):-%x}:A:h}/curses.zsh"
 source "${${(%):-%x}:A:h}/drawing.zsh"
+source "${${(%):-%x}:A:h}/diff.zsh"
 source "${${(%):-%x}:A:h}/ui_preferences.zsh"
 source "${${(%):-%x}:A:h}/markdown.zsh"
 source "${${(%):-%x}:A:h}/markdown_native.zsh"
@@ -464,13 +465,13 @@ _ui_paint_header() {
     identity_attrs+=('bold red/black' 'bold yellow/black')
   fi
   zcoder_curses clear top_win
-  ui_attr top_win -dim -bold border/surface
+  ui_attr top_win -dim -bold header/surface
   ui_border top_win
   if [[ ${REMOTE_MODE:-local} == client ]]; then
     # Keep connection identity visible even when the model/host line is clipped.
     zcoder_clip ' REMOTE ' $(( SCREEN_W - 4 ))
     zcoder_curses move top_win 0 2
-    ui_attr top_win -dim -bold bold accent/surface
+    ui_attr top_win -dim -bold bold header/surface
     zcoder_curses string top_win "$REPLY"
   fi
   zcoder_curses move top_win 1 2
@@ -1057,7 +1058,10 @@ _ui_render_one_message() {
   if [[ "$role" != assistant && "${UI_BLOCK_OPEN[i]:-1}" == 0 ]]; then
     : # Keep the role and independently foldable reasoning visible.
   elif [[ "$role" == tool && -n "${UI_TOOL_NAMES[i]:-}" ]]; then
-    if [[ ( "${UI_TOOL_NAMES[i]}" == write_file || "${UI_TOOL_NAMES[i]}" == apply_patch ) &&
+    if [[ "${UI_TOOL_STATES[i]}" == completed && -n "${UI_TOOL_DIFFS[i]:-}" ]]; then
+      ui_add_diff "$i" "$width" || _ui_add_wrapped "${UI_TOOL_DIFFS[i]}" "$width" '  ' 'white/black'
+      _ui_add_wrapped "${UI_TOOL_RESULTS[i]}" "$width" '  ' 'dim white/black'
+    elif [[ ( "${UI_TOOL_NAMES[i]}" == write_file || "${UI_TOOL_NAMES[i]}" == apply_patch ) &&
           ( "${UI_TOOL_STATES[i]}" == completed || "${UI_TOOL_STATES[i]}" == failed ) ]]; then
       zcoder_terminal_safe "$content"
       _ui_add_tool_content "$REPLY" "$width"
@@ -1166,6 +1170,17 @@ _ui_paint_chat() {
   for (( row=1; row<=inner_h; row++ )); do
     idx=$(( UI_SCROLL + row ))
     (( idx <= total )) || continue
+    if [[ "${UI_LINE_NATIVE[idx]:-0}" == diff:* ]]; then
+      local diff_position="${UI_LINE_NATIVE[idx]#diff:}" diff_event='' diff_first=''
+      local -i diff_height=1
+      diff_event="${diff_position%%:*}"; diff_first="${diff_position##*:}"
+      while (( row+diff_height <= inner_h && idx+diff_height <= total )) &&
+          [[ "${UI_LINE_NATIVE[idx+diff_height]}" == "diff:$diff_event:"* ]]; do (( diff_height++ )); done
+      if ui_draw_diff chat_win "$row" 1 "$diff_height" "$inner_w" "$diff_event" "$(( diff_first+1 ))"; then
+        (( row += diff_height-1 ))
+        continue
+      fi
+    fi
     row_spans=()
     segment_count=${UI_LINE_SEGMENT_COUNTS[idx]:-0}
     if (( segment_count > 0 )); then
@@ -1181,7 +1196,7 @@ _ui_paint_chat() {
       fi
       row_spans+=("$attr" "${UI_LINES[idx]}$padding")
     fi
-    if (( ${UI_LINE_NATIVE[idx]:-0} )); then
+    if [[ "${UI_LINE_NATIVE[idx]:-0}" == 1 ]]; then
       ui_markdown_draw_row chat_win "$row" 1 "$inner_w" "${row_spans[@]}"
     else
       (( ${#row_spans} )) && ui_draw_row chat_win "$row" 1 "$inner_w" "${row_spans[@]}"

@@ -96,9 +96,14 @@ API while all model and tool work remains on the server. See the
 
 Starting a remote server does not load its model. When a client connects, the
 server checks Ollama's running-model list for its own configured model. If the
-model is already resident, the client becomes ready immediately. Otherwise the
+model is already resident, the client becomes ready after that lookup. Otherwise the
 server sends the disposable warm-up request and the client shows
 `[ Warming Up ]` until it completes.
+
+Residency checks and the context refresh after warm-up run in background HTTP
+workers with ten-second deadlines. The listener continues handling clients and
+cancellation while Ollama responds. Clients share any preparation already in
+progress and display `[ Warming Up ]` until the final readiness check succeeds.
 
 The server checks again before every turn because another local workload or a
 different remote server may have evicted the model after the connection was
@@ -191,6 +196,14 @@ also rejected while a turn is active.
 `ZCODER_REMOTE_APPROVAL_TIMEOUT` changes the approval timeout from its default
 of 300 seconds. `ZCODER_REMOTE_MAX_REQUEST_BYTES` changes the one-mebibyte
 request-body limit.
+
+Each incoming request has a total ten-second read deadline covering headers and
+body. Invalid credentials are rejected after headers arrive, without waiting for
+the remaining body. Up to sixteen connections can receive requests or send
+responses concurrently, so a stalled peer does not hold up every other client.
+Excess connections are closed when all slots are occupied. Response writers
+have a separate ten-second deadline. Application requests still execute one at
+a time; these limits do not add support for concurrent active turns.
 
 These controls are not yet exposed remotely:
 
