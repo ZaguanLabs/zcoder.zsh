@@ -1,21 +1,40 @@
 # Application styles and bounded row drawing; curses retains screen ownership.
+source "${${(%):-%x}:A:h:h}/vendor/zdraw/lib/zdraw-color.zsh"
 typeset -g UI_COLOR_MODE=basic UI_BORDER_MODE=plain
 typeset -gi UI_STYLED_SPANS=0 UI_WIDE_SPANS=0 UI_CLIPPED_SPANS=0 UI_SPAN_FALLBACKS=0
 typeset -gA UI_COLOR_INFO=() UI_THEME_COLORS=() UI_STYLE_CACHE=()
+typeset -gA UI_COLOR_RESOLVER=()
 typeset -gA UI_COLOR_ROLES=(white text black surface cyan accent green success
   yellow warning red error magenta syntax blue info)
 
 ui_theme_palette() {
+  emulate -L zsh
+  local -A palette zdraw_color=("${(@kv)UI_COLOR_RESOLVER}")
+  local role REPLY
   case "$1" in
-    rgb) UI_THEME_COLORS=(surface '#18212b' text '#d8dee9' accent '#88c0d0'
+    rgb|256) palette=(surface '#18212b' text '#d8dee9' accent '#88c0d0'
       success '#a3be8c' warning '#ebcb8b' error '#bf616a' syntax '#b48ead'
       info '#81a1c1' muted '#8293a6' border '#46596c') ;;
-    256) UI_THEME_COLORS=(surface 234 text 253 accent 110 success 150 warning 222
-      error 167 syntax 139 info 110 muted 103 border 60) ;;
-    *) UI_THEME_COLORS=(surface black text white accent cyan success green
+    # Explicit ANSI hues keep status meanings distinct on basic terminals.
+    *) palette=(surface black text white accent cyan success green
       warning yellow error red syntax magenta info blue muted white border blue) ;;
   esac
+  if (( ${#zdraw_color} )); then
+    for role in ${(k)palette}; do
+      zdraw-color "$palette[$role]" || return 1
+      palette[$role]=$REPLY
+    done
+  fi
+  UI_THEME_COLORS=("${(@kv)palette}")
   UI_STYLE_CACHE=()
+}
+
+ui_theme_reserve() {
+  emulate -L zsh
+  local role
+  for role in text accent success warning error syntax info muted border surface; do
+    ui_attr stdscr "$role/surface" || return 1
+  done
 }
 
 # Existing transcript style records stay terminal-independent. Resolve their
@@ -60,6 +79,13 @@ ui_theme_init() {
   UI_COLOR_INFO=(); UI_STYLE_CACHE=(); UI_SPAN_FALLBACKS=0
   UI_STYLED_SPANS=0; UI_WIDE_SPANS=0; UI_CLIPPED_SPANS=0; UI_BORDER_MODE=plain
   UI_COLOR_MODE=basic
+  local policy=${ZCODER_COLOR:-auto}
+  case $policy in
+    basic) policy=16 ;;
+    mono) ;;
+    *) policy=auto ;;
+  esac
+  local -A zdraw_color
   local -a reply=()
   if zcoder_curses_features; then
     if [[ ${ZCODER_SPANS:-true} != false ]]; then
@@ -75,32 +101,36 @@ ui_theme_init() {
       zcoder_curses colorinfo UI_COLOR_INFO 2>/dev/null || UI_COLOR_INFO=()
     fi
   fi
-  if [[ ${ZCODER_COLOR:-auto} == mono ]] ||
+  if [[ $policy == mono || ( $policy == auto && -n ${NO_COLOR:-} ) ]] ||
      [[ ${UI_COLOR_INFO[has_colors]:-1} == 0 || ${UI_COLOR_INFO[color_started]:-1} == 0 ]] ||
      (( curses_colors < 8 )); then
     UI_COLOR_MODE=mono
-  elif [[ ${ZCODER_COLOR:-auto} != basic ]]; then
-    if [[ ${UI_COLOR_INFO[truecolor_supported]:-0} == 1 ]] &&
-       zcoder_curses truecolor on 2>/dev/null; then
-      UI_COLOR_MODE=rgb
-    # Direct-color entries interpret numeric values differently from the
-    # indexed cube. Never apply our 256-color palette to those descriptions.
-    elif (( curses_colors == 256 )); then
-      UI_COLOR_MODE=256
+  elif [[ $policy == auto ]] && (( curses_colors == 256 )); then
+    UI_COLOR_MODE=256
+  fi
+  # Stock curses can use the same pure converter with an indexed snapshot.
+  # zdraw owns capability discovery and direct-color numeric encoding.
+  UI_COLOR_RESOLVER=(profile "${UI_COLOR_MODE/basic/16}" encoding indexed rgb_min 0)
+  if [[ $ZCODER_CURSES_COMMAND == zdraw ]]; then
+    if zdraw-color-setup "$policy" 2>/dev/null; then
+      UI_COLOR_RESOLVER=("${(@kv)zdraw_color}")
+      UI_COLOR_MODE=${zdraw_color[profile]/16/basic}
+    else
+      UI_COLOR_MODE=mono; UI_COLOR_RESOLVER[profile]=mono
     fi
   fi
-  ui_theme_palette "$UI_COLOR_MODE"
+  if ! ui_theme_palette "$UI_COLOR_MODE"; then
+    UI_COLOR_MODE=mono; UI_COLOR_RESOLVER[profile]=mono
+    ui_theme_palette mono
+  fi
   # Reserve the finite palette before painting. Failed allocations do not
   # recycle retained pairs; degrade before any application cells are drawn.
-  local role
-  if [[ "$UI_COLOR_MODE" != mono ]]; then
-    for role in text accent success warning error syntax info muted border surface; do
-      if ! ui_attr stdscr "$role/surface" 2>/dev/null; then
-        UI_COLOR_MODE=basic; ui_theme_palette basic
-        if ! ui_attr stdscr text/surface 2>/dev/null; then UI_COLOR_MODE=mono; UI_STYLE_CACHE=(); fi
-        break
-      fi
-    done
+  if [[ $UI_COLOR_MODE != mono ]] && ! ui_theme_reserve 2>/dev/null; then
+    UI_COLOR_MODE=basic; UI_COLOR_RESOLVER[profile]=16
+    if ! ui_theme_palette basic || ! ui_theme_reserve 2>/dev/null; then
+      UI_COLOR_MODE=mono; UI_COLOR_RESOLVER[profile]=mono
+      ui_theme_palette mono
+    fi
   fi
   ui_attr stdscr -bold -dim -reverse -underline text/surface 2>/dev/null
   return 0
@@ -129,6 +159,7 @@ ui_widget_theme() {
     surface "${UI_THEME_COLORS[surface]:-default}" canvas "${UI_THEME_COLORS[surface]:-default}"
     muted "${UI_THEME_COLORS[muted]:-default}" accent "${UI_THEME_COLORS[accent]:-default}"
     border "${UI_THEME_COLORS[border]:-default}"
+    error "${UI_THEME_COLORS[error]:-default}"
     selection "${UI_THEME_COLORS[accent]:-default}" on-selection "${UI_THEME_COLORS[surface]:-default}"
     inactive "${UI_THEME_COLORS[surface]:-default}" on-inactive "${UI_THEME_COLORS[text]:-default}")
   for role in ${(k)zdraw_ui_theme}; do
@@ -137,6 +168,11 @@ ui_widget_theme() {
     zdraw_ui_theme[$role]=${basic[$color]:-$color}
     [[ $UI_COLOR_MODE == mono ]] && zdraw_ui_theme[$role]=default
   done
+  if (( ${#UI_COLOR_RESOLVER} )); then
+    zdraw_ui_theme[color-profile]=$UI_COLOR_RESOLVER[profile]
+    zdraw_ui_theme[color-encoding]=$UI_COLOR_RESOLVER[encoding]
+    zdraw_ui_theme[rgb-min]=$UI_COLOR_RESOLVER[rgb_min]
+  fi
   return 0
 }
 

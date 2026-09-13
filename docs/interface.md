@@ -7,8 +7,14 @@ The palette uses a dark blue-gray surface, muted borders and coordinated syntax
 and status colors. A matching bundled zdraw build adds rounded borders and
 styled-row batching with a shared cell budget for transcript clipping. Stock
 curses uses the same application layout and an
-indexed or basic palette. `ZCODER_COLOR=basic` or `mono`,
+indexed or basic palette. One RGB palette is resolved once per terminal session;
+256-color output uses the nearest cube or grayscale color. Basic mode keeps
+explicit ANSI hues so success, warning and error remain distinct. Widget colors
+and literal overrides use the same terminal profile as the transcript.
+`ZCODER_COLOR=basic` or `mono`,
 `ZCODER_BORDERS=plain`, and `ZCODER_SPANS=false` select the fallback paths.
+With automatic color selection, a nonempty `NO_COLOR` selects monochrome while
+preserving bold and reverse emphasis. Explicit `ZCODER_COLOR=basic` overrides it.
 
 Truecolor is enabled only when curses reports support through an appropriate
 direct-color terminal description. `COLORTERM=truecolor` alone does not enable

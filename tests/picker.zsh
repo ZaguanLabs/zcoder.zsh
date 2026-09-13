@@ -25,7 +25,7 @@ picker_wait() {
 }
 picker_run() {
   trap - EXIT INT TERM
-  export TERM=xterm-256color ZCODER_COLOR=$picker_profile
+  export TERM=xterm-256color ZCODER_COLOR=$picker_profile NO_COLOR=''
   exec zsh -df "$picker_root/tests/fixtures/picker_ui.zsh" "$picker_root" "$picker_base" "$picker_backend"
 }
 typeset picker_backend picker_profile picker_tty actual baseline stem

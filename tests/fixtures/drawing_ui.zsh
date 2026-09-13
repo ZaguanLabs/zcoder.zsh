@@ -46,6 +46,38 @@ typeset -i row col
 typeset -a cell before after
 typeset -a fixture_spans=('bold cyan/black' 'const ' 'magenta/black' 'value ' 'white/black' '= ' 'yellow/black' '"hello"' 'white/black' '        ')
 zcoder_curses addwin sample 3 50 0 0 || exit 1
+if [[ $UI_COLOR_MODE == basic ]]; then
+  [[ $UI_THEME_COLORS[success] != $UI_THEME_COLORS[warning] &&
+     $UI_THEME_COLORS[warning] != $UI_THEME_COLORS[error] &&
+     $UI_THEME_COLORS[success] != $UI_THEME_COLORS[error] ]] || exit 16
+fi
+if [[ $ZCODER_CURSES_COMMAND == zdraw ]]; then
+  source "$fixture_root/vendor/zdraw/lib/zdraw-ui.zsh" || exit 1
+  typeset -A zdraw_ui_theme zdraw_ui_style color_cell
+  ui_widget_theme
+  zdraw-label sample 1 1 20 'Status' normal fg=error || exit 17
+  zdraw move sample 1 1
+  zdraw cellinfo sample color_cell || exit 18
+  if [[ $UI_COLOR_MODE == mono ]]; then
+    [[ $color_cell[pair] == 0 ]] || exit 19
+  else
+    [[ $color_cell[color] == "$UI_THEME_COLORS[error]/$UI_THEME_COLORS[surface]" ]] || exit 20
+  fi
+  zdraw-ui-style selected 'fg=#ff0000' reverse || exit 21
+  case $UI_COLOR_MODE in
+    rgb) expected_red='#ff0000' ;;
+    256) expected_red=196 ;;
+    mono) expected_red=default ;;
+    basic)
+      expected_red=1
+      if [[ $UI_COLOR_RESOLVER[encoding] == rgb && $UI_COLOR_RESOLVER[rgb_min] == 0 ]]; then
+        expected_red='#800000'
+      fi ;;
+  esac
+  [[ $zdraw_ui_style[fg] == $expected_red && $zdraw_ui_style[style] == *reverse* ]] || exit 22
+  zcoder_curses clear sample
+fi
+mapfile[$fixture_base.colors]=1
 ui_window_background sample
 UI_STYLED_SPANS=0
 ui_draw_row sample 1 1 48 "${fixture_spans[@]}"

@@ -21,7 +21,7 @@ doc_wait() {
 doc_run() {
   trap - EXIT INT TERM
   unset ESCDELAY
-  export TERM=xterm-256color ZCODER_COLOR=$doc_profile
+  export TERM=xterm-256color ZCODER_COLOR=$doc_profile NO_COLOR=''
   exec zsh -df "$doc_root/tests/fixtures/document_ui.zsh" "$doc_root" "$doc_base" "$doc_backend"
 }
 (

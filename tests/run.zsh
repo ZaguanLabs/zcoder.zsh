@@ -3312,6 +3312,9 @@ test_section resize
 source "${TEST_DIR}/resize.zsh"
 test_section ui_preferences
 source "${TEST_DIR}/ui_preferences.zsh"
+test_section color_palette
+zsh -df "${TEST_DIR}/color_palette.zsh"
+assert_success "color palettes preserve policy and recover from allocation failures" $?
 if test_integration drawing; then
   source "${TEST_DIR}/drawing.zsh"
 fi
