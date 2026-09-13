@@ -466,6 +466,13 @@ _ui_paint_header() {
   zcoder_curses clear top_win
   ui_attr top_win -dim -bold border/surface
   ui_border top_win
+  if [[ ${REMOTE_MODE:-local} == client ]]; then
+    # Keep connection identity visible even when the model/host line is clipped.
+    zcoder_clip ' REMOTE ' $(( SCREEN_W - 4 ))
+    zcoder_curses move top_win 0 2
+    ui_attr top_win -dim -bold bold accent/surface
+    zcoder_curses string top_win "$REPLY"
+  fi
   zcoder_curses move top_win 1 2
   for identity in "${identities[@]}"; do
     (( identity_limit > 0 )) || break

@@ -13,20 +13,20 @@ drawing_run() {
   trap - EXIT INT TERM
   export TERM=$drawing_term ZCODER_COLOR=$drawing_policy ZCODER_SPANS=true ZCODER_BORDERS=auto
   export NO_COLOR=$drawing_no_color
-  exec zsh -df "$TEST_DIR/fixtures/drawing_ui.zsh" "$PROJECT_DIR" "$drawing_base" "$drawing_backend"
+  exec zsh -df "$TEST_DIR/fixtures/drawing_ui.zsh" "$PROJECT_DIR" "$drawing_base" "$drawing_backend" "$drawing_connection"
 }
-typeset -a drawing_backends=(stock)
-[[ $resize_backend == bundled ]] && drawing_backends+=(auto)
+typeset -a drawing_backends=(stock local stock client)
+[[ $resize_backend == bundled ]] && drawing_backends+=(auto local auto client)
 typeset -a drawing_scenarios=(auto xterm-256color '' mono xterm-256color ''
   basic xterm-256color '' auto xterm '' auto vt100 ''
   auto xterm-256color 1 basic xterm-256color 1)
 if (( ${+commands[infocmp]} )) && command infocmp xterm-direct >/dev/null 2>&1; then
   drawing_scenarios+=(auto xterm-direct '' basic xterm-direct '' auto xterm-direct 1)
 fi
-typeset drawing_backend drawing_policy drawing_term drawing_no_color drawing_base drawing_output
-for drawing_backend in "${drawing_backends[@]}"; do
+typeset drawing_backend drawing_policy drawing_term drawing_no_color drawing_base drawing_output drawing_connection
+for drawing_backend drawing_connection in "${drawing_backends[@]}"; do
   for drawing_policy drawing_term drawing_no_color in "${drawing_scenarios[@]}"; do
-    drawing_base="$TEST_TMP/drawing-$drawing_backend-$drawing_policy-$drawing_term-${drawing_no_color:-off}"
+    drawing_base="$TEST_TMP/drawing-$drawing_backend-$drawing_connection-$drawing_policy-$drawing_term-${drawing_no_color:-off}"
     drawing_output=''
     zpty -b drawing-ui drawing_run
     drawing_wait
@@ -50,6 +50,7 @@ for drawing_backend in "${drawing_backends[@]}"; do
        ( $drawing_policy == auto && -n $drawing_no_color ) ]] && drawing_expected=mono
     assert_contains "${mapfile[$drawing_base.mode]:-}" "$drawing_expected:" "$drawing_backend/$drawing_policy selects its requested palette"
     assert_eq 1 "${mapfile[$drawing_base.colors]:-}" "$drawing_backend/$drawing_policy preserves semantic colors and adaptive widget overrides"
+    assert_eq 1 "${mapfile[$drawing_base.connection]:-}" "$drawing_backend/$drawing_connection/$drawing_policy identifies connection mode in retained header cells"
     assert_not_contains "$drawing_output" 'spans:' 'batch rejection diagnostics never leak onto the terminal'
     assert_not_contains "$drawing_output" 'spansclip:' 'clipping rejection diagnostics never leak onto the terminal'
     zpty -d drawing-ui

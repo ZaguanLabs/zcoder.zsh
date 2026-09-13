@@ -19,6 +19,17 @@ ui_theme_palette() {
     *) palette=(surface black text white accent cyan success green
       warning yellow error red syntax magenta info blue muted white border blue) ;;
   esac
+  # Remote clients retain the same semantic status colors, with a warmer
+  # surface and lavender chrome. Resolve this before terminal quantization.
+  if [[ ${REMOTE_MODE:-local} == client ]]; then
+    case "$1" in
+      rgb|256)
+        palette[surface]='#2b2636' palette[text]='#ded9e8'
+        palette[accent]='#b6a4cc' palette[muted]='#9b91ad'
+        palette[border]='#625574' ;;
+      basic) palette[accent]=magenta palette[border]=magenta ;;
+    esac
+  fi
   if (( ${#zdraw_color} )); then
     for role in ${(k)palette}; do
       zdraw-color "$palette[$role]" || return 1

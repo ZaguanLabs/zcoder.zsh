@@ -39,6 +39,10 @@ status_header_identity_test() {
   ui_invalidate header; MOCK_ZCURSES_CALLS=(); ui_draw_header
   assert_contains "${(F)MOCK_ZCURSES_CALLS}" 'zcoder.zsh v0.11.3' "remote headers retain the application name and version"
   assert_contains "${(F)MOCK_ZCURSES_CALLS}" 'remote-fixture@192.168.1.48:7337' "remote headers identify the connected server"
+  for SCREEN_W in 40 60 80 160; do
+    ui_invalidate header; MOCK_ZCURSES_CALLS=(); ui_draw_header
+    assert_contains "${(F)MOCK_ZCURSES_CALLS}" 'string top_win  REMOTE ' "the ${SCREEN_W}-column header labels remote connections independently of model length"
+  done
   SCREEN_W=40; ZCODER_MODEL='模型模型模型模型模型模型'
   ui_invalidate header; MOCK_ZCURSES_CALLS=(); ui_draw_header
   local -i identity_cells=0 badge_column=0 header_row=1
@@ -54,6 +58,9 @@ status_header_identity_test() {
     fi
   done
   assert_success "wide header glyphs remain separated from the status on narrow terminals" $(( identity_cells + 2 < badge_column ? 0 : 1 ))
+  REMOTE_MODE=local
+  ui_invalidate header; MOCK_ZCURSES_CALLS=(); ui_draw_header
+  assert_not_contains "${(F)MOCK_ZCURSES_CALLS}" 'string top_win  REMOTE ' 'local headers do not retain a remote label'
 }
 status_header_identity_test
 unfunction status_header_identity_test

@@ -16,6 +16,12 @@ and literal overrides use the same terminal profile as the transcript.
 With automatic color selection, a nonempty `NO_COLOR` selects monochrome while
 preserving bold and reverse emphasis. Explicit `ZCODER_COLOR=basic` overrides it.
 
+Remote zcoder connections (`--connect`) use a slightly warmer dark surface and
+muted lavender accents. Basic mode uses magenta accents, while success, warning
+and error keep their usual colors. A `REMOTE` label in the header's top border
+identifies the connection in every color mode, including monochrome, even when
+the model and server names are clipped. The palette is selected automatically.
+
 Truecolor is enabled only when curses reports support through an appropriate
 direct-color terminal description. `COLORTERM=truecolor` alone does not enable
 it; zcoder never rewrites `TERM`. The 256-color palette also provides the new

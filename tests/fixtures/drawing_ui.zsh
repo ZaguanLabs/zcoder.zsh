@@ -2,7 +2,7 @@
 # Capture real retained cells and exercise both drawing paths in a private PTY.
 emulate -R zsh
 setopt extendedglob
-typeset -g fixture_root=$1 fixture_base=$2 fixture_backend=$3
+typeset -g fixture_root=$1 fixture_base=$2 fixture_backend=$3 fixture_connection=${4:-local}
 source "$fixture_root/lib/curses.zsh"
 ZCODER_CURSES=$fixture_backend zcoder_curses_load "$fixture_root" || exit 1
 # A loaded but inactive stock module must not affect zdraw dispatch or colors.
@@ -13,12 +13,13 @@ if [[ $ZCODER_CURSES_COMMAND == zdraw ]]; then
   [[ $ZCODER_CURSES_COMMAND == zdraw ]] || exit 15
 fi
 zmodload zsh/terminfo zsh/datetime zsh/mapfile || exit 1
-for fixture_lib in util json transcript agent input terminal ui; do
+for fixture_lib in util json skills transcript agent input terminal ui; do
   source "$fixture_root/lib/$fixture_lib.zsh"
 done
 typeset -g ZCODER_NAME=zcoder.zsh ZCODER_VERSION=preview ZCODER_MODEL=qwen3-coder
 typeset -g ZCODER_WORKSPACE=$fixture_root OLLAMA_HOST=localhost:11434 ZCODER_PROFILE=coding
-typeset -g REMOTE_MODE=local ZCODER_SYNC_OUTPUT=false
+typeset -g REMOTE_MODE=$fixture_connection ZCODER_SYNC_OUTPUT=false
+typeset -g REMOTE_SERVER_NAME=fixture-server REMOTE_ENDPOINT=localhost:7337
 typeset -g ZCODER_COMMAND_POLICY=ask CURRENT_SESSION_ID=preview
 typeset -a SESSION_IDS=(preview earlier) SESSION_TITLES=('Rendering refresh' 'Review tool output')
 typeset -a SESSION_MODELS=(qwen3-coder qwen3-coder)
@@ -44,6 +45,18 @@ mapfile[$fixture_base.spans_disabled]=1
 ui_theme_init
 typeset -i row col
 typeset -a cell before after
+typeset connection_label=''
+for (( col=2; col<=9; col++ )); do
+  zcoder_curses move top_win 0 $col
+  zcoder_curses querychar top_win cell || exit 23
+  connection_label+=$cell[1]
+done
+if [[ $REMOTE_MODE == client ]]; then
+  [[ $connection_label == *REMOTE* ]] || exit 24
+else
+  [[ $connection_label != *REMOTE* ]] || exit 25
+fi
+mapfile[$fixture_base.connection]=1
 typeset -a fixture_spans=('bold cyan/black' 'const ' 'magenta/black' 'value ' 'white/black' '= ' 'yellow/black' '"hello"' 'white/black' '        ')
 zcoder_curses addwin sample 3 50 0 0 || exit 1
 if [[ $UI_COLOR_MODE == basic ]]; then
