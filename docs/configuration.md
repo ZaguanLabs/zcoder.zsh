@@ -160,11 +160,12 @@ zcoder uses continuation checkpoints rather than silently discarding old turns:
 
 1. `prompt_eval_count` calibrates a conservative token estimate with 10% headroom. Before the first sample, zcoder estimates three bytes per token plus template headroom. Responses that omit a positive prompt count retain the last usable count and its matching request size; a newer positive count replaces that pair.
 2. Automatic compaction begins at 85% of the allocated context by default.
-3. A non-thinking Ollama request reuses the normal system/tool prefix, instructs the model not to call tools, and creates a schema-validated JSON checkpoint capped at 2,048 tokens or 10% of the active context, whichever is smaller.
+3. A non-thinking Ollama request reuses the normal system prefix, exposes no tools, and creates a schema-validated JSON checkpoint capped at 2,048 tokens or 10% of the active context, whichever is smaller. Its handoff instructions prioritize completed changes, observed verification, the interruption point, and precise remaining actions over repeating the original specification.
 4. The initial request and latest correction are pinned verbatim, while additional recent user turns fill a soft token budget.
 5. The recent history boundary expands when necessary so a tool result never survives without its owning assistant tool call.
 6. Malformed, empty, or schema-invalid checkpoints receive up to two corrective retries by default. Exhausted or low-yield checkpoints are rejected without replacing exact history.
 7. If the checkpoint request is too large, zcoder removes the oldest unpinned detailed records until the request fits its safety margin.
+8. A harness continuation message follows the retained history: the workspace and completed edits still exist, and the model must resume the next unfinished action rather than restart the preserved original request. This cue is saved with the session, replaced on repeated compaction, and never added to the real user-intent ledger. The full checkpoint appears only once, in the system context.
 
 The visible transcript is not discarded. `/compact` creates a checkpoint
 manually; `/context` reports checkpoint count and current estimates.

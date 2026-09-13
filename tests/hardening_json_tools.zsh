@@ -88,6 +88,81 @@
   tool_read_file_range range 999999999999999999999 999999999999999999999
   assert_failure 'range rejects overflowing line numbers before arithmetic' $?
 
+  # Reproduce the logged model calls: distinct ranges sent to read_file used
+  # to discard their bounds and each return the same complete HTML file.
+  local AGENT_TOOL_PHASE=full
+  local -i line_index=0 first_line=0 last_line=0
+  local expected='' bounds='' read_args=''
+  sample=''
+  for (( line_index=1; line_index<=1200; line_index++ )); do
+    sample+="payload $line_index"$'\n'
+  done
+  mapfile[$fixture/workspace/range]="$sample"
+  for bounds in 1:50 100:200 820:1000 1000:1100 695:730 400:420; do
+    first_line=${bounds%:*}; last_line=${bounds#*:}
+    read_args='{"path":"range","start_line":"'"$first_line"'","end_line":"'"$last_line"'"}'
+    tool_dispatch read_file "$read_args"
+    assert_failure "read_file rejects logged misplaced range $bounds" $?
+    assert_eq 0 "$TOOL_RESULT_OK" 'misplaced ranges are tool failures, not successful partial reads'
+    assert_contains "$TOOL_RESULT" 'call read_file_range with path, start_line, and end_line' 'misplaced range diagnostic names the correct tool and required arguments'
+    assert_not_contains "$TOOL_RESULT" 'payload' 'misplaced range rejection returns no file contents'
+    tool_dispatch read_file_range "$read_args"
+    assert_success "corrected read_file_range accepts logged range $bounds" $?
+    expected=''
+    for (( line_index=first_line; line_index<=last_line; line_index++ )); do
+      [[ -n "$expected" ]] && expected+=$'\n'
+      expected+="$line_index: payload $line_index"
+    done
+    assert_eq "$expected" "$TOOL_RESULT" "corrected read_file_range returns the requested range $bounds"
+  done
+  tool_dispatch read_file '{"path":"range","start_line":"1000"}'
+  assert_failure 'start-only read_file fails rather than supplying an implicit range' $?
+  tool_dispatch read_file '{"path":"range","end_line":2}'
+  assert_failure 'end-only read_file fails rather than supplying an implicit start' $?
+  tool_dispatch read_file_range '{"path":"range","start_line":1}'
+  assert_failure 'read_file_range requires an explicit end line' $?
+  tool_dispatch read_file_range '{"path":"range","end_line":200}'
+  assert_failure 'read_file_range requires an explicit start line' $?
+  tool_dispatch read_file_range '{"path":"range","start_line":1,"end_line":1200}'
+  assert_success 'explicit range may exceed 200 lines' $?
+  assert_contains "$TOOL_RESULT" '1200: payload 1200' 'explicit large range reaches its requested last line'
+  tool_dispatch read_file '{"path":"range"}'
+  assert_success 'whole-file read of 1200 lines succeeds within the output-size limit' $?
+  assert_eq "$sample" "$TOOL_RESULT" 'whole-file read returns all 1200 lines exactly without numbering'
+  ZCODER_MAX_TOOL_OUTPUT=${#sample}
+  tool_dispatch read_file '{"path":"range"}'
+  assert_eq "$sample" "$TOOL_RESULT" 'whole-file read at the output-size limit remains complete'
+  (( ZCODER_MAX_TOOL_OUTPUT-- ))
+  tool_dispatch read_file '{"path":"range"}'
+  assert_failure 'whole-file read exceeding the output-size limit fails instead of truncating' $?
+  assert_eq 0 "$TOOL_RESULT_OK" 'oversized whole-file reads are not successful tool results'
+  assert_contains "$TOOL_RESULT" 'No file content was returned.' 'oversized whole-file diagnostic explicitly rules out partial contents'
+  assert_contains "$TOOL_RESULT" read_file_range 'oversized whole-file diagnostic explains how to recover'
+  assert_not_contains "$TOOL_RESULT" payload 'oversized whole-file result contains no misleading file fragment'
+  ZCODER_MAX_TOOL_OUTPUT=32768
+  tool_dispatch read_file '{"path":"input"}'
+  assert_eq inside "$TOOL_RESULT" 'path-only read still returns exact full content'
+  for read_args in '{"path":"range","start_line":"1+1"}' \
+    '{"path":"range","start_line":999999999999999999999}' \
+    '{"path":"range","start_line":0}' '{"path":"range","start_line":""}' \
+    '{"path":"range","start_line":2,"end_line":1}' \
+    '{"path":"range","start_line":1,"end_line":""}' \
+    '{"path":"range","offset":1,"limit":5}' \
+    '{"path":"link/secret","start_line":1,"end_line":5}'; do
+    tool_dispatch read_file "$read_args"
+    assert_failure "read_file rejects invalid or unsafe bounds ${(qqq)read_args}" $?
+    assert_not_contains "$TOOL_RESULT" 'payload 1' 'rejected ranged reads never fall back to the complete file'
+    assert_not_contains "$TOOL_RESULT" OUTSIDE_REVIEW_SECRET 'invalid read arguments never expose outside contents'
+  done
+  tool_dispatch read_file '{"path":"link/secret"}'
+  assert_failure 'pure whole-file reads still reject outside symlinks' $?
+  tool_dispatch read_file_range '{"path":"link/secret","start_line":1,"end_line":5}'
+  assert_failure 'corrected ranged reads still reject outside symlinks' $?
+  tool_read_file range 1 5
+  assert_failure 'direct whole-file tool calls also reject extra arguments' $?
+  tool_dispatch read_file_range '{"path":"range","start_line":1,"end_line":5,"offset":3}'
+  assert_failure 'read_file_range rejects unsupported arguments instead of ignoring them' $?
+
   # Force a Unicode character and a selected line across a sysread block.
   sample="${(l:32767::x:)}"$'é\nlast\n'
   mapfile[$fixture/workspace/range]="$sample"

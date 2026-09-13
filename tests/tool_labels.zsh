@@ -16,6 +16,12 @@ tool_label_tests() {
     assert_eq "$expected" "${UI_TOOL_SUMMARIES[1]}" "${names[i]} headings use their display name and workspace-relative path"
     assert_eq "$args" "${UI_TOOL_ARGS[1]}" "${names[i]} display formatting preserves exact dispatch arguments"
   done
+  transcript_tool_summary read_file '{"path":"src/[draft].zsh","start_line":"1000"}'
+  assert_eq 'Read(src/[draft].zsh)' "$REPLY" 'invalid start-only read_file calls are never labeled as ranged reads'
+  transcript_tool_summary read_file '{"path":"src/[draft].zsh","end_line":50}'
+  assert_eq 'Read(src/[draft].zsh)' "$REPLY" 'invalid end-only read_file calls retain their actual tool name'
+  zjson_quote "$original_path"
+  args='{"path":'"$REPLY"'}'
   transcript_reset
   transcript_tool_event begin read_file "$args"
   transcript_tool_event running read_file

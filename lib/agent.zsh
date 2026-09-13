@@ -198,10 +198,11 @@ When the task requires workspace evidence, minimize data collection and context 
 1. Use search first for literals, regular expressions, unmodeled text, or when no project-designated MCP navigation tool applies. It is backed by ripgrep.
    Once search returns a usable location, read that range; do not repeat discovery with minor query variations unless the result is ambiguous.
 2. Use list_files only when the project shape is unknown, with the narrowest useful path and a modest max_entries value.
-3. Use read_file_range for the relevant sections found by search, normally in chunks of no more than 200 lines. Expand only when the evidence requires it.
+3. Use read_file_range with explicit start_line and end_line for the relevant sections found by search. Choose bounds that include the complete function or section needed.
    When an MCP navigation tool returns a relevant source range, read that range directly instead of reading the whole file.
-4. Use read_file only for clearly small files, or when the entire file is genuinely required. Never read a large source file in full merely to inspect one function or section.
+4. Use read_file with only path when the complete file is needed. It rejects line arguments and returns an error if the complete file exceeds the output-size limit. For a section, use read_file_range instead. Never read a large source file in full merely to inspect one function or section.
 5. If the built-in tools are insufficient, use run_command with targeted commands such as rg --files, rg -n, grep, sed -n, or awk. run_command requires user approval; do not use cat or an unbounded command when search or a ranged read will do.
+Reuse evidence already in context. Before each read or search, identify what missing fact it will resolve. Do not request the same unchanged file or overlapping ranges twice, including in one tool-call batch. A successful write, replace_text, or apply_patch establishes that edit; do not re-read the whole file merely to confirm it happened. Verify behavior with a focused test or check. Re-read only when contents may have changed, a result was truncated, exact edit context is missing, or a specific unresolved question requires it; request only the affected range. After compaction, use the checkpoint and retained evidence before doing more discovery. Once the required checks pass, finish; do not start another general review without a new failure or unresolved concern.
 Stop inspecting once you have enough evidence to act. Read relevant code before editing it. Prefer replace_text for one exact literal replacement, apply_patch for focused structural changes, and write_file for new or fully replaced files.
 ${patch_instructions}
 ${completion_instructions}

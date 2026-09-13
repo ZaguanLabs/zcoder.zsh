@@ -1788,7 +1788,8 @@ assert_contains "$REPLY" "Never claim verification that was not actually observe
 assert_contains "$REPLY" "If work remains, call the next appropriate work tool" "system prompt requires action instead of a preamble"
 assert_contains "$REPLY" "Complete only after checking the requested outcome and verification evidence" "system prompt places a completion check near its footer"
 assert_contains "$REPLY" "Do not begin by reading whole source files" "system prompt forbids full-file-first exploration"
-assert_contains "$REPLY" "chunks of no more than 200 lines" "system prompt gives ranged-read budget guidance"
+assert_contains "$REPLY" "Choose bounds that include the complete function or section needed" "system prompt requests complete relevant sections instead of fixed-size chunks"
+assert_contains "$REPLY" "read_file with only path" "system prompt keeps whole-file and ranged-read contracts separate"
 assert_contains "$REPLY" "Stop inspecting once you have enough evidence" "system prompt prevents unnecessary follow-up reads"
 assert_contains "$REPLY" "Prefer replace_text for one exact literal replacement" "system prompt routes simple edits to structured replacement"
 assert_contains "$REPLY" "do not repeat discovery with minor query variations" "system prompt prevents redundant discovery searches"
@@ -2022,7 +2023,7 @@ assert_contains "$MOCK_COMPACT_PAYLOAD" '"additionalProperties":false' "compacti
 assert_not_contains "$MOCK_COMPACT_PAYLOAD" '"tools":' "compaction payload does not expose a competing tool-call channel"
 assert_eq "$MOCK_CHECKPOINT" "$AGENT_COMPACTION_SUMMARY" "compaction stores the validated model checkpoint"
 assert_eq "1" "$AGENT_COMPACTION_COUNT" "compaction advances its checkpoint counter"
-assert_eq "2" "${#AGENT_MESSAGES}" "replacement history preserves every bounded recent record"
+assert_eq "3" "${#AGENT_MESSAGES}" "replacement history preserves bounded recent records and appends a continuation cue"
 assert_eq "2" "${#AGENT_USER_MESSAGES}" "replacement history preserves recent real user messages"
 agent_build_payload
 post_compaction_payload="$REPLY"
@@ -2032,6 +2033,8 @@ REPLY="$post_compaction_payload"
 assert_contains "$REPLY" "complete the requested change" "regular prompts include the validated checkpoint"
 assert_contains "$REPLY" "original request" "regular prompts pin the original user request verbatim"
 assert_contains "$REPLY" "current request" "regular prompts pin the latest user correction verbatim"
+assert_contains "${AGENT_MESSAGES[-1]}" '<compaction_resume>' "compaction puts its continuation cue after the latest retained request"
+assert_contains "$REPLY" 'Build on completed work and avoid duplicating it.' "the next model receives an explicit handoff instruction"
 assert_not_contains "$REPLY" "old tool output" "compacted prompts remove stale detailed tool output"
 assert_contains "$REPLY" '"num_ctx":32768' "explicit 32K context windows are sent to Ollama"
 assert_contains "$REPLY" '"num_predict":8192' "normal turns carry the configured output ceiling"
@@ -2043,6 +2046,54 @@ assert_contains "$REPLY" "Estimated context bill:" "context status attributes mo
 assert_eq "${#AGENT_CONTEXT_COMPONENT_LABELS}" "${#AGENT_CONTEXT_COMPONENT_VALUES}" "context component labels align with their estimates"
 assert_eq "14" "${#AGENT_CONTEXT_COMPONENT_VALUES}" "context accounting exposes reasoning, skill resources, and runtime guidance alongside the original components"
 assert_contains "$REPLY" "checkpoint=${AGENT_CONTEXT_COMPONENT_VALUES[5]}" "inspector checkpoint accounting matches the context bill"
+
+() {
+  local -a AGENT_MESSAGES=() AGENT_USER_MESSAGES=('Create implosion.html') AGENT_PINNED_USER_MESSAGES=()
+  local AGENT_COMPACTION_SUMMARY='' AGENT_CONTEXT_TOOLS='' checkpoint='' cue='' payload=''
+  local -i AGENT_CONTEXT_WINDOW=32768 ZCODER_COMPACT_KEEP_RECENT_TOKENS=2048
+  checkpoint='{"schema_version":1,"objective":"Create implosion.html","constraints":[],"decisions":[],"artifacts":["implosion.html: already created"],"facts":["GLSL constants fixed"],"completed":["Created HTML and repaired GLSL"],"active":["Browser verification"],"blocked":[],"next":["Verify rendering; do not recreate the file"]}'
+  AGENT_MESSAGES=('{"role":"user","content":"Create implosion.html"}'
+    '{"role":"assistant","content":"Verify the existing file","tool_calls":[{"function":{"name":"search","arguments":{"path":"implosion.html","query":"PHASES"}}}]}'
+    '{"role":"tool","tool_name":"search","content":"GLSL constants fixed"}')
+  agent_compaction_replace_history "$checkpoint"
+  cue="${AGENT_MESSAGES[-1]}"
+  assert_eq 4 "${#AGENT_MESSAGES}" 'handoff preserves a complete recent assistant/tool exchange'
+  assert_contains "$cue" '<compaction_resume>' 'handoff is the final message even when the original create request survives'
+  assert_eq 'Create implosion.html' "${AGENT_USER_MESSAGES[1]}" 'harness continuation cue never enters the real user ledger'
+  assert_eq 1 "${#AGENT_USER_MESSAGES}" 'compaction does not invent a new user request'
+  agent_build_payload false '[]'; payload="$REPLY"
+  assert_contains "$payload" 'Created HTML and repaired GLSL' 'resume request retains concrete completed work'
+  assert_contains "$payload" 'Verify rendering; do not recreate the file' 'resume request retains the exact next action'
+  assert_contains "$payload" "${cue}]" 'continuation cue is last in the next model request'
+  agent_compaction_replace_history "$checkpoint"
+  assert_eq 4 "${#AGENT_MESSAGES}" 'a second compaction replaces the old cue instead of accumulating cues'
+  assert_eq "$cue" "${AGENT_MESSAGES[-1]}" 'a repeated checkpoint ends at the new continuation boundary'
+  agent_add_message user 'Actually change only the colors'
+  assert_contains "${AGENT_MESSAGES[-1]}" 'Actually change only the colors' 'later user steering remains after the checkpoint boundary'
+  agent_build_compaction_payload
+  assert_contains "$REPLY" 'Created HTML and repaired GLSL' 'recompaction sees the previous completed-work checkpoint'
+  assert_contains "$REPLY" 'Actually change only the colors' 'recompaction also sees newer corrections'
+
+  # A large multi-tool exchange can leave no raw tail. The handoff still
+  # supplies a conversational continuation point with the checkpoint in scope.
+  AGENT_MESSAGES=('{"role":"assistant","content":"","tool_calls":[{"function":{"name":"read_file","arguments":{"path":"implosion.html"}}}]}'
+    '{"role":"tool","tool_name":"read_file","content":"'"${(l:20000::x:)}"'"}')
+  agent_compaction_replace_history "$checkpoint"
+  assert_eq 1 "${#AGENT_MESSAGES}" 'oversized exchange is dropped as a unit leaving the continuation cue'
+  assert_eq "$cue" "${AGENT_MESSAGES[1]}" 'empty retained history still tells the model to resume'
+
+  local ZCODER_SESSIONS_DIR="$TEST_TMP/compaction-cue-sessions" CURRENT_SESSION_ID=9000000002_1
+  local STATE_SAVED_SESSION_ID='' STATE_SAVED_SNAPSHOT='' STATE_OBSERVED_BASE='' STATE_OBSERVED_SNAPSHOT=''
+  local -i STATE_ENABLED=1 STATE_LOADING=0 AGENT_COMPACTION_COUNT=1
+  local snapshot='' record='' base="$ZCODER_SESSIONS_DIR/$CURRENT_SESSION_ID.session"
+  local -a reply=()
+  state_save_session
+  assert_success 'compaction continuation boundary can be persisted' $?
+  state_snapshot_dir "$base"; snapshot="$REPLY"
+  state_record_paths "$snapshot" agent_messages 1; record="$reply[1]"
+  assert_eq "$cue" "${mapfile[$record]}" 'saved history retains the exact continuation cue for session resumption'
+  assert_eq "$checkpoint" "${mapfile[$snapshot/compaction_summary]}" 'saved checkpoint and continuation boundary remain paired'
+}
 
 functions[_test_valid_compaction_chat]="${functions[agent_ollama_chat]}"
 typeset -gi MOCK_COMPACTION_ATTEMPTS=0

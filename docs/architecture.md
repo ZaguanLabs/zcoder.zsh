@@ -414,7 +414,7 @@ remain compatible and are treated as availability unknown.
 | Tool | Purpose | Implementation |
 | --- | --- | --- |
 | `list_files` | Discover a bounded workspace tree | `rg --no-config --no-follow --files --no-require-git` plus Zsh formatting |
-| `read_file` | Read a complete small text file | `zsh/mapfile` |
+| `read_file` | Read a complete text file, or fail if it exceeds the output-size limit | `zsh/mapfile` |
 | `read_file_range` | Read numbered inclusive lines | Block reads, native line splitting, bounded head-and-tail output |
 | `write_file` | Create or deliberately replace a file | Confined `zsh/system` descriptor writes |
 | `replace_text` | Replace one unique exact text fragment | Native Zsh matching and confined writes |
@@ -434,6 +434,16 @@ the model to search first, then read relevant ranges rather than whole large
 files. Ripgrep configuration is disabled explicitly: inherited `--follow` and
 `--pre` options cannot weaken workspace confinement or execute a preprocessor
 through a read tool. A root workspace of `/` uses the same descendant check.
+
+`read_file` accepts only `path` and returns the complete contents on success.
+Line arguments are rejected with a diagnostic directing the model to
+`read_file_range`, which requires explicit `start_line` and `end_line`. There is
+no default range or 200-line cap. If a complete file exceeds the existing
+output-size limit, `read_file` returns an error with no file contents instead of
+truncating a successful result. Unsupported read arguments also fail explicitly.
+The coding prompt directs models to
+reuse existing evidence, avoid duplicate reads in batches, and verify behavior
+with focused checks instead of repeatedly reading back successful edits.
 
 Ranged reads count preceding lines in 32 KiB blocks and stop reading once the
 requested final line is complete. A trailing newline terminates its preceding

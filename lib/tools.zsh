@@ -46,8 +46,8 @@ tools_schema_json() {
   fi
   output+="${comma}"'
 {"type":"function","function":{"name":"list_files","description":"List files and directories below a workspace path while honoring .gitignore even outside a Git repository and excluding common dependency/build trees. Use a narrow path and modest max_entries only when project structure is unknown.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Narrow workspace-relative directory; defaults to ."},"max_entries":{"type":"integer","description":"Maximum entries; prefer a small limit; defaults to 100"}}}}},
-{"type":"function","function":{"name":"read_file","description":"Read a complete UTF-8 text file. Expensive for context: use only for clearly small files or when every line is required. Do not use when search, MCP navigation, or project instructions already supplied a relevant source range; use read_file_range.","parameters":{"type":"object","required":["path"],"properties":{"path":{"type":"string","description":"Workspace-relative path to a small file whose complete contents are needed"}}}}},
-{"type":"function","function":{"name":"read_file_range","description":"Read an inclusive line range. This is the preferred file-reading tool after search or MCP navigation locates the relevant section; normally request at most 200 lines.","parameters":{"type":"object","required":["path","start_line","end_line"],"properties":{"path":{"type":"string","description":"Workspace-relative file path"},"start_line":{"type":"integer","maximum":999999999,"minimum":1},"end_line":{"type":"integer","maximum":999999999,"minimum":1,"description":"Inclusive end line; normally no more than 200 lines after start_line"}}}}}'
+{"type":"function","function":{"name":"read_file","description":"Read a complete UTF-8 text file. Accepts only path; line arguments are rejected. Returns an error if the complete file exceeds the output-size limit, never a partial file. For a section of a file, use read_file_range with explicit start_line and end_line. Reuse contents already in context.","parameters":{"type":"object","required":["path"],"additionalProperties":false,"properties":{"path":{"type":"string","description":"Workspace-relative path to a file whose complete contents are needed"}}}}},
+{"type":"function","function":{"name":"read_file_range","description":"Read a chosen inclusive line range with line numbers. Both start_line and end_line are required. Prefer this tool after search or MCP navigation locates the relevant section. Choose bounds that include the complete function or section needed; there is no 200-line cap.","parameters":{"type":"object","required":["path","start_line","end_line"],"additionalProperties":false,"properties":{"path":{"type":"string","description":"Workspace-relative file path"},"start_line":{"type":"integer","maximum":999999999,"minimum":1},"end_line":{"type":"integer","maximum":999999999,"minimum":1,"description":"Inclusive end line of the section needed"}}}}}'
   if (( ! TOOL_PATCH_RETRY_REQUIRED )); then
     output+=',
 {"type":"function","function":{"name":"write_file","description":"Create a new workspace text file or deliberately replace a complete file. Never use this as a fallback after a focused apply_patch failure.","parameters":{"type":"object","required":["path","content"],"properties":{"path":{"type":"string"},"content":{"type":"string"}}}}}'
@@ -204,10 +204,18 @@ tool_list_files() {
 
 tool_read_file() {
   local requested="$1" resolved_path="" content=""
+  (( $# == 1 )) || {
+    _tool_fail "read_file accepts only path. For a section, call read_file_range with path, start_line, and end_line. No file content was returned."; return 1
+  }
   _tool_resolve_existing "$requested" || return 1
   resolved_path="$REPLY"
   [[ -f "$resolved_path" ]] || { _tool_fail "not a regular file: $requested"; return 1; }
   content="${mapfile[$resolved_path]}"
+  # A successful whole-file read must not masquerade as a complete file when
+  # the shared output truncator would omit its middle or end.
+  (( ${#content} <= ZCODER_MAX_TOOL_OUTPUT )) || {
+    _tool_fail "read_file could not return the complete file: ${#content} characters exceeds the output-size limit of ${ZCODER_MAX_TOOL_OUTPUT}. No file content was returned. Use search to locate the needed section, then call read_file_range with path, start_line, and end_line."; return 1
+  }
   _tool_succeed "$content"
 }
 
@@ -826,7 +834,7 @@ tool_run_command() {
 }
 
 tool_dispatch() {
-  local name="$1" args_json="$2" effect="" action_summary=""
+  local name="$1" args_json="$2" effect="" action_summary="" key=""
   TOOL_CANCELLED=0
   if (( $+functions[agent_tool_is_admitted] )) && ! agent_tool_is_admitted "$name"; then
     _tool_fail "tool $name is not enabled in the current tool-exposure phase"
@@ -848,6 +856,20 @@ tool_dispatch() {
   if ! json_parse_flat_object "$args_json"; then
     _tool_fail "invalid arguments for $name: ${ZJSON_ERROR:-parse error}"
     return 1
+  fi
+  if [[ "$name" == read_file || "$name" == read_file_range ]]; then
+    for key in "${(@k)JSON_OBJECT}"; do
+      case "$key" in
+        path) ;;
+        start_line|end_line)
+          if [[ "$name" == read_file ]]; then
+            _tool_fail "read_file accepts only path. For a section, call read_file_range with path, start_line, and end_line. No file content was returned."
+            return 1
+          fi
+          ;;
+        *) _tool_fail "unsupported argument $key for $name; use read_file_range with path, start_line, and end_line for a bounded read"; return 1 ;;
+      esac
+    done
   fi
   if [[ "$name" != run_command && "$name" != send_agent_message ]]; then
     (( $+functions[agent_tool_event] )) && agent_tool_event running "$name"
