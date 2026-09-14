@@ -179,7 +179,7 @@ agent_operating_loop_instructions() {
 }
 
 agent_patch_instructions() {
-  REPLY="For focused edits, follow the complete unified-diff contract in the apply_patch tool description. If a patch is rejected, read the exact error, re-read the latest target range, recalculate every hunk header, and retry apply_patch. Never bypass a focused patch failure with write_file."
+  REPLY="When using apply_patch, follow the complete unified-diff contract in the apply_patch tool description. If a patch is rejected, read the exact error, re-read the latest target range, recalculate every hunk header, and retry apply_patch. Never bypass a focused patch failure with write_file."
 }
 
 agent_coding_system_prompt() {
@@ -203,7 +203,7 @@ When the task requires workspace evidence, minimize data collection and context 
 4. Use read_file with only path when the complete file is needed. It rejects line arguments and returns an error if the complete file exceeds the output-size limit. For a section, use read_file_range instead. Never read a large source file in full merely to inspect one function or section.
 5. If the built-in tools are insufficient, use run_command with targeted commands such as rg --files, rg -n, grep, sed -n, or awk. run_command requires user approval; do not use cat or an unbounded command when search or a ranged read will do.
 Reuse evidence already in context. Before each read or search, identify what missing fact it will resolve. Do not request the same unchanged file or overlapping ranges twice, including in one tool-call batch. A successful write, replace_text, or apply_patch establishes that edit; do not re-read the whole file merely to confirm it happened. Verify behavior with a focused test or check. Re-read only when contents may have changed, a result was truncated, exact edit context is missing, or a specific unresolved question requires it; request only the affected range. After compaction, use the checkpoint and retained evidence before doing more discovery. Once the required checks pass, finish; do not start another general review without a new failure or unresolved concern.
-Stop inspecting once you have enough evidence to act. Read relevant code before editing it. Prefer replace_text for one exact literal replacement, apply_patch for focused structural changes, and write_file for new or fully replaced files.
+Stop inspecting once you have enough evidence to act. Read relevant code before editing it. Prefer replace_text for one contiguous change in one existing file, including a multiline block or function; apply_patch for several separated changes in one file or changes spanning multiple files; and write_file for new or deliberately fully replaced files. Keep replacement fragments focused, with enough surrounding context to match uniquely; do not include large unchanged regions just to combine separated changes into one replacement.
 ${patch_instructions}
 ${completion_instructions}
 If work remains, call the next appropriate work tool in this response. Do not emit a plan-only preamble.

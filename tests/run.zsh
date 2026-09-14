@@ -1794,7 +1794,7 @@ assert_contains "$REPLY" "Do not begin by reading whole source files" "system pr
 assert_contains "$REPLY" "Choose bounds that include the complete function or section needed" "system prompt requests complete relevant sections instead of fixed-size chunks"
 assert_contains "$REPLY" "read_file with only path" "system prompt keeps whole-file and ranged-read contracts separate"
 assert_contains "$REPLY" "Stop inspecting once you have enough evidence" "system prompt prevents unnecessary follow-up reads"
-assert_contains "$REPLY" "Prefer replace_text for one exact literal replacement" "system prompt routes simple edits to structured replacement"
+assert_contains "$REPLY" "Prefer replace_text for one contiguous change in one existing file" "system prompt routes contiguous edits to structured replacement"
 assert_contains "$REPLY" "do not repeat discovery with minor query variations" "system prompt prevents redundant discovery searches"
 assert_contains "$REPLY" "non-empty plain assistant response is also accepted as final" "default prompt permits compatible tool-free completion"
 assert_contains "$REPLY" "Never use a tool-free response as a preamble" "default prompt still requires tools while work remains"

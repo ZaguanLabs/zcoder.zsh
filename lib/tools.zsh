@@ -30,7 +30,7 @@ tools_schema_json() {
   fi
   _tool_patch_contract
   patch_contract="$REPLY"
-  zjson_quote $'Apply a focused workspace edit using a raw standard unified diff.\n'"${patch_contract}"$'\nIf rejected, re-read the exact target lines and retry apply_patch. write_file remains unavailable until the corrected patch succeeds or a new user request begins.'
+  zjson_quote $'Apply workspace edits using a raw standard unified diff. Prefer this for several separated changes in one file or changes spanning multiple files. Prefer replace_text for one contiguous change in one existing file.\n'"${patch_contract}"$'\nIf rejected, re-read the exact target lines and retry apply_patch. write_file remains unavailable until the corrected patch succeeds or a new user request begins.'
   patch_description="$REPLY"
   zjson_quote "Raw unified diff text satisfying the complete contract in the tool description."
   patch_argument_description="$REPLY"
@@ -53,7 +53,7 @@ tools_schema_json() {
     output+=',
 {"type":"function","function":{"name":"write_file","description":"Create a new workspace text file or deliberately replace a complete file. Never use this as a fallback after a focused apply_patch failure.","parameters":{"type":"object","required":["path","content"],"properties":{"path":{"type":"string"},"content":{"type":"string"}}}}}'
     output+=',
-{"type":"function","function":{"name":"replace_text","description":"Replace one exact, uniquely occurring text fragment in an existing workspace file. Read the target first, then pass old_text verbatim. Prefer this to unified diff for a small literal replacement. Unavailable after apply_patch fails.","parameters":{"type":"object","required":["path","old_text","new_text"],"properties":{"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"}}}}}'
+{"type":"function","function":{"name":"replace_text","description":"Replace one exact, uniquely occurring text fragment in an existing workspace file. Prefer this for one contiguous change in one existing file, including a multiline block or function. Read the target first, then pass old_text verbatim with enough surrounding context to make it unique. Use apply_patch for several separated changes or changes spanning multiple files. Unavailable after apply_patch fails.","parameters":{"type":"object","required":["path","old_text","new_text"],"properties":{"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"}}}}}'
   fi
   output+=',
 {"type":"function","function":{"name":"apply_patch","description":'"${patch_description}"',"parameters":{"type":"object","required":["patch"],"properties":{"patch":{"type":"string","description":'"${patch_argument_description}"'}}}}},

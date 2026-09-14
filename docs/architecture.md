@@ -417,8 +417,8 @@ remain compatible and are treated as availability unknown.
 | `read_file` | Read a complete text file, or fail if it exceeds the output-size limit | `zsh/mapfile` |
 | `read_file_range` | Read numbered inclusive lines | Block reads, native line splitting, bounded head-and-tail output |
 | `write_file` | Create or deliberately replace a file | Confined `zsh/system` descriptor writes |
-| `replace_text` | Replace one unique exact text fragment | Native Zsh matching and confined writes |
-| `apply_patch` | Apply a unified or context diff | `git apply`, then `patch` fallback |
+| `replace_text` | Make one contiguous change in one existing file using a unique exact text fragment | Native Zsh matching and confined writes |
+| `apply_patch` | Make several separated changes or changes spanning files using a unified diff | `git apply`, then `patch` fallback |
 | `search` | Search text with locations | `rg --no-config --no-follow` |
 | `run_command` | Run builds, tests, and diagnostics | Approved `zsh -c` |
 | `list_agents` | Discover live same-user local peers | Private manifests plus protocol ping |
@@ -451,9 +451,14 @@ line rather than creating another line. Returned output retains bounded first
 and last sections; a single selected long line is still assembled before output
 truncation, so memory for that line follows its length.
 
-`replace_text` is the low-complexity path for a small literal edit. It fails
-closed when the old text is absent or occurs more than once, so the model must
-read the target and supply a unique exact fragment.
+Prefer `replace_text` for one contiguous change in one existing file, including
+a multiline block or function. It fails closed when the old text is absent or
+occurs more than once, so the model must read the target and supply an exact
+fragment with enough surrounding context to match uniquely. Keep the fragment
+focused rather than including large unchanged regions to combine separated edits.
+Prefer `apply_patch` for several separated changes in one file or changes spanning
+multiple files. Use `write_file` for new or deliberately fully replaced files.
+These are tool-selection preferences, not enforced limits on replacement size.
 
 Patch application does not require a Git repository. zcoder validates with
 `git apply --check`; if Git rejects an otherwise usable diff, it tries a
