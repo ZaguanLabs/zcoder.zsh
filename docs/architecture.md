@@ -435,6 +435,12 @@ files. Ripgrep configuration is disabled explicitly: inherited `--follow` and
 `--pre` options cannot weaken workspace confinement or execute a preprocessor
 through a read tool. A root workspace of `/` uses the same descendant check.
 
+`list_files` skips hidden files and directory trees by default. Ripgrep still
+reads hidden ignore files such as `.gitignore`, including nested rules. Explicit
+ignore-file negations can make hidden entries visible. A hidden or ignored
+directory supplied directly as `path` can still be listed; its descendants use
+the normal hidden and ignore filters.
+
 `read_file` accepts only `path` and returns the complete contents on success.
 Line arguments are rejected with a diagnostic directing the model to
 `read_file_range`, which requires explicit `start_line` and `end_line`. There is

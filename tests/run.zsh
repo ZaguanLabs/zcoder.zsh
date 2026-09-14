@@ -546,6 +546,10 @@ assert_contains "$TOOL_RESULT" "not a regular file" "non-regular write rejection
 zf_mkdir -p "$TEST_TMP/node_modules/dependency"
 mapfile[$TEST_TMP/node_modules/dependency/index.js]="generated"
 zf_mkdir -p "$TEST_TMP/ignored-cache" "$TEST_TMP/packages/scratch"
+zf_mkdir -p "$TEST_TMP/.hidden-cache/nested" "$TEST_TMP/packages/.hidden-cache"
+mapfile[$TEST_TMP/.hidden-cache/nested/cache.txt]="hidden"
+mapfile[$TEST_TMP/packages/.hidden-cache/cache.txt]="hidden"
+mapfile[$TEST_TMP/.hidden-file]="hidden"
 mapfile[$TEST_TMP/.gitignore]=$'ignored-cache/\n*.generated\n!important.generated\n'
 mapfile[$TEST_TMP/ignored-cache/secret.txt]="ignored search needle"
 mapfile[$TEST_TMP/hidden.generated]="ignored"
@@ -561,6 +565,18 @@ assert_not_contains "$TOOL_RESULT" "ignored-cache" "list_files honors root gitig
 assert_not_contains "$TOOL_RESULT" "hidden.generated" "list_files honors root gitignore file patterns outside Git"
 assert_contains "$TOOL_RESULT" "important.generated" "list_files honors gitignore negation rules outside Git"
 assert_not_contains "$TOOL_RESULT" "packages/scratch" "list_files honors nested gitignore files outside Git"
+assert_not_contains "$TOOL_RESULT" ".hidden-cache" "list_files excludes hidden directory trees at every depth"
+assert_not_contains "$TOOL_RESULT" ".hidden-file" "list_files excludes hidden files by default"
+
+tool_list_files packages 20
+assert_success "list_files walks a requested subdirectory" $?
+assert_contains "$TOOL_RESULT" "packages/source.zsh" "scoped list_files returns visible source files"
+assert_not_contains "$TOOL_RESULT" ".hidden-cache" "scoped list_files excludes hidden directory trees"
+assert_not_contains "$TOOL_RESULT" "scratch" "scoped list_files honors nested gitignore rules"
+
+tool_list_files ignored-cache 20
+assert_success "list_files permits an explicitly requested ignored directory" $?
+assert_contains "$TOOL_RESULT" "ignored-cache/secret.txt" "explicit directory requests retain ripgrep traversal semantics"
 
 if (( $+commands[rg] )); then
   tool_search "two" . 10

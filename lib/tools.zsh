@@ -46,7 +46,7 @@ tools_schema_json() {
     fi
   fi
   output+="${comma}"'
-{"type":"function","function":{"name":"list_files","description":"List files and directories below a workspace path while honoring .gitignore even outside a Git repository and excluding common dependency/build trees. Use a narrow path and modest max_entries only when project structure is unknown.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Narrow workspace-relative directory; defaults to ."},"max_entries":{"type":"integer","description":"Maximum entries; prefer a small limit; defaults to 100"}}}}},
+{"type":"function","function":{"name":"list_files","description":"List files and directories below a workspace path, skipping hidden entries by default, honoring .gitignore even outside a Git repository, and excluding common dependency/build trees. An explicitly requested hidden or ignored directory can still be listed. Use a narrow path and modest max_entries only when project structure is unknown.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Narrow workspace-relative directory; defaults to ."},"max_entries":{"type":"integer","description":"Maximum entries; prefer a small limit; defaults to 100"}}}}},
 {"type":"function","function":{"name":"read_file","description":"Read a complete UTF-8 text file. Accepts only path; line arguments are rejected. Returns an error if the complete file exceeds the output-size limit, never a partial file. For a section of a file, use read_file_range with explicit start_line and end_line. Reuse contents already in context.","parameters":{"type":"object","required":["path"],"additionalProperties":false,"properties":{"path":{"type":"string","description":"Workspace-relative path to a file whose complete contents are needed"}}}}},
 {"type":"function","function":{"name":"read_file_range","description":"Read a chosen inclusive line range with line numbers. Both start_line and end_line are required. Prefer this tool after search or MCP navigation locates the relevant section. Choose bounds that include the complete function or section needed; there is no 200-line cap.","parameters":{"type":"object","required":["path","start_line","end_line"],"additionalProperties":false,"properties":{"path":{"type":"string","description":"Workspace-relative file path"},"start_line":{"type":"integer","maximum":999999999,"minimum":1},"end_line":{"type":"integer","maximum":999999999,"minimum":1,"description":"Inclusive end line of the section needed"}}}}}'
   if (( ! TOOL_PATCH_RETRY_REQUIRED )); then
@@ -157,7 +157,7 @@ tool_list_files() {
   # --no-require-git is the crucial bit: ripgrep otherwise discovers ignore
   # files only inside a repository. Zsh turns the resulting file paths back
   # into the directory-and-file tree expected by the tool contract.
-  command rg --no-config --no-follow --files --hidden --no-require-git --sort path \
+  command rg --no-config --no-follow --files --no-hidden --no-require-git --sort path \
     --glob '!.git/**' --glob '!.atlas/**' \
     --glob '!**/node_modules/**' --glob '!**/vendor/**' \
     --glob '!**/dist/**' --glob '!**/build/**' --glob '!**/target/**' \
