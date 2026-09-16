@@ -157,11 +157,13 @@ ${GOAL_OBJECTIVE}
 }
 
 goal_verifier_tools_schema_json() {
+  local search_schema=''
+  _tool_search_schema_json; search_schema="$REPLY"
   REPLY='[
 {"type":"function","function":{"name":"list_files","description":"Read-only: list files below a workspace path.","parameters":{"type":"object","properties":{"path":{"type":"string"},"max_entries":{"type":"integer"}}}}},
 {"type":"function","function":{"name":"read_file","description":"Read-only: read a complete small UTF-8 workspace file.","parameters":{"type":"object","required":["path"],"properties":{"path":{"type":"string"}}}}},
 {"type":"function","function":{"name":"read_file_range","description":"Read-only: read an inclusive range from a workspace file.","parameters":{"type":"object","required":["path","start_line","end_line"],"properties":{"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}}}}},
-{"type":"function","function":{"name":"search","description":"Read-only: search workspace text.","parameters":{"type":"object","required":["query"],"properties":{"query":{"type":"string"},"path":{"type":"string"},"max_results":{"type":"integer"}}}}},
+'"$search_schema"',
 {"type":"function","function":{"name":"verify_goal","description":"Return the independent goal verdict. This must be the only tool call in the response.","parameters":{"type":"object","required":["verdict","reason"],"properties":{"verdict":{"type":"string","enum":["accept","reject"]},"reason":{"type":"string"},"next_action":{"type":"string"},"missing_evidence":{"type":"string"}}}}}
 ]'
 }
@@ -177,7 +179,7 @@ goal_verifier_dispatch_read() {
     list_files) tool_list_files "${JSON_OBJECT[path]:-.}" "${JSON_OBJECT[max_entries]:-100}" ;;
     read_file) tool_read_file "${JSON_OBJECT[path]:-}" ;;
     read_file_range) tool_read_file_range "${JSON_OBJECT[path]:-}" "${JSON_OBJECT[start_line]:-}" "${JSON_OBJECT[end_line]:-}" ;;
-    search) tool_search "${JSON_OBJECT[query]:-}" "${JSON_OBJECT[path]:-.}" "${JSON_OBJECT[max_results]:-50}" ;;
+    search) _tool_search_dispatch ;;
     *) _tool_fail "tool $name is unavailable to the read-only goal verifier" ;;
   esac
 }

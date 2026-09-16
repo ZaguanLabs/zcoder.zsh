@@ -72,6 +72,11 @@ assert_success "commands cannot run before their exact approval" $?
 zpty -w -n process-ui a
 process_pty_wait "$process_pty_base.started" started
 assert_success "session approval starts the approved command" $?
+process_pty_wait "$process_pty_base.progress" 'Running for '
+assert_success 'a running command displays elapsed time before completion' $?
+local_progress_deadline=$(( EPOCHREALTIME + 3 ))
+while [[ "${mapfile[$process_pty_base.progress]:-}" != *LIVE_COMMAND_OUTPUT* ]] && (( EPOCHREALTIME < local_progress_deadline )); do zselect -t 5; done
+assert_contains "${mapfile[$process_pty_base.progress]:-}" LIVE_COMMAND_OUTPUT 'partial command output reaches the transcript while the worker is still running'
 zpty -w -n process-ui $'next\e[200~one\ntwo\e[201~'
 process_pty_wait "$process_pty_base.draft" $'nextone\ntwo'
 assert_success "draft editing and multiline paste remain responsive during a shell command" $?

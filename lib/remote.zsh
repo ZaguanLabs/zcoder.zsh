@@ -562,7 +562,9 @@ _remote_client_emit_event() {
 }
 
 remote_client_cancel_turn() {
+  local continue_queued="${1:-false}"
   local -i REMOTE_REQUEST_TIMEOUT=2 REMOTE_REQUEST_CANCELLED=0 acknowledged=0
+  REMOTE_CANCEL_CONTINUED=0
   local cancel_payload='{}' session_json='' turn_json=''
   # A turn receipt lets the server reject delayed cancellation after another
   # client starts work. Before a receipt, retain the legacy cancellation path.
@@ -570,13 +572,18 @@ remote_client_cancel_turn() {
     zjson_quote "$CURRENT_SESSION_ID"; session_json=$REPLY
     zjson_quote "$REMOTE_INPUT_TURN_ID"; turn_json=$REPLY
     cancel_payload="{\"session_id\":$session_json,\"turn_id\":$turn_json}"
+    [[ "$continue_queued" == true && "$REMOTE_INPUT_SUPPORTED" == true ]] && cancel_payload="${cancel_payload%\}},\"continue_queued\":true}"
   fi
   if remote_client_request POST /v1/cancel "$cancel_payload" >/dev/null 2>&1 &&
      json_parse_flat_object "$HTTP_BODY" && [[ "${JSON_OBJECT[ok]:-}" == true ]]; then
     acknowledged=1
+    [[ "$continue_queued" == true && "${JSON_OBJECT[continued]:-false}" == true ]] && REMOTE_CANCEL_CONTINUED=1
   fi
   transcript_interrupt_tool || true
-  if (( acknowledged )); then
+  if (( REMOTE_CANCEL_CONTINUED )); then
+    agent_emit system 'Current operation stopped. Continuing with queued input.'
+    agent_set_status Working
+  elif (( acknowledged )); then
     agent_emit system "⏹ Server acknowledged the stop request. Completed side effects were not rolled back."
     agent_set_status "Stopped"
   else
@@ -587,7 +594,7 @@ remote_client_cancel_turn() {
 
 remote_client_user_turn() {
   local REMOTE_INPUT_TURN_ID=''
-  local -i interactive=0
+  local -i interactive=0 REMOTE_CANCEL_CONTINUED=0
   REMOTE_REQUEST_CANCELLED=0
   remote_client_idle_cancel
   (( ${UI_ACTIVE:-0} && $+functions[ui_activity_begin] )) && interactive=1
@@ -649,12 +656,19 @@ _remote_client_user_turn() {
       ui_poll_remote_turn 0
       poll_status=$?
       if (( poll_status == 130 )); then
-        remote_client_cancel_turn
-        return 130
+        remote_client_cancel_turn true
+        (( REMOTE_CANCEL_CONTINUED )) || return 130
+        REMOTE_REQUEST_CANCELLED=0
+        continue
       fi
     fi
     if ! remote_client_request GET "/v1/events?after=${REMOTE_CLIENT_EVENT_CURSOR}"; then
-      if (( REMOTE_REQUEST_CANCELLED )); then remote_client_cancel_turn; return 130; fi
+      if (( REMOTE_REQUEST_CANCELLED )); then
+        remote_client_cancel_turn true
+        (( REMOTE_CANCEL_CONTINUED )) || return 130
+        REMOTE_REQUEST_CANCELLED=0
+        continue
+      fi
       transcript_interrupt_tool || true
       agent_emit error "Remote event request failed: $REMOTE_ERROR"
       agent_set_status "Error"
@@ -692,8 +706,10 @@ _remote_client_user_turn() {
           ui_poll_remote_turn
           poll_status=$?
           if (( poll_status == 130 )); then
-            remote_client_cancel_turn
-            return 130
+            remote_client_cancel_turn true
+            (( REMOTE_CANCEL_CONTINUED )) || return 130
+            REMOTE_REQUEST_CANCELLED=0
+            continue
           fi
         else
           zselect -t 1 2>/dev/null
@@ -737,7 +753,12 @@ _remote_client_user_turn() {
         zjson_quote "$decision"; decision="$REPLY"
         approval_json="{\"id\":${approval_id},\"decision\":${decision}}"
         if ! remote_client_request POST /v1/approval "$approval_json"; then
-          if (( REMOTE_REQUEST_CANCELLED )); then remote_client_cancel_turn; return 130; fi
+          if (( REMOTE_REQUEST_CANCELLED )); then
+            remote_client_cancel_turn true
+            (( REMOTE_CANCEL_CONTINUED )) || return 130
+            REMOTE_REQUEST_CANCELLED=0
+            continue
+          fi
           agent_emit error "Could not send approval response: $REMOTE_ERROR"
           remote_client_cancel_turn
           return 1
@@ -891,7 +912,7 @@ remote_server_worker_tool_event() {
   case "$phase" in
     begin)
       (( REMOTE_SERVER_TOOL_SEQUENCE++ ))
-      REMOTE_SERVER_TOOL_CALL_ID="tool_${REMOTE_TURN_ID}_${REMOTE_SERVER_TOOL_SEQUENCE}"
+      REMOTE_SERVER_TOOL_CALL_ID="tool_${REMOTE_TURN_ID}_${sysparams[pid]}_${REMOTE_SERVER_TOOL_SEQUENCE}"
       ;;
     running|complete) [[ -n "$REMOTE_SERVER_TOOL_CALL_ID" ]] || return 0 ;;
     *) return 0 ;;
@@ -1314,7 +1335,7 @@ _remote_server_reap_worker() {
 }
 
 _remote_server_turn_worker() {
-  local prompt="$1" session_id="$2" connection_fd="${3:-}" structured_events="${4:-0}" saved_policy="" exit_code=0
+  local prompt="$1" session_id="$2" connection_fd="${3:-}" structured_events="${4:-0}" queued_continuation="${5:-0}" saved_policy="" exit_code=0
   trap 'mcp_shutdown_all >/dev/null 2>&1 || true' EXIT
   trap 'exit 130' INT TERM HUP
   _http_close_inherited_fds "$REMOTE_LISTEN_FD" "$connection_fd" "${(@k)REMOTE_CONNECTION_PHASE}"
@@ -1337,7 +1358,10 @@ _remote_server_turn_worker() {
   if [[ "$ZCODER_PROFILE" == coding && "$saved_policy" == allow ]]; then
     ZCODER_COMMAND_POLICY="allow"
   fi
-  if [[ "$prompt" == '/queue resume' ]]; then
+  if (( queued_continuation )); then
+    agent_add_context_message 'The user interrupted the previous operation to send the queued request that follows. Completed side effects were not rolled back; inspect current state before repeating any action.'
+    _agent_run_turn '' queue_resume || exit_code=$?
+  elif [[ "$prompt" == '/queue resume' ]]; then
     input_queue_command resume || exit_code=$?
   elif [[ "$prompt" == /goal || "$prompt" == /goal\ * ]]; then
     ui_append_message user "$prompt"
@@ -1358,6 +1382,7 @@ _remote_server_start_turn() {
   local prompt="$1" connection_fd="${2:-}" structured_events="${3:-0}" pid=""
   REMOTE_TURN_ID="${4:-${EPOCHSECONDS}_${RANDOM}}"
   _remote_server_clear_turn_runtime
+  mapfile[$REMOTE_RUNTIME_DIR/active_structured_events]="$structured_events" || return 1
   input_queue_open "$REMOTE_SESSION_ID" "$REMOTE_TURN_ID" || return 1
   (_remote_server_turn_worker "$prompt" "$REMOTE_SESSION_ID" "$connection_fd" "$structured_events") &
   pid=$!
@@ -1369,6 +1394,7 @@ _remote_server_queue_turn() {
   local prompt="$1" structured_events="${2:-0}"
   REMOTE_TURN_ID="${EPOCHSECONDS}_${RANDOM}"
   _remote_server_clear_turn_runtime
+  mapfile[$REMOTE_RUNTIME_DIR/active_structured_events]="$structured_events" || return 1
   input_queue_open "$REMOTE_SESSION_ID" "$REMOTE_TURN_ID" || return 1
   mapfile[$REMOTE_RUNTIME_DIR/pending_prompt]="$prompt" || return 1
   mapfile[$REMOTE_RUNTIME_DIR/pending_structured_events]="$structured_events" || return 1
@@ -1400,18 +1426,19 @@ _remote_server_progress_pending_turn() {
 
 _remote_server_cancel_turn() {
   local pid="${mapfile[$REMOTE_RUNTIME_DIR/active.pid]:-}"
+  local continue_queued="${1:-false}" connection_fd="${2:-}" structured_events="${mapfile[$REMOTE_RUNTIME_DIR/active_structured_events]:-0}"
   local CURRENT_SESSION_ID="$REMOTE_SESSION_ID" INPUT_QUEUE_TURN_ID="$REMOTE_TURN_ID"
+  local -i queue_result=0
+  REMOTE_CANCEL_CONTINUED=0
   input_queue_close true || true
   if [[ -f "$REMOTE_RUNTIME_DIR/pending_prompt" ]]; then
     zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" "$REMOTE_RUNTIME_DIR/pending_structured_events" 2>/dev/null
-    remote_server_emit_status "Stopped"
-    _remote_server_publish_json '{"event":"complete","exit_code":130}'
-    return 0
-  fi
-  [[ "$pid" == <1-> ]] || return 1
-  if kill -0 "$pid" 2>/dev/null; then
-    kill -TERM "$pid" 2>/dev/null
-    wait "$pid" 2>/dev/null || true
+  else
+    [[ "$pid" == <1-> ]] || return 1
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -TERM "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null || true
+    fi
   fi
   input_queue_close true || true
   # The stopped worker's latest generation is authoritative. Publish the goal
@@ -1419,6 +1446,24 @@ _remote_server_cancel_turn() {
   state_pause_saved_goal "$REMOTE_SESSION_ID" 'remote goal execution stopped by user' ||
     remote_server_emit_message error 'Remote work stopped, but the paused goal could not be saved.'
   zf_rm -f "$REMOTE_RUNTIME_DIR/active.pid" "$REMOTE_RUNTIME_DIR/pending_approval" 2>/dev/null
+  if [[ "$continue_queued" == true && ! -f "$REMOTE_RUNTIME_DIR/worker.done" ]]; then
+    input_queue_close
+    queue_result=$?
+    if (( queue_result == 1 )) && input_queue_open "$REMOTE_SESSION_ID" "$REMOTE_TURN_ID"; then
+      # Keep this turn's event cursor and queue scope. Older abandoned input
+      # stays paused, and the client keeps polling the same event stream.
+      (_remote_server_turn_worker '' "$REMOTE_SESSION_ID" "$connection_fd" "$structured_events" 1) &
+      pid=$!
+      if ! zcoder_write_text_file "$REMOTE_RUNTIME_DIR/active.pid" "$pid"; then
+        kill -TERM "$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null || true
+        input_queue_close true || true
+        return 1
+      fi
+      REMOTE_CANCEL_CONTINUED=1
+      return 0
+    fi
+  fi
   if [[ ! -f "$REMOTE_RUNTIME_DIR/worker.done" ]]; then
     remote_server_emit_status "Stopped"
     _remote_server_publish_json '{"event":"complete","exit_code":130}'
@@ -1768,8 +1813,14 @@ _remote_server_dispatch_request() {
       elif (( ${#JSON_OBJECT} )); then
         _remote_http_error "$fd" 400 'unscoped cancellation must be an empty object'; return
       fi
-      if _remote_server_cancel_turn; then
-        _remote_http_send "$fd" 200 '{"ok":true}'
+      if (( ${+JSON_OBJECT[continue_queued]} )) && [[ ${JSON_OBJECT_TYPES[continue_queued]} != (true|false) ]]; then
+        _remote_http_error "$fd" 400 'continue_queued must be a boolean'; return
+      fi
+      local -i REMOTE_CANCEL_CONTINUED=0
+      if _remote_server_cancel_turn "${JSON_OBJECT[continue_queued]:-false}" "$fd"; then
+        if (( REMOTE_CANCEL_CONTINUED )); then _remote_http_send "$fd" 200 '{"ok":true,"continued":true}'
+        else _remote_http_send "$fd" 200 '{"ok":true}'
+        fi
       else
         _remote_http_error "$fd" 409 "no remote turn is running"
       fi

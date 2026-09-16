@@ -9,6 +9,7 @@ typeset -gi TOOL_RESULT_OK=0
 typeset -gi TOOL_CANCELLED=0
 typeset -g TOOL_SAFETY_REASON=""
 typeset -gi TOOL_PATCH_RETRY_REQUIRED=0
+typeset -g ZCODER_SEARCH_SCRIPT="${${(%):-%x}:A:h:h}/scripts/search.zsh"
 
 _tool_schema_is_admitted() {
   (( ! $+functions[agent_tool_is_admitted] )) || agent_tool_is_admitted "$1"
@@ -18,12 +19,17 @@ _tool_patch_contract() {
   REPLY=$'UNIFIED DIFF CONTRACT (the patch argument must follow this literally):\nGOOD (valid focused edit):\n--- a/lib/example.zsh\n+++ b/lib/example.zsh\n@@ -10,3 +10,3 @@\n marker before\n-enabled=false\n+enabled=true\n marker after\nThe old count is 3: two context lines plus one removed line. The new count is 3: two context lines plus one added line.\nBAD (invalid in this harness):\n*** Begin Patch\n*** Update File: lib/example.zsh\n@@\n-enabled=false\n+enabled=true\n*** End Patch\nThe bad form uses an unsupported wrapper and a bare @@ without numeric ranges.\nRules:\n1. Begin each file section with literal --- a/relative/path and +++ b/relative/path lines.\n2. Every hunk needs numeric old and new ranges: @@ -OLD_START,OLD_COUNT +NEW_START,NEW_COUNT @@. Counts describe hunk body lines, not total file length: context counts on both sides, - only on the old side, and + only on the new side.\n3. Every hunk body line starts with exactly one prefix character: space for unchanged context, - for removal, or + for addition. The prefix is the single first character; do not add words such as old or new after it unless those words occur in the file. Copy context and removed text exactly from the latest read; never use ellipses or placeholders.\n4. Supply only unified diff text. Do not add Markdown fences, prose, JSON text inside the patch value, *** Begin Patch, *** Update File, or *** End Patch markers.'
 }
 
+_tool_search_schema_json() {
+  REPLY='{"type":"function","function":{"name":"search","description":"Search workspace text with ripgrep. Use it as the first inspection tool only when project instructions do not designate an MCP navigation tool. Results share a bounded budget across files, with numbered context. Use literal=true for exact code or errors, mode=files to discover matching files, and path/glob to narrow scope. Read a usable range instead of repeating discovery.","parameters":{"type":"object","required":["query"],"additionalProperties":false,"properties":{"query":{"type":"string","description":"Regex by default; literal text with literal=true. Separate up to 16 alternative patterns with newlines (OR)."},"path":{"type":"string","description":"Workspace-relative file or directory; defaults to ."},"max_results":{"type":"integer","minimum":1,"maximum":9999,"description":"Maximum selected matches or files; defaults to 50. Context can include other matches."},"literal":{"type":"boolean","description":"Treat patterns literally; defaults to false."},"mode":{"type":"string","enum":["content","files"],"description":"Numbered snippets or matching file paths; defaults to content."},"glob":{"type":"string","description":"Optional ripgrep glob, e.g. *.zsh or !tests/**. Explicit inclusions can override .gitignore."},"file_type":{"type":"string","description":"Optional ripgrep file type, e.g. rust or py."},"context_lines":{"type":"integer","minimum":0,"maximum":5,"description":"Nearby lines per match, reduced to fit the budget; defaults to 2."},"max_chars":{"type":"integer","minimum":256,"maximum":32768,"description":"Output character budget, capped by the tool limit; defaults to 8192."}}}}}'
+}
+
 tools_schema_json() {
   if (( ${GOAL_VERIFIER_ACTIVE:-0} )) && (( $+functions[goal_verifier_tools_schema_json] )); then
     goal_verifier_tools_schema_json
     return
   fi
-  local output='[' comma="" mcp_schemas="" patch_contract="" patch_description="" patch_argument_description=""
+  local output='[' comma="" mcp_schemas="" patch_contract="" patch_description="" patch_argument_description="" search_schema=""
+  _tool_search_schema_json; search_schema="$REPLY"
   if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
     REPLY="[]"
     return 0
@@ -57,7 +63,7 @@ tools_schema_json() {
   fi
   output+=',
 {"type":"function","function":{"name":"apply_patch","description":'"${patch_description}"',"parameters":{"type":"object","required":["patch"],"properties":{"patch":{"type":"string","description":'"${patch_argument_description}"'}}}}},
-{"type":"function","function":{"name":"search","description":"Search workspace text with ripgrep for literals, regular expressions, or unmodeled text. Use it as the first inspection tool only when project instructions do not designate an MCP navigation tool. After finding a usable location, read its range instead of rephrasing the same search.","parameters":{"type":"object","required":["query"],"properties":{"query":{"type":"string","description":"Focused regular expression"},"path":{"type":"string","description":"Narrow workspace-relative search root; defaults to ."},"max_results":{"type":"integer","description":"Maximum matching lines; defaults to 50"}}}}}'
+'"$search_schema"
   comma=,
   output+="${comma}"'
 {"type":"function","function":{"name":"run_command","description":"Run a shell command in the workspace after explicit user approval. Use for tests, builds, formatting, git status, and diagnostics.","parameters":{"type":"object","required":["command"],"properties":{"command":{"type":"string"},"cwd":{"type":"string","description":"Workspace-relative working directory; defaults to ."},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600}}}}}'
@@ -542,56 +548,100 @@ tool_apply_patch() {
   }
 }
 
+_tool_search_dispatch() {
+  local key=''
+  for key in "${(@k)JSON_OBJECT}"; do
+    case "$key:${JSON_OBJECT_TYPES[$key]}" in
+      query:string|path:string|mode:string|glob:string|file_type:string|literal:true|literal:false|\
+      max_results:number|context_lines:number|max_chars:number) ;;
+      *) _tool_fail "unsupported search argument or type: $key"; return 1 ;;
+    esac
+  done
+  tool_search "${JSON_OBJECT[query]:-}" "${JSON_OBJECT[path]:-.}" "${JSON_OBJECT[max_results]:-50}" \
+    "${JSON_OBJECT[literal]:-false}" "${JSON_OBJECT[mode]:-content}" "${JSON_OBJECT[glob]:-}" \
+    "${JSON_OBJECT[file_type]:-}" "${JSON_OBJECT[context_lines]:-2}" "${JSON_OBJECT[max_chars]:-8192}"
+}
+
 tool_search() {
+  emulate -L zsh
   local query="$1" requested="${2:-.}" max_results="${3:-50}" resolved_path=""
-  local out_file="" raw="" line=""
-  local -a lines=() selected=()
-  local -i i limit exit_code
-  local -a search_argv=()
+  local literal="${4:-false}" mode="${5:-content}" glob="${6:-}" file_type="${7:-}"
+  local context_lines="${8:-2}" max_chars="${9:-8192}" out_file='' raw='' pattern=''
+  local -i limit=0 exit_code=0 budget=0 per_file=0
+  local -a search_argv=() worker_argv=() patterns=()
   TOOL_CANCELLED=0
   [[ -n "$query" ]] || { _tool_fail "query is required"; return 1; }
   (( $+commands[rg] )) || { _tool_fail "search requires ripgrep (rg)"; return 1; }
-  [[ "$max_results" == <1-9999> ]] || max_results=50
+  [[ "$max_results" == <1-9999> && ${#max_results} -le 4 ]] || { _tool_fail 'max_results must be between 1 and 9999'; return 1; }
+  [[ "$literal" == true || "$literal" == false ]] || { _tool_fail 'literal must be a boolean'; return 1; }
+  [[ "$mode" == content || "$mode" == files ]] || { _tool_fail 'mode must be content or files'; return 1; }
+  [[ "$context_lines" == [0-5] ]] || { _tool_fail 'context_lines must be between 0 and 5'; return 1; }
+  [[ "$max_chars" == <256-32768> && ${#max_chars} -le 5 ]] || { _tool_fail 'max_chars must be between 256 and 32768'; return 1; }
+  [[ "$query$glob$file_type" != *$'\0'* ]] || { _tool_fail 'search arguments cannot contain NUL'; return 1; }
+  (( ${#query} <= 8192 && ${#glob} <= 1024 && ${#file_type} <= 64 )) || { _tool_fail 'search arguments exceed size limits'; return 1; }
+  patterns=("${(@ps:\n:)query}")
+  (( ${#patterns} <= 16 )) || { _tool_fail 'search accepts at most 16 patterns'; return 1; }
+  for pattern in "${patterns[@]}"; do
+    [[ -n "$pattern" ]] || { _tool_fail 'search patterns cannot be empty'; return 1; }
+  done
   limit=$max_results
+  budget=$max_chars
+  (( budget <= ZCODER_MAX_TOOL_OUTPUT )) || budget=$ZCODER_MAX_TOOL_OUTPUT
+  (( budget >= 256 )) || { _tool_fail 'search requires a tool output limit of at least 256 characters'; return 1; }
+  per_file=$(( limit + 1 )); (( per_file <= 101 )) || per_file=101
   _tool_resolve_existing "$requested" || return 1
   resolved_path="$REPLY"
+  [[ -f "$resolved_path" || -d "$resolved_path" ]] || { _tool_fail 'search requires a regular file or directory'; return 1; }
   zcoder_temp_path search .out || { _tool_fail "could not create private temporary storage"; return 1; }
   out_file="$REPLY"
-  search_argv=(rg --no-config --no-follow --line-number --column --color never --hidden --no-require-git \
+  search_argv=(rg --no-config --no-follow --color never --hidden --no-require-git --null)
+  # Explicit glob filters use rg semantics; fixed tree exclusions come last.
+  [[ -z "$glob" ]] || search_argv+=(--glob "$glob")
+  [[ -z "$file_type" ]] || search_argv+=(--type "$file_type")
+  [[ "$literal" == false ]] || search_argv+=(--fixed-strings)
+  if [[ "$mode" == files ]]; then
+    search_argv+=(--files-with-matches)
+  else
+    search_argv+=(--with-filename --no-heading --line-number --column --no-context-separator
+      --context "$context_lines" --max-count "$per_file" --max-columns 500 --max-columns-preview)
+  fi
+  search_argv+=(\
     --glob '!.git/**' --glob '!.atlas/**' \
     --glob '!**/node_modules/**' --glob '!**/vendor/**' \
     --glob '!**/dist/**' --glob '!**/build/**' --glob '!**/target/**' \
     --glob '!**/coverage/**' --glob '!**/.next/**' \
-    --glob '!**/.venv/**' --glob '!**/venv/**' --glob '!**/__pycache__/**' \
-    -- "$query" "$resolved_path")
-  if (( ${UI_ACTIVE:-0} && $+functions[tool_process_run] )); then
-    tool_process_run "${ZCODER_WORKSPACE:A}" 120 "${search_argv[@]}"
-    exit_code=$?
-    raw="$TOOL_PROCESS_OUTPUT"
-    if (( TOOL_PROCESS_CANCELLED )); then
-      TOOL_CANCELLED=1; _tool_fail 'search cancelled by user'; return 130
-    fi
-    [[ -z "$TOOL_PROCESS_ERROR" ]] || { _tool_fail "$TOOL_PROCESS_ERROR"; return 1; }
+    --glob '!**/.venv/**' --glob '!**/venv/**' --glob '!**/__pycache__/**')
+  for pattern in "${patterns[@]}"; do search_argv+=(-e "$pattern"); done
+  if [[ "$resolved_path" == "${ZCODER_WORKSPACE:A}" ]]; then
+    search_argv+=(-- .)
   else
-    command "${search_argv[@]}" >| "$out_file" 2>&1
-    exit_code=$?
-    raw="${mapfile[$out_file]}"
+    search_argv+=(-- "${resolved_path#${${ZCODER_WORKSPACE:A}%/}/}")
   fi
-  zf_rm -f "$out_file" 2>/dev/null
-  (( exit_code == 0 || exit_code == 1 )) || { _tool_fail "ripgrep failed"$'\n'"$raw"; return 1; }
-  [[ -n "$raw" ]] || {
-    _tool_succeed "No text matches. search examines file contents, not filenames; use list_files to discover file paths."
+  worker_argv=(zsh -df "$ZCODER_SEARCH_SCRIPT" "${ZCODER_WORKSPACE:A}" "$mode" "$limit"
+    "$context_lines" "$budget" "${out_file}.err" "$per_file" "${search_argv[@]}")
+  {
+    if (( ${UI_ACTIVE:-0} && $+functions[tool_process_run] )); then
+      tool_process_run "${ZCODER_WORKSPACE:A}" 120 "${worker_argv[@]}"
+      exit_code=$?
+      raw="$TOOL_PROCESS_OUTPUT"
+      if (( TOOL_PROCESS_CANCELLED )); then
+        TOOL_CANCELLED=1; _tool_fail 'search cancelled by user'; return 130
+      fi
+      if (( ${TOOL_PROCESS_TIMED_OUT:-0} )); then
+        _tool_fail 'Search timed out; narrow path/glob.'; return 124
+      fi
+      [[ -z "$TOOL_PROCESS_ERROR" ]] || { _tool_fail "$TOOL_PROCESS_ERROR"; return 1; }
+    else
+      command "${worker_argv[@]}" >| "$out_file" 2>&1
+      exit_code=$?
+      raw="${mapfile[$out_file]}"
+    fi
+    (( exit_code == 0 )) || { _tool_fail "${raw:-search worker failed}"; return "$exit_code"; }
+    _tool_succeed "$raw"
     return 0
+  } always {
+    zf_rm -f -- "$out_file" "${out_file}.err" 2>/dev/null
   }
-  lines=("${(@f)raw}")
-  for (( i=1; i<=${#lines} && i<=limit; i++ )); do
-    line="${lines[i]}"
-    line="${line#$ZCODER_WORKSPACE/}"
-    selected+=("$line")
-  done
-  _tool_succeed "${(F)selected}"
-  (( ${#lines} > limit )) && TOOL_RESULT+=$'\n'"[results limited to ${limit} lines]"
-  return 0
 }
 
 _tool_sysadmin_broad_target() {
@@ -924,7 +974,7 @@ tool_dispatch() {
     write_file) tool_write_file "${JSON_OBJECT[path]:-}" "${JSON_OBJECT[content]:-}" ;;
     replace_text) tool_replace_text "${JSON_OBJECT[path]:-}" "${JSON_OBJECT[old_text]:-}" "${JSON_OBJECT[new_text]:-}" ;;
     apply_patch) tool_apply_patch "${JSON_OBJECT[patch]:-}" ;;
-    search) tool_search "${JSON_OBJECT[query]:-}" "${JSON_OBJECT[path]:-.}" "${JSON_OBJECT[max_results]:-50}" ;;
+    search) _tool_search_dispatch ;;
     run_command) tool_run_command "${JSON_OBJECT[command]:-}" "${JSON_OBJECT[cwd]:-.}" "${JSON_OBJECT[timeout_seconds]:-120}" ;;
     list_agents)
       (( $+functions[relay_tool_list_agents] && ${RELAY_AVAILABLE:-0} )) && relay_tool_list_agents || _tool_fail "inter-agent relay is unavailable"

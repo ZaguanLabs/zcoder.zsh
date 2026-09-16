@@ -28,10 +28,15 @@ controls and policies.
 
 ## Cancellation and recovery
 
-Escape stops active work and preserves the unsent draft. Accepted but
-unconsumed messages remain with the saved session after cancellation, an error,
-or process restart. They do not run automatically when you start a different
-turn. Select the original session, then use:
+Escape stops the current operation and preserves the unsent draft. If messages
+are queued for that turn, zcoder sends them next in arrival order, including
+follow-ups. It skips the remaining tools from the interrupted batch and records
+their cancellation before continuing. With no queued messages, Escape stops the
+conversation as before. An unsent draft is never submitted automatically.
+
+Errors, process termination, and ordinary API cancellation leave unconsumed
+messages saved for recovery. Messages abandoned by an older turn do not run
+automatically when you interrupt a newer one. Select the original session, then use:
 
 ```text
 /queue
@@ -108,7 +113,11 @@ Consumption uses the existing `message` event with `role: "user"`. No new
 event types are introduced. One `complete` event closes the run after its
 follow-ups finish. Normal final closure and publication share the queue lock,
 so newly accepted input cannot slip past a successful conversation completion.
-Failed or cancelled work leaves unconsumed receipts pending for recovery.
+Failed work and ordinary cancellation leave unconsumed receipts pending for
+recovery. The TUI opts into queued continuation when Escape cancels a scoped
+remote turn, using `continue_queued: true` on `POST /v1/cancel`. A response with
+`continued: true` means the client must keep polling the same event stream and
+cursor. Continuation happens only after the server acknowledges the interruption.
 
 ## ACP extension
 

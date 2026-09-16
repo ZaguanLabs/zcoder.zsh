@@ -419,7 +419,7 @@ remain compatible and are treated as availability unknown.
 | `write_file` | Create or deliberately replace a file | Confined `zsh/system` descriptor writes |
 | `replace_text` | Make one contiguous change in one existing file using a unique exact text fragment | Native Zsh matching and confined writes |
 | `apply_patch` | Make several separated changes or changes spanning files using a unified diff | `git apply`, then `patch` fallback |
-| `search` | Search text with locations | `rg --no-config --no-follow` |
+| `search` | Find matching files or bounded, grouped snippets | `rg --no-config --no-follow` plus a native Zsh stream collector |
 | `run_command` | Run builds, tests, and diagnostics | Approved `zsh -c` |
 | `list_agents` | Discover live same-user local peers | Private manifests plus protocol ping |
 | `send_agent_message` | Queue a task for one exact peer | Framed Unix-domain socket request |
@@ -434,6 +434,36 @@ the model to search first, then read relevant ranges rather than whole large
 files. Ripgrep configuration is disabled explicitly: inherited `--follow` and
 `--pre` options cannot weaken workspace confinement or execute a preprocessor
 through a read tool. A root workspace of `/` uses the same descendant check.
+
+`search` accepts `query`, `path`, and `max_results` as before, plus:
+
+- `literal`: treat the query as exact text instead of a regex (default `false`).
+- `mode`: `content` for numbered snippets or `files` for matching paths.
+- `glob`: an optional ripgrep glob such as `*.zsh` or `!tests/**`. Explicit
+  positive globs can override `.gitignore`, following ripgrep semantics; fixed
+  dependency/build exclusions still take precedence during traversal.
+- `file_type`: a ripgrep type such as `py` or `rust`.
+- `context_lines`: zero to five nearby lines, default two.
+- `max_chars`: 256–32768 characters, default 8192, capped by the tool output limit.
+
+Newline-separated queries search up to 16 alternative patterns in one call.
+`max_results` defaults to 50 selected matches (or files); nearby context can
+contain additional matches. Content results quote each workspace-relative path
+once, followed by `line:column:text` matches and `line-text` context. Overlapping
+context is merged. Matching lines take precedence over context when space is
+tight, and results share the match and character budgets across candidate files.
+
+The same worker runs headlessly and through the interactive process runner. It
+consumes NUL-framed ripgrep records in bounded blocks, collects at most 2 MiB or
+100 candidate files, and scans at most `min(max_results + 1, 101)` matches per
+file. Ripgrep previews lines longer than 500 columns. These limits are not a
+relevance ranking or an exhaustive repository inventory: output identifies
+partial results and gives the next known matching line where available. Narrow
+`path`/`glob`, refine the query, or use `read_file_range` to continue. The worker
+owns and reaps its ripgrep child on early stopping and has a 115-second deadline;
+interactive cancellation additionally uses the existing process-group cleanup.
+Recursive searches skip binary files. An explicitly requested binary file that
+produces ripgrep's binary-match notification returns a text-search diagnostic.
 
 `list_files` skips hidden files and directory trees by default. Ripgrep still
 reads hidden ignore files such as `.gitignore`, including nested rules. Explicit

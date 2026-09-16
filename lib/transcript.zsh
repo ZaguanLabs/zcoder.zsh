@@ -127,13 +127,9 @@ transcript_tool_event() {
     UI_TOOL_SUMMARIES[index]="$REPLY"
     UI_TOOL_ARGS[index]="$args"
     UI_TOOL_STATES[index]=pending
-    # User shell output opens immediately, including on remote clients and
-    # when the transcript is later restored from a saved session.
+    # Commands can run for minutes; show their arguments and live output.
     if [[ "$name" == run_command ]]; then
-      local -A JSON_OBJECT=()
-      if json_parse_flat_object "$args" && [[ "${JSON_OBJECT[user_initiated]:-}" == true ]]; then
-        UI_BLOCK_OPEN[index]=1
-      fi
+      UI_BLOCK_OPEN[index]=1
     fi
     return 0
   fi
@@ -143,6 +139,7 @@ transcript_tool_event() {
   [[ "${UI_TOOL_STATES[index]}" == pending || "${UI_TOOL_STATES[index]}" == running ]] || return 1
   case "$phase" in
     running) UI_TOOL_STATES[index]=running ;;
+    progress) UI_TOOL_RESULTS[index]="$result" ;;
     complete)
       UI_TOOL_RESULTS[index]="$result"
       UI_TOOL_DIFFS[index]=''

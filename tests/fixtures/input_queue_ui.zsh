@@ -18,12 +18,15 @@ agent_ollama_chat() {
   (( fixture_request++ ))
   mapfile[$fixture_base.request_$fixture_request]="$1"
   mapfile[$fixture_base.started]="$fixture_phase:$fixture_request"
-  if (( fixture_request == 1 )) || [[ "$fixture_phase" == cancel ]]; then
+  if (( fixture_request == 1 || fixture_request == 4 )) || [[ "$fixture_phase" == stop ]]; then
     ui_wait_for_generation
     if (( $? == 130 )); then AGENT_CANCELLED=1; return 130; fi
   fi
   if (( fixture_request == 1 )); then
     HTTP_BODY='{"message":{"content":"Reading","tool_calls":[{"function":{"name":"read_file","arguments":{"path":"input-queue-file"}}}]},"done":true}'
+  elif [[ "$fixture_phase" == tool ]] && (( fixture_request == 7 )); then
+    zjson_quote "print started > ${(q)fixture_base}.tool_started; print waiting; sleep 30"
+    HTTP_BODY='{"message":{"tool_calls":[{"function":{"name":"run_command","arguments":{"command":'"$REPLY"'}}},{"function":{"name":"run_command","arguments":{"command":"print forbidden > input-queue-forbidden"}}}]},"done":true}'
   else
     HTTP_BODY='{"message":{"content":"Complete"},"done":true}'
   fi
@@ -58,5 +61,13 @@ agent_user_turn 'Cancelled request'
 mapfile[$fixture_base.cancelled]="$?:$INPUT_BUF"
 input_queue_request list "$CURRENT_SESSION_ID" '' '' '' ''
 mapfile[$fixture_base.cancel_pending]="$REPLY"
+state_new_session
+fixture_phase=stop
+agent_user_turn 'Stop with no queue'
+mapfile[$fixture_base.stopped]="$?:$INPUT_BUF"
+state_new_session
+fixture_phase=tool
+agent_user_turn 'Interrupt a running command'
+mapfile[$fixture_base.tool_done]="$?:$INPUT_BUF"
 ui_end
 mapfile[$fixture_base.done]=1

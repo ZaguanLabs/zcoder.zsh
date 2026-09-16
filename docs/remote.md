@@ -139,6 +139,10 @@ and reaps its worker before accepting another turn.
 Once the client has a turn receipt, cancellation includes its session and turn
 IDs. Updated servers reject a delayed request that names different work. Legacy
 clients and submissions cancelled before a receipt still use unscoped requests.
+When that turn has queued messages, Escape asks the server to continue with
+them after stopping the old worker. The client keeps polling the existing event
+stream only when the server confirms continuation. Older abandoned messages
+remain paused, and an unsent editor draft is preserved.
 
 During interactive turns, HTTP waits keep draft editing, paste, transcript
 folding, and resize handling available. This includes model readiness checks,

@@ -6,6 +6,7 @@ typeset -g TOOL_PROCESS_OUTPUT='' TOOL_PROCESS_ERROR=''
 typeset -gi TOOL_PROCESS_STARTED=0 TOOL_PROCESS_CANCELLED=0 TOOL_PROCESS_TIMED_OUT=0
 typeset -gi TOOL_PROCESS_OUTPUT_TRUNCATED=0
 typeset -gF TOOL_PROCESS_DEADLINE=0.0
+typeset -gF TOOL_PROCESS_BEGAN=0.0 TOOL_PROCESS_NEXT_PROGRESS=0.0
 
 _tool_process_worker() {
   emulate -L zsh
@@ -50,12 +51,27 @@ tool_process_ready() {
     TOOL_PROCESS_STARTED=1
   fi
   [[ -f "${TOOL_PROCESS_BASE}.done" ]] && return 0
+  tool_process_progress
   zpty -t "$TOOL_PROCESS_NAME" 2>/dev/null && return 1
   TOOL_PROCESS_ERROR='Command worker exited without a complete result.'
   return 0
 }
 
 tool_process_expired() { (( EPOCHREALTIME >= TOOL_PROCESS_DEADLINE )); }
+
+# Sample bounded output at most twice per second; never make the worker's
+# output volume control input responsiveness. This is presentation, not history.
+tool_process_progress() {
+  (( ${UI_ACTIVE:-0} && TOOL_PROCESS_STARTED && EPOCHREALTIME >= TOOL_PROCESS_NEXT_PROGRESS )) || return 0
+  TOOL_PROCESS_NEXT_PROGRESS=$(( EPOCHREALTIME + 0.5 ))
+  local -i index=${UI_CURRENT_TOOL:-0} elapsed=$(( EPOCHREALTIME - TOOL_PROCESS_BEGAN ))
+  (( index > 0 )) && [[ "${UI_TOOL_NAMES[index]}" == run_command ]] || return 0
+  _tool_process_output || return 0
+  local preview="Running for ${elapsed}s (Esc stops; queued input continues)."
+  [[ -n "$TOOL_PROCESS_OUTPUT" ]] && preview+=$'\n'"$TOOL_PROCESS_OUTPUT"
+  transcript_tool_event progress run_command '' "$preview" || return 0
+  ui_draw_chat
+}
 
 tool_process_cleanup() {
   emulate -L zsh
@@ -135,6 +151,7 @@ tool_process_run() {
   zcoder_temp_path process || { TOOL_PROCESS_ERROR='Could not create private process storage.'; return 1; }
   TOOL_PROCESS_BASE="$REPLY"
   TOOL_PROCESS_NAME="zcoder-process-${ZCODER_RUNTIME_SEQUENCE}"
+  TOOL_PROCESS_BEGAN=$EPOCHREALTIME; TOOL_PROCESS_NEXT_PROGRESS=0
   TOOL_PROCESS_DEADLINE=$(( EPOCHREALTIME + process_timeout ))
   {
     # The command text is never interpolated into zpty's evaluated command.

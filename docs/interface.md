@@ -299,8 +299,9 @@ external delegate, or remote events, you can edit
 and paste into the prompt. During an active conversation turn, **Enter** queues
 steering for the next response/tool-batch boundary; **Ctrl+G** queues a follow-up
 for after the task finishes. Acceptance clears the editor. Escape stops the active
-response or local tool process while preserving your unsent draft and pending
-messages. Standalone activity without a conversation turn retains draft-only input.
+response or local tool process, then continues with messages already queued for
+that turn. With no queued input it stops the conversation. Your unsent draft is
+preserved. Standalone activity without a conversation turn retains draft-only input.
 
 Use `/queue` to inspect pending messages, `/queue resume` to recover them after
 cancellation or restart, and `/queue drop ID` to discard one. See
@@ -313,7 +314,9 @@ controls. Native file operations and local processing can still delay input
 handling until their next polling point.
 
 Local interactive shell commands run only after the existing approval checks.
-Their output is collected when they finish; typing, paste, transcript folding,
+Command cards open automatically and show elapsed time and a bounded live output
+preview, refreshed at most twice per second. The final result is collected when
+the command finishes; typing, paste, transcript folding,
 status notices, and resize handling remain available while they run. Escape
 stops the owned command process group and skips the rest of that tool batch.
 Completed side effects remain in place. Cancelling a verifier search pauses the
@@ -385,7 +388,7 @@ Window resizing and changing the prompt's height rebuild the layout as needed.
 | --- | --- |
 | Enter | Send the prompt; fold the selected entry when transcript has focus |
 | Shift+Enter | Insert a newline; Alt+Enter is the fallback |
-| Escape | Stop the active response, local tool wait, external delegate, or remote turn |
+| Escape | Stop the active operation; continue with accepted input queued for that turn, if any |
 | Tab | Complete the selected slash command; otherwise move focus between prompt, sidebar, and transcript |
 | Alt+1 / Alt+2 | Focus [1] Sessions / [2] Prompt; Alt+1 also reveals a hidden sidebar when space allows |
 | 1 / 2 outside the prompt | Focus Sessions / Prompt |

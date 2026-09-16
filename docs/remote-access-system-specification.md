@@ -616,7 +616,8 @@ Clients reset the event cursor to zero and poll the one global current-turn
 event stream. When `input_queue` is supported, retain the selected session ID
 and this `turn_id` to address subsequent `POST /v1/input` requests. The same
 ID survives the transition from warm-up to worker execution.
-Event, approval, and cancellation endpoints still do not accept a turn ID.
+Events and approvals use the current runtime stream. Cancellation accepts the
+session and turn IDs to reject stale stop requests.
 
 ### 9.4 Turn initialization
 
@@ -1042,8 +1043,25 @@ The current client distinguishes acknowledged cancellation from an
 unconfirmed stop. A web client should also report that remote work may still be
 running when cancellation cannot be confirmed.
 
-Cancellation preserves unconsumed input-queue records. Use the input status
-and listing endpoints to reconcile them; see section 9.6 for explicit recovery.
+Ordinary cancellation preserves unconsumed input-queue records. Use the input
+status and listing endpoints to reconcile them; see section 9.6 for recovery.
+
+The TUI's Escape action opts into continuation of queued input with a scoped
+request:
+
+```json
+{"session_id":"1700000000_12345","turn_id":"1700000100_4321","continue_queued":true}
+```
+
+Both IDs must match the active turn, and `continue_queued` must be a boolean.
+After stopping the current worker (or pending warm-up prompt), the server starts
+a worker for the first unconsumed message from that same turn. Remaining messages
+follow in order. Older abandoned records remain paused. The reply is
+`{"ok":true,"continued":true}`; the client keeps its event cursor and continues
+polling, without resending the interrupted prompt. The replacement worker keeps
+the turn ID and publishes the final completion event after queued work finishes.
+An empty queue retains the ordinary stopped/completion behavior. Older servers
+that omit `continued` retain stop-and-recover behavior.
 
 Cancellation is cooperative at the server-worker boundary but forceful from
 the agent's perspective. It cannot roll back workspace changes already made,

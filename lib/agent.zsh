@@ -1296,7 +1296,7 @@ _agent_run_turn() {
     return $?
   fi
   local INPUT_QUEUE_TURN_ID="${REMOTE_TURN_ID:-${ACP_INPUT_TURN_ID:-${EPOCHSECONDS}_${sysparams[pid]}_$RANDOM}}"
-  local -i turn_result=0 close_result=0 INPUT_QUEUE_MODEL_PENDING=0
+  local -i turn_result=0 close_result=0 INPUT_QUEUE_MODEL_PENDING=0 INPUT_QUEUE_INTERRUPT=0
   local queue_mode=all
   (( ${INPUT_QUEUE_RESUME:-0} )) && queue_mode=recovery
   if ! input_queue_open "$CURRENT_SESSION_ID" "$INPUT_QUEUE_TURN_ID"; then
@@ -1310,12 +1310,21 @@ _agent_run_turn() {
       _agent_run_turn_body "$@"
     fi
     turn_result=$?
-    while (( turn_result == 0 )); do
+    while (( turn_result == 0 || (turn_result == 130 && INPUT_QUEUE_INTERRUPT) )); do
       input_queue_close
       close_result=$?
       (( close_result == 0 )) && break
       (( close_result == 1 )) || return 1
-      input_queue_drain "$queue_mode" || return $?
+      if (( turn_result == 130 )); then
+        agent_emit system 'Current operation stopped. Continuing with queued input.'
+        zcoder_debug queue_interrupt "session=$CURRENT_SESSION_ID turn=$INPUT_QUEUE_TURN_ID"
+      fi
+      INPUT_QUEUE_INTERRUPT=0
+      AGENT_CANCELLED=0; TOOL_CANCELLED=0
+      input_queue_drain "$queue_mode"
+      turn_result=$?
+      (( turn_result == 130 && INPUT_QUEUE_INTERRUPT )) && continue
+      (( turn_result == 0 )) || return "$turn_result"
       if (( INPUT_QUEUE_MODEL_PENDING )); then
         _agent_run_turn_body '' queue_resume
       fi
@@ -1786,7 +1795,7 @@ _agent_run_turn_body() {
       agent_add_message tool "$result" "$tool_name"
       if (( TOOL_CANCELLED )); then
         # Close every outstanding tool call in model history, without running
-        # the rest of this batch or requesting another model turn after Escape.
+        # the rest of this batch. The outer loop may admit queued replacement input.
         local -i cancelled_index
         for (( cancelled_index=i+1; cancelled_index<=${#call_names}; cancelled_index++ )); do
           agent_add_message tool 'Error: not executed because the user cancelled this tool round.' "${call_names[cancelled_index]}"

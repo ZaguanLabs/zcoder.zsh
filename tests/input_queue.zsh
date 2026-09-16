@@ -10,7 +10,7 @@ input_queue_tests() {
   local -a AGENT_MESSAGES=() AGENT_USER_MESSAGES=() SKILL_ACTIVE_NAMES=() SKILL_NAMES=() MCP_NAMES=()
   local -A saved=()
   local name='' queue_dir="$ZCODER_SESSIONS_DIR/$CURRENT_SESSION_ID.session/input_queue"
-  local -i before=0 requests=0 tool_count=0 fail_request=0 queue_id=0
+  local -i before=0 requests=0 tool_count=0 fail_request=0 queue_id=0 cancel_tool=0
   local -a payloads=() emitted=()
   for name in agent_prepare_payload agent_ollama_chat tool_dispatch agent_emit agent_set_status agent_tool_event skills_activate_explicit_from_text agent_context_refresh_after_response; do
     saved[$name]="${functions[$name]}"
@@ -96,7 +96,11 @@ input_queue_tests() {
       if (( requests == 1 )); then
         input_queue_submit "$CURRENT_SESSION_ID" "$INPUT_QUEUE_TURN_ID" stream steer 'Steer during response' || return 1
         input_queue_submit "$CURRENT_SESSION_ID" "$INPUT_QUEUE_TURN_ID" follow follow_up 'Follow-up after task' || return 1
-        if (( fail_request )); then AGENT_CANCELLED=1; return 130; fi
+        if (( fail_request )); then
+          AGENT_CANCELLED=1
+          (( fail_request == 2 )) && INPUT_QUEUE_INTERRUPT=1
+          return 130
+        fi
         HTTP_BODY='{"message":{"content":"Inspecting","tool_calls":[{"function":{"name":"read_file","arguments":{"path":"a"}}},{"function":{"name":"read_file","arguments":{"path":"b"}}}]},"done":true}'
       else
         HTTP_BODY='{"message":{"content":"Finished"},"done":true}'
@@ -110,6 +114,7 @@ input_queue_tests() {
         assert_not_contains "${(j:,:)AGENT_MESSAGES}" 'Steer during response' 'the second tool runs before pending steering enters history'
       fi
       TOOL_RESULT="result $tool_count"; TOOL_RESULT_OK=1
+      if (( cancel_tool )); then TOOL_CANCELLED=1; INPUT_QUEUE_INTERRUPT=1; fi
     }
     state_new_session
     agent_user_turn 'Initial task'
@@ -149,6 +154,25 @@ input_queue_tests() {
     assert_success 'explicit resume consumes pending input from an earlier run' $?
     input_queue_status "$CURRENT_SESSION_ID" follow
     assert_contains "$REPLY" consumed 'recovery completes queued follow-ups too'
+
+    state_new_session
+    requests=0; tool_count=0; fail_request=2
+    agent_user_turn 'Interrupt generation for queued input'
+    assert_success 'Escape with queued input continues instead of ending the conversation' $?
+    assert_eq 3 "$requests" 'both queued requests run after cancelled generation'
+    assert_eq 0 "$tool_count" 'cancelled generation cannot execute its discarded tool calls'
+    input_queue_status "$CURRENT_SESSION_ID" follow
+    assert_contains "$REPLY" consumed 'Escape takeover consumes the follow-up exactly once'
+
+    state_new_session
+    requests=0; tool_count=0; fail_request=0; cancel_tool=1
+    agent_user_turn 'Interrupt a tool for queued input'
+    assert_success 'queued input continues after tool cancellation' $?
+    assert_eq 1 "$tool_count" 'takeover never executes the rest of the cancelled tool batch'
+    assert_contains "${(j:\n:)AGENT_MESSAGES}" 'not executed because the user cancelled' 'takeover closes outstanding tool calls before adding queued input'
+    input_queue_status "$CURRENT_SESSION_ID" follow
+    assert_contains "$REPLY" consumed 'queued follow-ups also run after a tool interruption'
+    cancel_tool=0
 
     # HTTP and ACP use the same validation and receipts, with no model work
     # or broker-side history changes inside these handlers.
@@ -268,11 +292,26 @@ input_queue_pty_tests() {
     assert_contains "${mapfile[$base.request_3]:-}" 'bang-evidence' 'the subsequent request sees queued shell output'
     assert_contains "${mapfile[$base.shell_visible]:-}" '1:Exit code: 0' 'user shell output appears in an expanded transcript block'
     input_queue_wait "$base.started" cancel:
-    zpty -w -n input-queue $'Keep this pending\rUnsent draft\e'
-    input_queue_wait "$base.cancelled" '130:Unsent draft'
-    assert_success 'Escape cancels work and preserves an unsent draft' $?
+    zpty -w -n input-queue $'Send this instead\rUnsent draft\e'
+    input_queue_wait "$base.cancelled" '0:Unsent draft'
+    assert_success 'Escape sends accepted input next and preserves an unsent draft' $?
+    assert_contains "${mapfile[$base.request_5]:-}" 'Send this instead' 'the replacement model request contains the queued message'
+    assert_not_contains "${mapfile[$base.request_5]:-}" 'Unsent draft' 'takeover never submits unsent editor text'
+    assert_contains "${mapfile[$base.cancel_pending]:-}" '"pending":""' 'takeover consumes the queued message'
+    input_queue_wait "$base.started" stop:
+    zpty -w -n input-queue $'\e'
+    input_queue_wait "$base.stopped" '130:Unsent draft'
+    assert_success 'Escape without queued input still stops the turn' $?
+    input_queue_wait "$base.tool_started" started
+    assert_success 'takeover fixture starts a real shell command' $?
+    zpty -w -n input-queue $'\x15Queued after tool\rDraft after tool\e'
+    input_queue_wait "$base.tool_done" '0:Draft after tool'
+    assert_success 'Escape during a real command continues with the queued request' $?
+    assert_contains "${mapfile[$base.request_8]:-}" 'Queued after tool' 'the next model request receives queued input after tool cleanup'
+    assert_contains "${mapfile[$base.request_8]:-}" 'not executed because the user cancelled' 'cancelled batch results precede the replacement model request'
+    [[ ! -f "$TEST_TMP/input-queue-forbidden" ]]
+    assert_success 'the remaining command in the interrupted batch never executes' $?
     input_queue_wait "$base.done" 1
-    assert_contains "${mapfile[$base.cancel_pending]:-}" 'Keep this pending' 'accepted input survives PTY cancellation'
     assert_contains "${mapfile[$base.cancel_pending]:-}" '"turn_id":""' 'cancellation closes input admission'
   } always {
     zpty -d input-queue 2>/dev/null

@@ -34,7 +34,12 @@ ui_activity_input() {
 }
 functions[_fixture_process_run]="${functions[tool_process_run]}"
 tool_process_run() { (( fixture_processes++ )); _fixture_process_run "$@"; }
-typeset -g fixture_command="print -r -- started > ${(q)fixture_base}.started; print -r -- PRIVATE_\"WORKER\"_TTY > /dev/tty; trap '' TERM; sleep 30 & print -r -- \$! > ${(q)fixture_base}.child; wait"
+typeset -g fixture_command="print -r -- started > ${(q)fixture_base}.started; print -r -- LIVE_\"COMMAND\"_OUTPUT; print -r -- PRIVATE_\"WORKER\"_TTY > /dev/tty; trap '' TERM; sleep 30 & print -r -- \$! > ${(q)fixture_base}.child; wait"
+functions[_fixture_process_progress]="${functions[tool_process_progress]}"
+tool_process_progress() {
+  _fixture_process_progress
+  (( UI_CURRENT_TOOL > 0 )) && mapfile[${fixture_base}.progress]="${UI_TOOL_RESULTS[UI_CURRENT_TOOL]}"
+}
 agent_ollama_chat() {
   (( fixture_requests++ ))
   zjson_quote "$fixture_command"

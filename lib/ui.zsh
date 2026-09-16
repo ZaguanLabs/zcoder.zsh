@@ -1336,6 +1336,7 @@ ui_activity_input() {
   if [[ -z "$ch" && -z "$key" ]]; then
     if [[ "$INPUT_TERM_STATE" == escape && "$INPUT_ESCAPE_BUF" == $'\e' ]] && (( EPOCHREALTIME - UI_ACTIVITY_ESCAPE_AT >= 0.05 )); then
       INPUT_TERM_STATE=normal; INPUT_ESCAPE_BUF=""
+      [[ -n "${INPUT_QUEUE_TURN_ID:-}" ]] && INPUT_QUEUE_INTERRUPT=1
       return 130
     fi
     return 0

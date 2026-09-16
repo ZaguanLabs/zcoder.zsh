@@ -16,7 +16,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.17.1"
+typeset -gr ZCODER_VERSION="0.17.2"
 
 typeset -gr ZCODER_DIR="${0:A:h}"
 

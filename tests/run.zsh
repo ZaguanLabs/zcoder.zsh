@@ -601,7 +601,7 @@ assert_contains "$TOOL_RESULT" "ignored-cache/secret.txt" "explicit directory re
 if (( $+commands[rg] )); then
   tool_search "two" . 10
   assert_success "search invokes ripgrep safely" $?
-  assert_contains "$TOOL_RESULT" "src/note.txt:2:1:two" "search returns locations"
+  assert_contains "$TOOL_RESULT" $'File: "src/note.txt"\n1-one\n2:1:two' "search returns grouped locations and context"
   tool_search "ignored search needle" . 10
   assert_success "search applies ignore files outside Git" $?
   assert_contains "$TOOL_RESULT" "No text matches." "search excludes gitignored results outside Git"
@@ -614,6 +614,10 @@ else
   pass "ignored search output unavailable (rg not installed)"
   pass "empty-search guidance unavailable (rg not installed)"
 fi
+
+test_section search
+source "${TEST_DIR}/search.zsh"
+test_section core
 
 mapfile[$TEST_TMP/src/replace.txt]=$'mode=old\n'
 tool_replace_text "src/replace.txt" "mode=old" "mode=new"
@@ -3439,6 +3443,10 @@ test_section context_accounting
 source "${TEST_DIR}/context_accounting.zsh"
 test_section input_queue
 source "${TEST_DIR}/input_queue.zsh"
+if test_integration remote_interrupt; then
+  zsh -df "${TEST_DIR}/remote_interrupt.zsh"
+  assert_success 'remote Escape takeover preserves queue scope and continues event polling' $?
+fi
 test_section user_shell
 source "${TEST_DIR}/user_shell.zsh"
 test_section hardening_state
