@@ -550,9 +550,7 @@ _state_load_snapshot() {
 }
 
 state_init() {
-  local start_mode="${1:-new}" session_id="" session_dir="" old_umask="$(umask)"
-  local -i agent_count=0 ui_count=0
-  local -a reply=()
+  local start_mode="${1:-new}" resume_id="${2:-}" old_umask="$(umask)"
   umask 077
   if ! zf_mkdir -p "$ZCODER_SESSIONS_DIR" 2>/dev/null; then
     umask "$old_umask"
@@ -565,20 +563,15 @@ state_init() {
   state_refresh_sessions_list
   if [[ "$start_mode" == storage ]]; then
     return 0
+  elif [[ "$start_mode" == resume && -n "$resume_id" ]]; then
+    STATE_ERROR=''
+    if ! state_load_session "$resume_id"; then
+      STATE_ENABLED=0
+      [[ -n "$STATE_ERROR" ]] || STATE_ERROR='session is unavailable or does not match this workspace and profile'
+      return 1
+    fi
   elif [[ "$start_mode" == resume ]] && (( ${#SESSION_IDS} > 0 )); then
     state_load_session "${SESSION_IDS[1]}" || state_new_session
-  elif (( ${#SESSION_IDS} > 0 )); then
-    for session_id in "${SESSION_IDS[@]}"; do
-      session_dir="$ZCODER_SESSIONS_DIR/${session_id}.session"
-      state_snapshot_values "$session_dir" agent_message_count ui_event_count || continue
-      _state_nonnegative "$reply[1]"; agent_count=$REPLY
-      _state_nonnegative "$reply[2]"; ui_count=$REPLY
-      if (( agent_count == 0 && ui_count == 0 )); then
-        state_load_session "$session_id" || state_new_session
-        return $?
-      fi
-    done
-    state_new_session
   else
     state_new_session
   fi

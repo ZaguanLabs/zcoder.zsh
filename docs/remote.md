@@ -176,8 +176,11 @@ The original directories remain their backing storage; new conversations are
 created directly in the shared store.
 
 Sessions survive server and client restarts. The TUI client starts a fresh
-server-side job during the handshake, unless the selected
-job is already empty. Use Ctrl+N or `/new` to create another remote job, and
+server-side job during the handshake, even if the selected job is empty.
+Pass `--resume SESSION_ID` alongside `--connect` to select a saved server-side
+session instead. A failed resume reports an error without creating a new job.
+The exit notice includes the connection and token-file options needed to resume.
+Use Ctrl+N or `/new` to create another remote job, and
 focus the Sessions sidebar with Tab or `/sessions` to resume an older one.
 Selecting a job changes the server-side conversation; no duplicate session
 state is stored on the workstation.

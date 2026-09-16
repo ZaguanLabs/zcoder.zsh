@@ -16,7 +16,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.17.0"
+typeset -gr ZCODER_VERSION="0.17.1"
 
 typeset -gr ZCODER_DIR="${0:A:h}"
 
@@ -53,6 +53,8 @@ zcoder_require util json mcp http instructions skills transcript tools compact g
 typeset -g REMOTE_MODE="${REMOTE_MODE:-local}"
 
 typeset -g ONE_SHOT_PROMPT=""
+typeset -g RESUME_SESSION_ID=""
+typeset -gi TUI_SESSION_STARTED=0
 typeset -gi ACP_MODE=0
 typeset -gi RUNNING=1
 typeset -gi PRINT_INSTRUCTIONS=0
@@ -75,6 +77,7 @@ usage() {
   print -r -- "      --profile NAME     System prompt profile: coding or sysadmin (default: ${ZCODER_PROFILE})"
   print -r -- "      --tool-exposure MODE  Tool schemas: full or staged (default: ${ZCODER_TOOL_EXPOSURE})"
   print -r -- "  -p, --prompt TEXT      Run one prompt without the full-screen UI"
+  print -r -- "      --resume ID        Continue a saved session (default: start a new chat)"
   print -r -- "      --context-window N Context tokens to request, or auto (default: ${ZCODER_CONTEXT_WINDOW})"
   print -r -- "      --compact-at PCT   Compact at this context percentage (default: ${ZCODER_COMPACT_PERCENT})"
   print -r -- "      --yes              Allow shell commands (coding profile only)"
@@ -132,6 +135,11 @@ while (( $# > 0 )); do
       shift
       ;;
     -p|--prompt) require_option_value "$1" "${2:-}"; ONE_SHOT_PROMPT="$2"; shift ;;
+    --resume)
+      require_option_value "$1" "${2:-}"
+      _state_valid_id "$2" || { print -u2 -- 'Error: --resume expects a session ID'; exit 2; }
+      RESUME_SESSION_ID="$2"; shift
+      ;;
     --context-window)
       require_option_value "$1" "${2:-}"
       [[ "$2" == auto || "$2" == <32768-> ]] || { print -u2 -- "Error: --context-window expects auto or an integer of at least 32768"; exit 2; }
@@ -160,6 +168,11 @@ while (( $# > 0 )); do
   esac
   shift
 done
+
+if [[ -n "$RESUME_SESSION_ID" ]] && { [[ "$REMOTE_MODE" == server ]] || (( ACP_MODE || PRINT_INSTRUCTIONS || PRINT_SKILLS )); }; then
+  print -u2 -- 'Error: --resume cannot be combined with --server, --acp, --print-instructions, or --print-skills'
+  exit 2
+fi
 
 [[ "$REMOTE_MODE" == local ]] || zcoder_require remote
 (( ACP_MODE )) && zcoder_require acp
@@ -243,14 +256,34 @@ if [[ "$REMOTE_MODE" != client ]]; then
   OLLAMA_HOST="$REPLY"
 fi
 
+zcoder_resume_notice() {
+  (( TUI_SESSION_STARTED )) || return 0
+  _state_valid_id "$CURRENT_SESSION_ID" || return 0
+  local -a resume_command=("$ZCODER_DIR/zcoder.zsh" --resume "$CURRENT_SESSION_ID")
+  local prefix='' resume_home="${ZCODER_HOME:A}" resume_store="${ZCODER_SESSIONS_DIR:A}"
+  if [[ "$REMOTE_MODE" == client ]]; then
+    (( REMOTE_SESSIONS_SUPPORTED )) || return 0
+    resume_command+=(--connect "$REMOTE_ENDPOINT" --token-file "${REMOTE_TOKEN_FILE:A}")
+  else
+    (( STATE_ENABLED )) || return 0
+    resume_command+=(--workspace "$ZCODER_WORKSPACE" --profile "$ZCODER_PROFILE" --host "$OLLAMA_HOST")
+    [[ "$ZCODER_HOME" == "${XDG_CONFIG_HOME:-$HOME/.config}/zcoder" ]] || prefix="ZCODER_HOME=${(q)resume_home} "
+    [[ "$ZCODER_SESSIONS_DIR" == "$ZCODER_HOME/sessions" ]] || prefix+="ZCODER_SESSIONS_DIR=${(q)resume_store} "
+  fi
+  print -rl -- '' 'To continue this session, run:' "  $prefix${(j: :)${(@q)resume_command}}"
+}
+
 cleanup() {
   local exit_status=$?
+  local -i session_saved=1
   trap - INT TERM HUP
   zcoder_debug session_end "status=$exit_status running=$RUNNING async_pid=${HTTP_ASYNC_PID:-none} delegate_pid=${DELEGATE_PID:-none}"
   RUNNING=0
   (( $+functions[tool_process_cleanup] )) && tool_process_cleanup
   (( $+functions[acp_shutdown] )) && acp_shutdown
-  [[ "$REMOTE_MODE" != server ]] && (( $+functions[state_save_session] )) && state_save_session
+  if [[ "$REMOTE_MODE" != server ]] && (( $+functions[state_save_session] )); then
+    state_save_session || session_saved=0
+  fi
   (( $+functions[delegate_async_cancel] )) && delegate_async_cancel
   (( $+functions[remote_client_idle_cancel] )) && remote_client_idle_cancel
   agent_context_discovery_cancel
@@ -261,6 +294,8 @@ cleanup() {
   (( $+functions[ui_end] )) && ui_end
   zcoder_debug_close
   zcoder_runtime_cleanup
+  (( session_saved )) && zcoder_resume_notice
+  return "$exit_status"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -679,7 +714,11 @@ main_tui() {
   local ch="" key="" mouse="" text="" previous_model="" relay_context="" relay_display=""
   local -i current_index=1 i=1 relay_claim_status=1
   input_reset
-  if [[ "$REMOTE_MODE" != client ]] && ! state_init; then
+  if [[ "$REMOTE_MODE" != client ]] && ! state_init "${RESUME_SESSION_ID:+resume}" "$RESUME_SESSION_ID"; then
+    if [[ -n "$RESUME_SESSION_ID" ]]; then
+      print -u2 -r -- "Error: could not resume $RESUME_SESSION_ID: $STATE_ERROR"
+      return 1
+    fi
     print -u2 -- "Warning: could not initialize session storage at $ZCODER_SESSIONS_DIR"
   fi
   if [[ "$REMOTE_MODE" == local ]]; then
@@ -715,6 +754,7 @@ main_tui() {
     esac
     ui_invalidate; ui_refresh_all
   fi
+  TUI_SESSION_STARTED=1
   agent_warmup_start || true
   while (( RUNNING )); do
     (( UI_ACTIVE )) || return 1
@@ -851,6 +891,10 @@ main_tui() {
 }
 
 if [[ -n "$ONE_SHOT_PROMPT" ]]; then
+  if [[ -n "$RESUME_SESSION_ID" && "$REMOTE_MODE" != client ]] && ! state_init resume "$RESUME_SESSION_ID"; then
+    print -u2 -r -- "Error: could not resume $RESUME_SESSION_ID: $STATE_ERROR"
+    exit 1
+  fi
   if [[ "$ONE_SHOT_PROMPT" == /goal || "$ONE_SHOT_PROMPT" == /goal\ * ]]; then
     goal_handle_command "$ONE_SHOT_PROMPT"
   else

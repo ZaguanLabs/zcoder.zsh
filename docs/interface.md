@@ -104,9 +104,25 @@ exclusive screen ownership; their underlying header updates when they close.
 Interactive jobs are stored under `${ZCODER_HOME}/sessions`, normally
 `${XDG_CONFIG_HOME:-$HOME/.config}/zcoder/sessions`. Each interactive launch
 starts a fresh job. Earlier jobs matching the workspace and profile remain in
-the sidebar and can be resumed explicitly. An already-empty latest job is
-reused so repeatedly opening and closing zcoder does not accumulate blank
-entries.
+the sidebar and can be resumed explicitly. Each launch creates a new session
+ID, including when the previous chat was empty.
+
+Use `./zcoder.zsh --resume SESSION_ID` to reopen a specific chat in the current
+workspace and profile. Supply `--workspace` and `--profile` when needed. An
+unknown, unreadable, or out-of-scope session produces an error instead of a new
+chat. You can combine `--resume` with `--prompt` to continue a saved session
+without the full-screen UI.
+
+On interactive exit, after restoring the terminal, zcoder prints:
+
+```text
+To continue this session, run:
+  /path/to/zcoder.zsh --resume 1789545311_12345 --workspace /path/to/project --profile coding --host localhost:11434
+```
+
+The command includes the current session ID and the workspace/profile or remote
+connection options. Custom local session storage is included when configured.
+No resume notice is printed for headless or one-shot runs.
 
 A session retains:
 

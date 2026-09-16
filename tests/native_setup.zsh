@@ -10,6 +10,8 @@ typeset fake=$scratch/project runtime=$scratch/project/.build/native/builds/test
 typeset -i checks=0
 fail() { print -ru2 -- "FAIL: $*"; exit 1; }
 check() { (( checks++ )); [[ $1 == "$2" ]] || fail "$3: ${(qqq)1}"; }
+output=$("$shell_bin" -n "$0" 2>&1) || fail 'syntax-only validation failed'
+check "$output" '' 'syntax-only validation does not read runtime files'
 zf_mkdir -p "$runtime/bin" "$fake/scripts"
 print -r -- "$runtime" > "$fake/.build/native/current"
 print -r -- "$MACHTYPE:$OSTYPE:$HOST:$fake" > "$runtime/zcoder-host"
@@ -76,7 +78,10 @@ repeat 2; do
   [[ $output == *'checksum mismatch'* ]] || fail "corrupt archive/lock release: $output"
   (( checks++ ))
 done
-check "$(<"$fake/.build/native/current")" preserved 'failed build preserves current runtime'
+# Older Zsh releases evaluate this optimized read in command arguments even
+# under -n. An assignment keeps it confined to actual test execution.
+output=$(<"$fake/.build/native/current")
+check "$output" preserved 'failed build preserves current runtime'
 zf_rm "$fake/.build/native/zsh-5.9.2.tar.xz"
 setup_failure
 [[ $output == *'Native setup failed'* && ! -e $fake/.build/native/zsh-5.9.2.tar.xz ]] || fail 'failed download was published'

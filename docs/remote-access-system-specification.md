@@ -1195,13 +1195,12 @@ not parse or use the request body, but compatible clients should send `{}`.
 
 After a handshake advertising `sessions: true`, the current client:
 
-1. enumerates all session summaries;
-2. finds the server-selected session;
-3. if the selected session is empty, loads and reuses it;
-4. otherwise creates a fresh session and loads its empty transcript.
+1. creates a fresh session by default, even if the selected session is empty;
+2. with `--resume ID`, selects that exact session instead;
+3. refreshes session summaries and loads the selected transcript.
 
-This prevents a new client launch from silently continuing a used job while
-also avoiding a growing collection of duplicate blank sessions.
+Failed explicit selection stops startup without creating a replacement session.
+Servers without session support reject explicit resume requests.
 
 ## 14. Complete client flow
 
@@ -1734,8 +1733,9 @@ use the hardened model.
 - Selecting a valid session updates durable selected state.
 - Creating a session produces a safe ID and persists it immediately.
 - Selection and creation receive 409 during active or queued work.
-- Client launch reuses an empty selected session.
+- Client launch creates a fresh session even after an empty selected session.
 - Client launch creates a fresh session after a used selected session.
+- Explicit client resume selects the requested session without creating a new one.
 
 ### 21.8 Security and fault-injection tests
 

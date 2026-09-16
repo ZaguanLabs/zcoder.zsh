@@ -119,6 +119,26 @@ ZCODER_MAX_TOOL_OUTPUT=32768
 
 # The final plan is derived from the assertions actually executed.
 
+# Reject bad resume requests before starting a UI, server, or model request.
+for resume_case in missing malformed acp server; do
+  resume_args=(--resume)
+  case "$resume_case" in
+    malformed) resume_args+=(../escape) ;;
+    acp) resume_args+=(123_456 --acp) ;;
+    server) resume_args+=(123_456 --server resume-probe) ;;
+  esac
+  resume_output=$(zsh -f "$PROJECT_DIR/zcoder.zsh" "${resume_args[@]}" 2>&1)
+  assert_eq 2 "$?" "CLI rejects $resume_case resume arguments"
+  assert_contains "$resume_output" 'Error:' "CLI explains $resume_case resume arguments"
+done
+resume_output=$(ZCODER_HOME="$TEST_TMP/resume-cli" ZCODER_RELAY=off \
+  zsh -f "$PROJECT_DIR/zcoder.zsh" --resume 9999999999_999 --prompt hello --workspace "$TEST_TMP" --no-warmup 2>&1)
+assert_eq 1 "$?" 'one-shot resume refuses a missing session before sending a prompt'
+assert_contains "$resume_output" 'could not resume 9999999999_999' 'a missing session error identifies the requested ID'
+assert_not_contains "$resume_output" 'To continue this session' 'failed startup does not advertise a resumable session'
+resume_created=("$TEST_TMP/resume-cli/sessions"/*.session(N-/))
+assert_eq 0 "${#resume_created}" 'failed CLI resume creates no replacement session'
+
 # Headless startup must retain transcripts and remote approvals without loading
 # terminal libraries, handlers, or the delegate execution runtime.
 for headless_mode in server acp; do
@@ -1316,11 +1336,13 @@ assert_eq "1" "$REMOTE_SESSION_EMPTY" "remote clients detect a selected session 
 saved_remote_session_refresh="${functions[remote_client_refresh_sessions]}"
 saved_remote_session_load="${functions[remote_client_load_session]}"
 saved_remote_session_new="${functions[remote_client_new_session]}"
+saved_remote_session_select="${functions[remote_client_select_session]}"
 typeset -gi MOCK_REMOTE_START_LOADS=0 MOCK_REMOTE_START_NEWS=0
 typeset -g MOCK_REMOTE_START_LOADED_ID=""
 remote_client_refresh_sessions() { return 0; }
 remote_client_load_session() { (( MOCK_REMOTE_START_LOADS++ )); MOCK_REMOTE_START_LOADED_ID="$1"; return 0; }
 remote_client_new_session() { (( MOCK_REMOTE_START_NEWS++ )); return 0; }
+remote_client_select_session() { MOCK_REMOTE_START_LOADED_ID="$1"; return 0; }
 CURRENT_SESSION_ID="3000000000_3"
 REMOTE_SESSION_EMPTY=0
 remote_client_start_session
@@ -1332,12 +1354,23 @@ MOCK_REMOTE_START_NEWS=0
 CURRENT_SESSION_ID="2000000000_2"
 REMOTE_SESSION_EMPTY=1
 remote_client_start_session
-assert_success "remote client startup accepts an already-empty selected job" $?
-assert_eq "0" "$MOCK_REMOTE_START_NEWS" "remote client startup avoids duplicate blank sessions"
-assert_eq "2000000000_2" "$MOCK_REMOTE_START_LOADED_ID" "remote client startup loads the existing empty job"
+assert_success "remote client startup creates a job even when the selected job is empty" $?
+assert_eq "1" "$MOCK_REMOTE_START_NEWS" "every remote launch requests a new session"
+assert_eq "0" "$MOCK_REMOTE_START_LOADS" "remote startup never implicitly loads an empty job"
+RESUME_SESSION_ID=2000000000_2
+remote_client_start_session
+assert_success 'remote startup resumes an explicitly requested session' $?
+assert_eq "$RESUME_SESSION_ID" "$MOCK_REMOTE_START_LOADED_ID" 'remote resume selects the exact requested ID'
+assert_eq 1 "$MOCK_REMOTE_START_NEWS" 'remote resume does not create a replacement session'
+remote_client_select_session() { REMOTE_ERROR='unknown session'; return 1; }
+remote_client_start_session
+assert_failure 'failed remote resume propagates selection failure' $?
+assert_eq 1 "$MOCK_REMOTE_START_NEWS" 'failed remote resume never falls back to a new session'
+RESUME_SESSION_ID=''
 functions[remote_client_refresh_sessions]="$saved_remote_session_refresh"
 functions[remote_client_load_session]="$saved_remote_session_load"
 functions[remote_client_new_session]="$saved_remote_session_new"
+functions[remote_client_select_session]="$saved_remote_session_select"
 
 functions[remote_client_request]="$saved_remote_client_request"
 functions[agent_set_status]="$saved_remote_status_setter"
@@ -1665,7 +1698,16 @@ assert_success "interactive startup creates a fresh session instead of resuming 
 assert_eq "0" "${#AGENT_MESSAGES}" "fresh startup sessions begin without prior model history"
 assert_contains "${(j:,:)SESSION_IDS}" "$saved_session_id" "fresh startup keeps older sessions available for selection"
 state_init
-assert_eq "$launch_session_id" "$CURRENT_SESSION_ID" "interactive startup reuses an untouched blank job instead of duplicating it"
+[[ "$launch_session_id" != "$CURRENT_SESSION_ID" ]]
+assert_success "interactive startup creates a new ID even after an untouched blank job" $?
+state_init resume "$saved_session_id"
+assert_success 'explicit startup resume restores the requested session' $?
+assert_eq "$saved_session_id" "$CURRENT_SESSION_ID" 'explicit resume preserves session identity'
+assert_eq 2 "${#AGENT_MESSAGES}" 'explicit startup resume restores saved model history'
+state_init resume 9999999999_999
+assert_failure 'a missing resume ID fails instead of creating a session' $?
+assert_eq 0 "$STATE_ENABLED" 'failed resume disables exit persistence'
+state_init storage
 
 foreign_profile_id="9999999999_101"
 foreign_workspace_id="9999999999_102"
@@ -1676,6 +1718,11 @@ mapfile[$ZCODER_SESSIONS_DIR/$foreign_profile_id.session/updated_at]="9999999999
 mapfile[$ZCODER_SESSIONS_DIR/$foreign_workspace_id.session/workspace]="$TEST_TMP/another-project"
 mapfile[$ZCODER_SESSIONS_DIR/$foreign_workspace_id.session/profile]="coding"
 mapfile[$ZCODER_SESSIONS_DIR/$foreign_workspace_id.session/updated_at]="9999999999"
+state_init resume "$foreign_profile_id"
+assert_failure 'explicit resume refuses a different profile' $?
+state_init resume "$foreign_workspace_id"
+assert_failure 'explicit resume refuses a different workspace' $?
+state_init storage
 state_refresh_sessions_list
 session_ids_joined="${(j:,:)SESSION_IDS}"
 assert_not_contains "$session_ids_joined" "$foreign_profile_id" "session list isolates prompt profiles"

@@ -1,4 +1,4 @@
-typeset -g integration_base="$TEST_TMP/tui-integration" integration_chunk='' integration_output=''
+typeset -g integration_base="$TEST_TMP/tui integration" integration_chunk='' integration_output=''
 integration_wait() {
   local file="$1" expected="$2"
   local -F deadline=$(( EPOCHREALTIME + 12.0 ))
@@ -28,6 +28,14 @@ assert_success "local entrypoint fixture starts a native Ollama listener" $?
 TERM=xterm-256color zpty -b local-application integration_application
 integration_wait "$integration_base.started" 1
 assert_success "the actual local entrypoint gives curses ownership before context discovery" $?
+# Reproduce a local session linked to a shared remote history, as supported
+# by session discovery. Enter must still reach the model and transcript.
+typeset -a integration_linked_sessions=("$integration_base.home"/sessions/*.session(N/))
+if (( ${#integration_linked_sessions} == 1 )); then
+  zf_mv "$integration_linked_sessions[1]" "$integration_base.shared-session"
+  zf_ln -s "$integration_base.shared-session" "$integration_linked_sessions[1]"
+fi
+assert_success "the local entrypoint session uses a shared history link" "$([[ -h $integration_linked_sessions[1] ]] && print 0 || print 1)"
 zpty -w -n local-application $'preserved draft\e'
 integration_wait "$integration_base.cancel_eof" 5
 assert_success "Escape closes the startup context request in the actual application" $?
@@ -75,8 +83,12 @@ zsystem flock -u "$integration_quit_lock"
 zf_rm -r -- "$integration_busy_session"
 integration_wait "$integration_base.terminal_restored" 1
 assert_success "the real application restores its original terminal settings" $?
+integration_wait output 'To continue this session, run:'
+assert_success 'interactive exit prints a resume notice after leaving curses' $?
+assert_contains "$integration_output" "--resume ${integration_linked_sessions[1]:t:r}" 'the exit command identifies the current session'
+assert_contains "$integration_output" "--workspace ${(q)integration_base}.workspace" 'the exit command shell-quotes workspace paths with spaces'
 assert_eq 1 "${mapfile[$integration_base.chat_count]:-}" "inspector, copy, and quit commands never become model prompts"
-typeset -a integration_sessions=("$integration_base.home"/sessions/*.session(N/))
+typeset -a integration_sessions=("$integration_base.home"/sessions/*.session(N-/))
 assert_eq 1 "${#integration_sessions}" "the recovered interaction remains in one saved session"
 if (( ${#integration_sessions} == 1 )); then
   state_snapshot_dir "$integration_sessions[1]"
@@ -88,6 +100,27 @@ fi
 typeset -a integration_scratch=("$integration_base.tmp"/*(ND))
 assert_eq 0 "${#integration_scratch}" "the real entrypoint removes all private worker storage on exit"
 zpty -d local-application
+# Resume the real saved chat in a second application process.
+integration_resume_application() {
+  trap - EXIT INT TERM
+  exec zsh -f "$TEST_DIR/fixtures/local_application.zsh" "$PROJECT_DIR" "$integration_base" \
+    --resume "${integration_sessions[1]:t:r}" --no-warmup --context-window 98304
+}
+zf_rm "$integration_base.application_exit"
+integration_output=''
+TERM=xterm-256color zpty -b local-application integration_resume_application
+integration_wait output 'Integration complete.'
+assert_success '--resume restores the saved transcript in the real application' $?
+zpty -w -n local-application $'/quit\r'
+integration_wait "$integration_base.application_exit" 0
+assert_success 'the resumed application exits cleanly' $?
+integration_wait output 'To continue this session, run:'
+assert_contains "$integration_output" "--resume ${integration_sessions[1]:t:r}" 'resumed exit keeps the same session ID'
+typeset -a integration_resumed_sessions=("$integration_base.home"/sessions/*.session(N-/))
+assert_eq 1 "${#integration_resumed_sessions}" 'resuming never creates an extra session'
+assert_eq 1 "${mapfile[$integration_base.chat_count]:-}" 'resuming with warm-up disabled sends no model prompt'
+zpty -d local-application
+unfunction integration_resume_application
 kill -TERM "$integration_server_pid" 2>/dev/null || true
 wait "$integration_server_pid" 2>/dev/null || true
 unfunction integration_wait integration_server integration_application

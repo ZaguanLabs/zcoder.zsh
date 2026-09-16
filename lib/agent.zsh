@@ -1299,7 +1299,11 @@ _agent_run_turn() {
   local -i turn_result=0 close_result=0 INPUT_QUEUE_MODEL_PENDING=0
   local queue_mode=all
   (( ${INPUT_QUEUE_RESUME:-0} )) && queue_mode=recovery
-  input_queue_open "$CURRENT_SESSION_ID" "$INPUT_QUEUE_TURN_ID" || return 1
+  if ! input_queue_open "$CURRENT_SESSION_ID" "$INPUT_QUEUE_TURN_ID"; then
+    zcoder_debug input_queue_open_failed "session=$CURRENT_SESSION_ID error=${(qqq)INPUT_QUEUE_ERROR}"
+    agent_emit error "Could not start turn: $INPUT_QUEUE_ERROR"
+    return 1
+  fi
   {
     [[ "${2:-}" == queue_resume ]] && { input_queue_drain "$queue_mode" || return $?; }
     if [[ "${2:-}" != queue_resume ]] || (( INPUT_QUEUE_MODEL_PENDING )); then

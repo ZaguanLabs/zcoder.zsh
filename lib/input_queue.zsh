@@ -43,6 +43,9 @@ _input_queue_lock() {
   INPUT_QUEUE_ERROR='could not access private input queue'
   _state_valid_id "$session" || { INPUT_QUEUE_ERROR='invalid session'; return 1; }
   base="$ZCODER_SESSIONS_DIR/${session}.session"
+  # Session discovery and persistence support shared histories via symlinks.
+  # Validate the resolved owner; queue internals must still be private paths.
+  base="${base:A}"
   [[ -d "$base" && ! -h "$base" && -O "$base" ]] || { INPUT_QUEUE_ERROR='unknown session'; return 1; }
   queue_dir="$base/input_queue"
   [[ ! -h "$queue_dir" ]] || return 1

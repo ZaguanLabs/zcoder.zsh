@@ -25,8 +25,13 @@ input_queue_tests() {
     transcript_reset
     agent_reset
     state_save_session
+    # Shared remote histories are exposed locally as session-directory links.
+    local shared_session="$TEST_TMP/shared-input-session"
+    zf_mv "$ZCODER_SESSIONS_DIR/$CURRENT_SESSION_ID.session" "$shared_session"
+    zf_ln -s "$shared_session" "$ZCODER_SESSIONS_DIR/$CURRENT_SESSION_ID.session"
     input_queue_open "$CURRENT_SESSION_ID" first
-    assert_success 'a saved session opens private input admission' $?
+    assert_success 'a linked saved session opens private input admission' $?
+    assert_eq first "${mapfile[$shared_session/input_queue/active]:-}" 'admission uses the shared session queue'
     input_queue_submit "$CURRENT_SESSION_ID" first one steer $'Exact 世界\nsecond line\n'
     assert_success 'queued input preserves Unicode and trailing newlines' $?
     assert_contains "$REPLY" '"state":"accepted"' 'acceptance is distinct from consumption'
@@ -115,6 +120,18 @@ input_queue_tests() {
     assert_not_contains "${payloads[2]}" 'Follow-up after task' 'follow-ups wait for the active task to finish'
     assert_contains "${payloads[3]}" '"role":"assistant","content":"Finished"},{"role":"user","content":"Follow-up after task"}' 'the follow-up begins after the completed assistant answer'
     assert_not_contains "${payloads[3]}" input_id 'live model requests exclude queue metadata'
+
+    # Admission errors must be visible before any user history/model work.
+    state_new_session
+    local rejected_queue="$ZCODER_SESSIONS_DIR/$CURRENT_SESSION_ID.session/input_queue"
+    zf_ln -s "$shared_session/input_queue" "$rejected_queue"
+    before=$requests; emitted=()
+    agent_user_turn 'Cannot submit this'
+    assert_failure 'queue-internal symlinks still reject admission' $?
+    assert_contains "${(j:\n:)emitted}" 'error:Could not start turn: could not access private input queue' 'admission failure emits a visible error'
+    assert_eq "$before" "$requests" 'rejected admission sends no model request'
+    assert_eq 0 "${#AGENT_MESSAGES}" 'rejected admission does not record an unsent user message'
+    zf_rm "$rejected_queue"
 
     # Cancellation preserves both kinds; a fresh normal turn does not consume
     # them implicitly. Explicit resume recovers them under a new active run ID.

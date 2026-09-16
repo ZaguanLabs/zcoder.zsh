@@ -689,9 +689,8 @@ Session ownership remains on the server. Cursor-based endpoints expose bounded
 session summaries and transcript events to the client, and authenticated
 selection/new-session requests update the named server's selected job. The
 client keeps only the sidebar and transcript view in memory; it does not write a
-second local copy of remote state. A new client launch requests a fresh job,
-while reusing an already-empty selected job to avoid accumulating duplicate
-blank sessions.
+second local copy of remote state. A client launch requests a fresh job unless
+`--resume ID` explicitly selects an existing server-owned session.
 
 The server accepts one active turn at a time. The session owner can receive
 steering at response/tool-batch boundaries and run queued follow-ups before

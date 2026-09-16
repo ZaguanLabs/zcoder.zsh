@@ -222,14 +222,14 @@ remote_client_handshake() {
     fi
   else
     REMOTE_SESSIONS_SUPPORTED=0
+    [[ -z "${RESUME_SESSION_ID:-}" ]] || { REMOTE_ERROR='this server does not support saved sessions'; return 1; }
   fi
   [[ "$goals" == true ]] && REMOTE_GOALS_SUPPORTED=1 || REMOTE_GOALS_SUPPORTED=0
 }
 
 remote_client_start_session() {
-  remote_client_refresh_sessions || return $?
-  if [[ -n "$CURRENT_SESSION_ID" && $REMOTE_SESSION_EMPTY -eq 1 ]]; then
-    remote_client_load_session "$CURRENT_SESSION_ID"
+  if [[ -n "${RESUME_SESSION_ID:-}" ]]; then
+    remote_client_select_session "$RESUME_SESSION_ID"
   else
     remote_client_new_session
   fi
