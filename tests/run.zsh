@@ -3382,6 +3382,14 @@ if test_integration markdown_native; then
   zsh -df "${TEST_DIR}/markdown_native.zsh"
   assert_success "optional native Markdown loading and terminal rendering pass" $?
 fi
+if test_integration mouse_selection; then
+  if [[ -r "$PROJECT_DIR/.build/native/current" ]] && (( $+commands[python3] )); then
+    python3 "$TEST_DIR/selection.py"
+    assert_success "chat mouse selection, copy and lifecycle pass through real PTY input" $?
+  else
+    print -r -- 'SKIP: mouse selection PTYs require Python and a matching native runtime'
+  fi
+fi
 test_section resize
 source "${TEST_DIR}/resize.zsh"
 test_section ui_preferences

@@ -156,15 +156,46 @@ Alt+1 reveals a manually hidden sidebar when the terminal is wide enough.
 Remote sessions use the same sidebar controls but remain stored on the named
 server. See [Remote-agent server](remote.md).
 
-## Copy the transcript
+## Select and copy chat text
 
-Transcript updates can make mouse selection unreliable. Ctrl+Y or
-`/copy` temporarily leaves the TUI and prints the visible transcript as stable
-plain text. Copy it with the terminal's normal controls, then press Enter to
-return.
+With the optional native runtime (`make native`), left-click and drag over text
+in the chat. The highlight stays inside the chat content area even when you drag
+into the sidebar, prompt, or beyond its borders. No Shift modifier is needed.
+A gesture that starts outside chat text cannot select the chat.
 
-Expanded message bodies, tool results, and reasoning are included. Collapsed
-details remain hidden, matching the TUI.
+Press **Ctrl+Y** to send the selected text to the terminal clipboard using OSC 52.
+Kitty supports this operation. No external clipboard program is required, and
+selecting alone never writes the clipboard. **Escape** clears the selection;
+press Escape again if you also want to stop a running task.
+
+While text is selected, the chat view stays still. Generation and tools continue
+in the background. Clearing the selection shows the accumulated output again.
+Scrolling, resizing, changing sessions, folding entries, and opening a dialog
+clear the selection. The mouse wheel scrolls when a drag is not active.
+
+Copying selects rendered text: chat borders, role labels, code-language labels,
+and diff line-number gutters are excluded. Ordinary soft wraps are joined;
+code indentation and actual line breaks remain. Tabs copy as displayed spaces.
+Tables retain their displayed layout. For prose blocks too long or complex to
+map safely to the renderer's logical rows, visible line breaks are preserved.
+Selection covers the visible viewport; edge autoscrolling, offscreen selection,
+and double-click word selection are not implemented.
+
+`ZCODER_MOUSE_SELECTION=false` disables application selection. Stock curses and
+incompatible native builds retain terminal selection and `/copy`. Kitty's
+Shift-drag remains terminal-wide selection and can include adjacent panes.
+
+If your terminal or multiplexer does not accept OSC 52 writes, set
+`ZCODER_CLIPBOARD=view`. Ctrl+Y then opens a stable plain-text view containing
+only the selection, for copying with the terminal's own controls. Clipboard
+writes cannot be acknowledged by this protocol; the status reports that the
+selection was sent. Selections over 256 KiB also use the copy view.
+
+Without a selection, **Ctrl+Y** or **`/copy`** temporarily leaves the TUI and
+prints the visible transcript as stable plain text. Copy it with the terminal's
+normal controls, then press Enter to return. Expanded message bodies, tool
+results, and reasoning are included; collapsed details remain hidden. This
+whole-transcript export retains original Markdown.
 
 ## Inspect and fold transcript entries
 
@@ -399,7 +430,7 @@ Window resizing and changing the prompt's height rebuild the layout as needed.
 | Space | Fold the selected entry when transcript has focus |
 | Home / End | Select the first/last entry when transcript has focus |
 | Ctrl+N | Start a new saved session |
-| Ctrl+Y | Open the plain-text transcript view |
+| Ctrl+Y | Copy selected chat text, or open the plain-text transcript view |
 | Page Up / Page Down | Scroll the transcript |
 | Ctrl+U | Clear the input |
 | Ctrl+W | Delete the previous word |

@@ -71,7 +71,7 @@ _ui_markdown_inline() {
 
 _ui_add_markdown_inline() {
   emulate -L zsh
-  local text="$1" prefix="$3" attr="$4" line='' visible=''
+  local text="$1" prefix="$3" attr="$4" line='' visible='' gap=$'\n'
   local -a md_texts=() md_attrs=() lines=() lengths=()
   local -i width=$2 row=0 offset=0 span=1 span_start=0 span_end=0 first=0 last=0 row_end=0
   _ui_markdown_inline "$text" "$attr"
@@ -81,6 +81,7 @@ _ui_add_markdown_inline() {
   for line in "${lines[@]}"; do
     (( row++ )); row_end=$(( offset + ${#line} ))
     _ui_add_line "${prefix}${line}" "$attr"
+    _ui_copy_row "$prefix" "$line" "$gap"
     _ui_add_segment "$prefix" "$attr"
     # Wrapper lengths count consumed source characters, including skipped
     # spaces. Intersect each visible row with spans before advancing by that
@@ -94,6 +95,7 @@ _ui_add_markdown_inline() {
       (( span_end > row_end )) && break
       span_start=$span_end; (( span++ ))
     done
+    gap=${visible[offset+${#line}+1,offset+lengths[row]]}
     (( offset += lengths[row] ))
   done
   return 0
@@ -104,7 +106,7 @@ _ui_add_markdown_fallback() {
   setopt extendedglob
   local content="$1" attr="${3:-white/black}" line='' trimmed='' fence='' marker='' language=plain info=''
   local -a lines=("${(@f)content}")
-  local -i width=$2 run=0
+  local -i width=$2 run=0 label_row
   for line in "${lines[@]}"; do
     trimmed="${line## #}"
     # At most three leading spaces; indented code remains literal.
@@ -125,7 +127,9 @@ _ui_add_markdown_fallback() {
           python|javascript|typescript|rust|ruby|markup) language="${info:l}" ;;
           diff|patch) language=diff ;;
         esac
+        label_row=$(( ${#UI_LINES}+1 ))
         _ui_add_hard_wrapped "${info:-code}" "$width" '  ' 'dim cyan/black'
+        for (( ; label_row<=${#UI_LINES}; label_row++ )); do UI_COPY_COLUMNS[label_row]=-1; done
         continue
       fi
     fi
@@ -138,6 +142,7 @@ _ui_add_markdown_fallback() {
       fi
     elif [[ -z "$line" ]]; then
       _ui_add_line '' default/default
+      _ui_copy_row '' ''
     elif [[ "$line" == '    '* ]]; then
       _ui_add_hard_wrapped "$line" "$width" '  ' 'white/black'
     elif (( ${#line} - ${#trimmed} <= 3 )) && [[ "$trimmed" == \#(#c1,6)[[:space:]]* ]]; then

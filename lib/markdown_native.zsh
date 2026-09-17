@@ -68,6 +68,7 @@ _ui_markdown_native_layout() {
   emulate -L zsh
   setopt extendedglob
   local -a UI_LINES=() UI_ATTRS=() UI_LINE_NATIVE=()
+  local -a UI_COPY_TEXTS=() UI_COPY_COLUMNS=() UI_COPY_GAPS=()
   local -a UI_LINE_SEGMENT_STARTS=() UI_LINE_SEGMENT_COUNTS=()
   local -a UI_SEGMENT_TEXTS=() UI_SEGMENT_ATTRS=()
   local -A document measured
@@ -114,6 +115,12 @@ _ui_markdown_native_layout() {
     zcoder_curses textinfo measured "$UI_LINES[row]" "$width" "$UI_MARKDOWN_POLICY" 2>/dev/null || return 1
     [[ $measured[text] == "$UI_LINES[row]" ]] || return 1
   done
+  if (( UI_SELECTION_ENABLED )); then
+    _ui_markdown_copy_layout "$1" || return 1
+  fi
+  native_copy_texts=("${UI_COPY_TEXTS[@]}")
+  native_copy_columns=("${UI_COPY_COLUMNS[@]}")
+  native_copy_gaps=("${UI_COPY_GAPS[@]}")
   native_lines=("${UI_LINES[@]}"); native_attrs=("${UI_ATTRS[@]}")
   native_starts=("${UI_LINE_SEGMENT_STARTS[@]}"); native_counts=("${UI_LINE_SEGMENT_COUNTS[@]}")
   native_texts=("${UI_SEGMENT_TEXTS[@]}"); native_styles=("${UI_SEGMENT_ATTRS[@]}")
@@ -127,11 +134,15 @@ _ui_add_markdown() {
     return
   fi
   local -a native_lines native_attrs native_starts native_counts native_texts native_styles
+  local -a native_copy_texts native_copy_columns native_copy_gaps
   local -i row span start count
   if _ui_markdown_native_layout "$@"; then
     for (( row=1; row<=${#native_lines}; row++ )); do
       _ui_add_line "$native_lines[row]" "$native_attrs[row]"
       UI_LINE_NATIVE[${#UI_LINES}]=1
+      UI_COPY_TEXTS[-1]=$native_copy_texts[row]
+      UI_COPY_COLUMNS[-1]=$native_copy_columns[row]
+      UI_COPY_GAPS[-1]=$native_copy_gaps[row]
       start=$native_starts[row]; count=$native_counts[row]
       for (( span=start; span<start+count; span++ )); do
         _ui_add_segment "$native_texts[span]" "$native_styles[span]"
@@ -162,4 +173,83 @@ ui_markdown_draw_row() {
   _ui_markdown_ascii "$plain"
   # Never retry rejected Unicode through the legacy scalar clipper.
   ui_draw_row "$window" "$row" "$col" "$width" white/black "$REPLY"
+}
+
+# Map narrow content to the renderer's wide logical rows. Only whitespace may
+# separate matching slices; generated continuation indentation is excluded.
+# Tables retain their displayed layout. If a block cannot be mapped exactly,
+# retain its visible line breaks rather than guess or omit any displayed text.
+_ui_markdown_copy_layout() {
+  emulate -L zsh
+  setopt extendedglob
+  local -A wide logical cursor previous
+  local -i r b drop pos j prefix_cells column padding
+  local text candidate rest before kind line segment expanded
+  local -A measured
+  zmdown --spans wide --width 4096 --width-policy wcwidth-sum --cluster-styles first-base --text "$1" 2>/dev/null || return 1
+  for (( r=1; r<=wide[line_count]; r++ )); do
+    b=$wide[line,$r,block]
+    [[ $wide[line,$r,role] == content ]] || continue
+    (( ${+logical[$b]} )) && logical[$b]+=$'\n'
+    text=$wide[line,$r,text]
+    if [[ ${wide[block,$b,kind]-} == code ]]; then
+      text=''
+      for (( j=1; j<=wide[line,$r,span_count]; j++ )); do
+        (( wide[line,$r,span,$j,style] & wide[style,code] )) && text+=$wide[line,$r,span,$j,text]
+      done
+    fi
+    logical[$b]+=$text
+  done
+  # Code has an authoritative pre-wrap source. Use it even beyond the wide
+  # layout's 4096-cell limit; expand tabs to the renderer's four-cell stops.
+  for b in ${(k)logical}; do
+    [[ ${document[block,$b,kind]-} == code ]] || continue
+    text=$document[block,$b,text]
+    expanded=''
+    for line in "${(@ps:\n:)text}"; do
+      column=0
+      while [[ $line == *$'\t'* ]]; do
+        segment=${line%%$'\t'*}; line=${line#*$'\t'}
+        zcoder_curses textinfo measured "$segment" 2147483647 "$UI_MARKDOWN_POLICY" 2>/dev/null || return 1
+        (( column+=measured[width], padding=4-column%4, column+=padding ))
+        expanded+="$segment${(l:padding:: :)${:-}}"
+      done
+      expanded+="$line"$'\n'
+    done
+    logical[$b]=${expanded%$'\n'}
+  done
+  for (( r=1; r<=document[line_count]; r++ )); do
+    text=$document[line,$r,text]; b=$document[line,$r,block]
+    kind=${document[block,$b,kind]-}
+    UI_COPY_TEXTS[r]=''; UI_COPY_COLUMNS[r]=-1; UI_COPY_GAPS[r]=$'\n'
+    [[ $document[line,$r,role] == code-label || $kind == rule ]] && continue
+    prefix_cells=2
+    if [[ $kind == code ]]; then
+      text=''
+      for (( j=1; j<=document[line,$r,span_count]; j++ )); do
+        if (( document[line,$r,span,$j,style] & document[style,code] )); then text+=$document[line,$r,span,$j,text]
+        else (( prefix_cells+=document[line,$r,span,$j,cells] )); fi
+      done
+    fi
+    UI_COPY_TEXTS[r]=$text; UI_COPY_COLUMNS[r]=$prefix_cells
+    [[ -n $text && $kind != table && -n ${logical[$b]-} ]] || continue
+    pos=${cursor[$b]:-1}; rest=${logical[$b][$pos,-1]}
+    candidate=$text; drop=0
+    while true; do
+      if [[ $rest == *"$candidate"* ]]; then
+        before=${rest%%"$candidate"*}
+        if [[ $before == [[:space:]]# ]]; then
+          [[ ${previous[$b]-0} == 1 ]] && UI_COPY_GAPS[r]=$before
+          UI_COPY_TEXTS[r]=$candidate
+          UI_COPY_COLUMNS[r]=$((prefix_cells+drop))
+          cursor[$b]=$((pos+${#before}+${#candidate}))
+          previous[$b]=1
+          break
+        fi
+      fi
+      # Only remove generated left padding, never a nonblank source character.
+      [[ $candidate == ' '* && -n ${candidate# } ]] || { previous[$b]=0; break; }
+      candidate=${candidate# }; (( drop++ ))
+    done
+  done
 }

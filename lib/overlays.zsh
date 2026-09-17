@@ -54,6 +54,7 @@ ui_modal_run() {
   local -i TERMINAL_DISCARD_PASTE=1
   (( UI_ACTIVE && ! UI_MODAL_ACTIVE )) || { REPLY=""; return 1; }
   (( $+functions[$modal_draw] && $+functions[$modal_input] )) || { REPLY=""; return 1; }
+  ui_selection_cancel
   UI_MODAL_ACTIVE=1
   {
     while (( ! modal_done )); do

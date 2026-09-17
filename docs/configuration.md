@@ -20,6 +20,8 @@ Run `./zcoder.zsh --help` for the complete CLI reference.
 | `ZCODER_COLOR` | `auto` | Resolve the RGB palette to available colors; nonempty `NO_COLOR` selects monochrome in auto mode. Explicit `basic` keeps ANSI status colors; `mono` keeps only text emphasis |
 | `ZCODER_BORDERS` | `auto` | Use rounded borders when supported; `plain` keeps curses' default borders |
 | `ZCODER_SPANS` | `true` | Batch transcript rows when supported; `false` uses individual drawing calls |
+| `ZCODER_MOUSE_SELECTION` | `auto` | Enable chat-only dragging with compatible native zdraw; `false` disables it |
+| `ZCODER_CLIPBOARD` | `osc52` | Send explicitly copied selections to the terminal clipboard; `view` opens the selection as plain text instead |
 | `ZCODER_SYNC_OUTPUT` | `auto` | Query synchronized-output support; `false` disables it, `true` forces it |
 | `ZCODER_STREAM` | `true` | Stream eligible local interactive responses; `false` retains buffered responses |
 | `ZCODER_WARMUP` | `true` | Warm the selected model and stable prompt context before interactive work |

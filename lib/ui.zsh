@@ -5,6 +5,7 @@ source "${${(%):-%x}:A:h}/diff.zsh"
 source "${${(%):-%x}:A:h}/ui_preferences.zsh"
 source "${${(%):-%x}:A:h}/markdown.zsh"
 source "${${(%):-%x}:A:h}/markdown_native.zsh"
+source "${${(%):-%x}:A:h}/selection.zsh"
 
 typeset -gi UI_ACTIVE=0 UI_ACTIVITY_DEPTH=0
 # 0: ordinary lifecycle; 1: retained zdraw session; 2: ended fallback session.
@@ -60,7 +61,7 @@ _ui_window_key() {
       "${(j: :)${(@q)SESSION_IDS}}" "${(j: :)${(@q)SESSION_TITLES}}" "${(j: :)${(@q)SKILL_DISCOVERABLE_NAMES}}" "${(j: :)${(@q)SKILL_ACTIVE_NAMES}}") ;;
     chat) fields+=("$UI_FOCUS" "$UI_TRANSCRIPT_GENERATION" "${#UI_ROLES}" "$UI_RENDER_CACHE_KEY" "$ZCODER_MODEL" "$UI_SELECTED_EVENT" "$UI_SCROLL" "$UI_AUTO_SCROLL") ;;
     input) fields+=("$UI_FOCUS" "$INPUT_BUF" "$INPUT_POS" "$INPUT_VIEW_TOP" "$(( UI_ACTIVITY_DEPTH > 0 ))" "$UI_SLASH_ROWS" "$UI_SLASH_SELECTED" "${UI_SLASH_CACHE_KEY:-}") ;;
-    footer) fields+=("$UI_FOCUS" "$(( UI_ACTIVITY_DEPTH > 0 ))") ;;
+    footer) fields+=("$UI_FOCUS" "$(( UI_ACTIVITY_DEPTH > 0 ))" "${zdraw_text_selection[selected]:-0}") ;;
   esac
   # Quoting each field preserves boundaries even in multiline drafts/titles.
   REPLY="${(j: :)${(@q)fields}}"
@@ -74,6 +75,11 @@ _ui_draw_window() {
   [[ "$name" == sidebar ]] && (( SIDE_W == 0 )) && return 0
   # Background status changes must not paint over the active modal.
   (( ${UI_MODAL_ACTIVE:-0} )) && { UI_DIRTY_WINDOWS[$name]=1; return 0; }
+  if [[ $name == chat ]] && (( ${zdraw_text_selection[selected]:-0} )); then
+    _ui_selection_view_key
+    [[ $REPLY == "$UI_SELECTION_VIEW" ]] && return 0
+    ui_selection_cancel
+  fi
   [[ "$name" == chat ]] && (( UI_RENDER_DIRTY_FROM > 0 || UI_REVEAL_SELECTED )) && dirty=1
   _ui_window_key "$name"
   if (( dirty )) || [[ "${UI_WINDOW_KEYS[$name]:-}" != "$REPLY" ]]; then
@@ -217,6 +223,11 @@ ui_git_update() {
 }
 
 ui_destroy_windows() {
+  ui_selection_cancel
+  if (( ${UI_SELECTION_SURFACE:-0} )); then
+    zcoder_curses delwin selection_win 2>/dev/null || true
+    UI_SELECTION_SURFACE=0
+  fi
   # delwin accepts exactly one window name. Passing the whole set leaves
   # names registered, so the next addwin fails during a resize.
   zcoder_curses delwin top_win 2>/dev/null || true
@@ -329,6 +340,7 @@ ui_init() {
   ui_markdown_init
   UI_ACTIVE=1
   terminal_start
+  ui_selection_start
   input_detect_boundaries
   ui_setup_windows
   ui_refresh_all
@@ -350,6 +362,7 @@ ui_suspend() {
   emulate -L zsh
   local -i suspend_result
   (( UI_ACTIVE && ! UI_SUSPENDED && ! ${UI_MODAL_ACTIVE:-0} )) || return 1
+  ui_selection_cancel
   if terminal_suspend; then
     UI_SUSPENDED=1
     UI_ACTIVE=0
@@ -679,8 +692,8 @@ ui_copy_view() {
   trap 'ui_end; exit 129' HUP
   (( UI_ACTIVE )) || return 1
   (( $+functions[state_save_session] )) && state_save_session
-  ui_plain_transcript
-  transcript="$REPLY"
+  if (( $# )); then transcript=$1
+  else ui_plain_transcript; transcript="$REPLY"; fi
   zcoder_terminal_safe "$transcript"; transcript="$REPLY"
   if ! ui_suspend; then
     ui_status_notice warning 'Could not release the terminal for copy view.'
@@ -728,6 +741,7 @@ _ui_copy_transcript() {
 
 _ui_add_line() {
   UI_LINE_NATIVE[${#UI_LINES}+1]=0
+  UI_COPY_TEXTS+=(""); UI_COPY_COLUMNS+=(-1); UI_COPY_GAPS+=($'\n')
   UI_LINES+=("$1")
   UI_ATTRS+=("${2:-white/black}")
   UI_LINE_SEGMENT_STARTS+=(0)
@@ -915,21 +929,33 @@ _ui_add_syntax_line() {
 
 # Both preview renderers use the same cell boundaries as the editor.
 _ui_add_hard_wrapped() {
-  local content="$1" prefix="${3:-  }" attr="${4:-white/black}" line=""
+  local content="$1" prefix="${3:-  }" attr="${4:-white/black}" line part gap
   local -i available=$(( $2 - ${(m)#prefix} ))
   (( available < 1 )) && available=1
-  zcoder_hard_wrap "$content" "$available"
-  local -a lines=("${ZCODER_WRAPPED[@]}")
-  for line in "${lines[@]}"; do _ui_add_line "${prefix}${line}" "$attr"; done
+  for line in "${(@ps:\n:)content}"; do
+    zcoder_hard_wrap "$line" "$available"
+    gap=$'\n'
+    for part in "${ZCODER_WRAPPED[@]}"; do
+      _ui_add_line "${prefix}${part}" "$attr"
+      _ui_copy_row "$prefix" "$part" "$gap"
+      gap=''
+    done
+  done
 }
 
 _ui_add_syntax_wrapped() {
-  local content="$1" prefix="${3:-  }" language="${4:-plain}" line=""
+  local content="$1" prefix="${3:-  }" language="${4:-plain}" line part gap
   local -i available=$(( $2 - ${(m)#prefix} ))
   (( available < 1 )) && available=1
-  zcoder_hard_wrap "$content" "$available"
-  local -a lines=("${ZCODER_WRAPPED[@]}")
-  for line in "${lines[@]}"; do _ui_add_syntax_line "$line" "$language" "$prefix"; done
+  for line in "${(@ps:\n:)content}"; do
+    zcoder_hard_wrap "$line" "$available"
+    gap=$'\n'
+    for part in "${ZCODER_WRAPPED[@]}"; do
+      _ui_add_syntax_line "$part" "$language" "$prefix"
+      _ui_copy_row "$prefix" "$part" "$gap"
+      gap=''
+    done
+  done
 }
 
 _ui_diff_attr() {
@@ -978,17 +1004,18 @@ _ui_add_tool_content() {
 }
 
 _ui_add_wrapped() {
-  local content="$1" width="$2" prefix="${3:-  }" attr="${4:-white/black}" line wrapped
-  local -a raw=("${(@f)content}")
-  [[ -z "$content" ]] && { _ui_add_line "$prefix" "$attr"; return 0; }
-  for line in "${raw[@]}"; do
-    if [[ -z "$line" ]]; then
-      _ui_add_line "" default/default
-      continue
-    fi
+  local content="$1" width="$2" prefix="${3:-  }" attr="${4:-white/black}" line wrapped gap
+  local -i offset used row
+  for line in "${(@ps:\n:)content}"; do
     zcoder_wrap "$line" $(( width - ${(m)#prefix} ))
+    gap=$'\n'; offset=0; row=0
     for wrapped in "${ZCODER_WRAPPED[@]}"; do
+      (( row++ ))
       _ui_add_line "${prefix}${wrapped}" "$attr"
+      _ui_copy_row "$prefix" "$wrapped" "$gap"
+      used=$ZCODER_WRAPPED_LENGTHS[row]
+      gap=${line[offset+${#wrapped}+1,offset+used]}
+      (( offset+=used ))
     done
   done
 }
@@ -1090,6 +1117,7 @@ _ui_render_one_message() {
 ui_render_messages() {
   local -i width=$1 count=${#UI_ROLES} i
   UI_LINES=(); UI_ATTRS=(); UI_LINE_NATIVE=()
+  UI_COPY_TEXTS=(); UI_COPY_COLUMNS=(); UI_COPY_GAPS=()
   UI_LINE_SEGMENT_STARTS=(); UI_LINE_SEGMENT_COUNTS=()
   UI_SEGMENT_TEXTS=(); UI_SEGMENT_ATTRS=()
   UI_MESSAGE_STARTS=(); UI_MESSAGE_SEGMENT_STARTS=()
@@ -1130,6 +1158,9 @@ _ui_paint_chat() {
       local -i keep_segments=$(( UI_MESSAGE_SEGMENT_STARTS[UI_RENDER_DIRTY_FROM] - 1 ))
       UI_LINES=("${(@)UI_LINES[1,keep_lines]}"); UI_ATTRS=("${(@)UI_ATTRS[1,keep_lines]}")
       UI_LINE_NATIVE=("${(@)UI_LINE_NATIVE[1,keep_lines]}")
+      UI_COPY_TEXTS=("${(@)UI_COPY_TEXTS[1,keep_lines]}")
+      UI_COPY_COLUMNS=("${(@)UI_COPY_COLUMNS[1,keep_lines]}")
+      UI_COPY_GAPS=("${(@)UI_COPY_GAPS[1,keep_lines]}")
       UI_LINE_SEGMENT_STARTS=("${(@)UI_LINE_SEGMENT_STARTS[1,keep_lines]}")
       UI_LINE_SEGMENT_COUNTS=("${(@)UI_LINE_SEGMENT_COUNTS[1,keep_lines]}")
       UI_SEGMENT_TEXTS=("${(@)UI_SEGMENT_TEXTS[1,keep_segments]}")
@@ -1163,6 +1194,7 @@ _ui_paint_chat() {
   UI_REVEAL_SELECTED=0
   (( UI_SCROLL > max_scroll )) && UI_SCROLL=$max_scroll
   (( UI_SCROLL < 0 )) && UI_SCROLL=0
+  ui_selection_cancel
   zcoder_curses clear chat_win
   [[ "$UI_FOCUS" == chat ]] && ui_attr chat_win -dim bold accent/surface || ui_attr chat_win -dim -bold border/surface
   ui_border chat_win
@@ -1176,7 +1208,7 @@ _ui_paint_chat() {
       diff_event="${diff_position%%:*}"; diff_first="${diff_position##*:}"
       while (( row+diff_height <= inner_h && idx+diff_height <= total )) &&
           [[ "${UI_LINE_NATIVE[idx+diff_height]}" == "diff:$diff_event:"* ]]; do (( diff_height++ )); done
-      if ui_draw_diff chat_win "$row" 1 "$diff_height" "$inner_w" "$diff_event" "$(( diff_first+1 ))"; then
+      if ui_draw_diff chat_win "$row" 1 "$diff_height" "$inner_w" "$diff_event" "$(( diff_first+1 ))" "$idx"; then
         (( row += diff_height-1 ))
         continue
       fi
@@ -1268,6 +1300,11 @@ _ui_paint_footer() {
   local text=" Enter Send  Tab Focus  ^Q Quit  /help More"
   [[ "$UI_FOCUS" == chat ]] && text=" ↑/↓ Select  Enter Fold  Tab Prompt  /help More"
   (( UI_ACTIVITY_DEPTH > 0 )) && text=" Esc Stop  Tab Focus  /help More"
+  if (( ${zdraw_text_selection[selected]:-0} )); then
+    text=' Ctrl+Y Copy selection  Esc Clear  Chat view paused'
+  elif (( UI_SELECTION_ENABLED )); then
+    text+='  Drag Select'
+  fi
   zcoder_clip "$text" "$SCREEN_W"; text="$REPLY"
   zcoder_curses clear foot_win; ui_attr foot_win reverse dim white/black
   zcoder_pad "$text" "$SCREEN_W"; zcoder_curses move foot_win 0 0; zcoder_curses string foot_win "$REPLY"
@@ -1426,6 +1463,7 @@ ui_wait_for_remote_request() { _ui_wait_for_activity http_async_ready remote_cli
 ui_poll_remote_turn() { ui_poll_activity "${1:-50}"; }
 
 ui_chat_select() {
+  ui_selection_cancel
   emulate -L zsh
   setopt extendedglob
   local -i delta=$1 count=${#UI_ROLES} group
@@ -1451,6 +1489,7 @@ ui_chat_select() {
 }
 
 ui_toggle_block() {
+  ui_selection_cancel
   emulate -L zsh
   setopt extendedglob
   local -i i=$UI_SELECTED_EVENT
@@ -1485,6 +1524,7 @@ ui_chat_input() {
 }
 
 ui_toggle_reasoning() {
+  ui_selection_cancel
   local -i i first=${#UI_ROLES} last=1
   if [[ "$UI_FOCUS" == chat ]]; then
     first=$UI_SELECTED_EVENT; last=$UI_SELECTED_EVENT

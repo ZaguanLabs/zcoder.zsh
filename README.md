@@ -19,6 +19,7 @@ External tools are used where they are the actual capability: `rg` for search,
 - **Local by default.** Use any Ollama model with tool-calling support.
 - **Useful on real projects.** Search, edit, patch, test, and iterate from one conversation.
 - **Steer work as it runs.** Send corrections at the next tool boundary or queue a follow-up for later.
+- **Select just the chat.** With the native UI, drag to highlight text inside the chat pane and press Ctrl+Y to copy it.
 - **Run a command with `!`.** See its output in chat, then ask about it when you are ready. The agent waits for your next request.
 - **Bounded and reviewable.** File tools stay inside the workspace; shell commands ask first.
 - **Project-aware.** Hierarchical `AGENTS.md`, Agent Skills, and stdio MCP tools are built in.

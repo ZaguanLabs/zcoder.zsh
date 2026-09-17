@@ -324,7 +324,8 @@ ui_show_help() {
     focus bullet 'Tab: Move focus between the prompt, visible session sidebar, and transcript.'
     panels bullet 'Alt+1: Focus [1] Sessions. Alt+2: Focus [2] Prompt. Bare 1/2 also work outside the prompt.'
     saved_jobs bullet 'Up/Down in the sidebar: Resume another saved job.'
-    copy bullet 'Ctrl+Y or /copy: Open a stable plain-text view for terminal selection and copying.'
+    mouse_copy bullet 'Left-drag in chat: Select visible text with native zdraw. Ctrl+Y copies the selection; Escape clears it before stopping a running task.'
+    copy bullet 'Ctrl+Y without a selection, or /copy: Open a stable plain-text transcript view for terminal copying.'
     scroll bullet 'PgUp/PgDn: Scroll.'
 
     commands heading 'Commands and transcript'
@@ -438,6 +439,8 @@ _ui_terminal_draw() {
     "Synchronized output: ${TERMINAL_SYNC_STATE}" "Policy: ${TERMINAL_SYNC_POLICY}"
     "Frame presentation: ${frame_state}" "Reply decoder: ${query_state}"
     "Prompt editing: ${editing_state}"
+    "Chat selection: ${UI_SELECTION_REASON}"
+    "Selection clipboard: ${ZCODER_CLIPBOARD:-osc52}"
     "Markdown: ${UI_MARKDOWN_BACKEND} · Fallbacks: ${UI_MARKDOWN_FALLBACKS}"
     "Markdown status: ${UI_MARKDOWN_REASON}"
     "Bracketed paste: ${paste_state}")

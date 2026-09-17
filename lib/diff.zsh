@@ -69,6 +69,7 @@ ui_add_diff() {
     esac
     printf -v formatted '%6s %s %s' "$number" "$marker" "$text"
     _ui_add_line "$formatted" "$attr"
+    [[ $kind == hunk ]] || _ui_copy_row '         ' "$text"
     # Preview rows clip horizontally instead of wrapping, keeping file numbers
     # aligned with source lines. The native gutter adds its clipping marker.
     UI_LINE_NATIVE[-1]="diff:$index:$(( ++review_row ))"
@@ -77,6 +78,7 @@ ui_add_diff() {
 
 ui_draw_diff() {
   local win="$1" row="$2" column="$3" height="$4" width="$5" index="$6" first="$7"
+  local -i copy_start=${8:-0}
   local -A zdraw_ui_theme=() zdraw_ui_gutter=()
   local -a styles=()
   (( height >= 2 )) && ui_widgets_available || return 1
@@ -86,5 +88,22 @@ ui_draw_diff() {
     rgb|256) styles=(positive:bg='#20382c' negative:bg='#46282b' positive:fg='#a3be8c' negative:fg='#bf616a') ;;
     *) styles=(positive:bold negative:bold) ;;
   esac
-  zdraw-change-gutter "$win" "$row" "$column" "$height" "$width" "$first" numbers=single "${styles[@]}" -- "${UI_DIFF_ROWS[@]}"
+  zdraw-change-gutter "$win" "$row" "$column" "$height" "$width" "$first" numbers=single "${styles[@]}" -- "${UI_DIFF_ROWS[@]}" || return
+  # The native viewport draws its own header and may clamp its first row.
+  # Publish exactly that displayed body, excluding number/marker gutters.
+  (( copy_start > 0 )) || return 0
+  local -i copy_row source_row copy_index
+  local -A copy_info
+  UI_COPY_COLUMNS[copy_start]=-1
+  for (( copy_row=1; copy_row<height; copy_row++ )); do
+    copy_index=$((copy_start+copy_row))
+    source_row=$((zdraw_ui_gutter[first]+copy_row-1))
+    UI_COPY_COLUMNS[copy_index]=-1
+    [[ ${UI_DIFF_ROWS[source_row*4-3]} == (context|add|remove) ]] || continue
+    zcoder_curses textinfo copy_info "$UI_DIFF_ROWS[source_row*4]" "$zdraw_ui_gutter[text_columns]" || continue
+    UI_COPY_TEXTS[copy_index]=$copy_info[text]
+    UI_COPY_COLUMNS[copy_index]=$((width-zdraw_ui_gutter[text_columns]-1))
+    UI_COPY_GAPS[copy_index]=$'\n'
+  done
+  return 0
 }

@@ -98,6 +98,11 @@ _terminal_sync_start() {
 
 terminal_end() {
   emulate -L zsh
+  if (( ${UI_SELECTION_ENABLED:-0} )); then
+    ui_selection_cancel
+    zcoder_curses mouse -motion delay 166 2>/dev/null
+    UI_SELECTION_ENABLED=0
+  fi
   (( TERMINAL_NATIVE_SYNC )) && zcoder_curses sync off 2>/dev/null
   (( TERMINAL_NATIVE_QUERY )) && zcoder_curses query off 2>/dev/null
   if (( TERMINAL_NATIVE_PASTE )); then
@@ -375,6 +380,10 @@ terminal_read_event() {
     if (( TERMINAL_NOREFRESH_INPUT )); then
       local -A terminal_event=()
       if zcoder_curses event "$1" terminal_event "${TERMINAL_EVENT_FLAGS[@]}" "${poll_flags[@]}"; then
+        if (( ${UI_ACTIVE:-0} && $+functions[ui_selection_event] )) && ui_selection_event; then
+          printf -v "$2" '%s' ''; printf -v "$3" '%s' ''; printf -v "$4" '%s' ''
+          return 0
+        fi
         case ${terminal_event[type]} in
           character) terminal_byte=${terminal_event[text]} ;;
           key) terminal_key=${terminal_event[key]} ;;

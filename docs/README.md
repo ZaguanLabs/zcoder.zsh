@@ -35,6 +35,8 @@ zcoder.zsh. If you are new to the project, begin with
 
 ## Releases
 
+- [v0.18.0 — Select the conversation](releases/v0.18.0.md)
+
 - [v0.17.0 — Cleaner discovery, clearer edits](releases/v0.17.0.md)
 - [v0.16.0 — A smaller core, a calmer terminal](releases/v0.16.0.md)
 - [v0.15.0 — Native Markdown, one-command setup](releases/v0.15.0.md)
