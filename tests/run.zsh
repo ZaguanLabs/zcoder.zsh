@@ -331,8 +331,10 @@ assert_eq $'alpha\nbeta' "$INPUT_EVENT_TEXT" "multiline paste preserves and norm
 
 terminal_sample=$'first\nsecond\t\e]52;c;clipboard\a\rthird'
 zcoder_terminal_safe "$terminal_sample"
-assert_eq $'first\nsecond\\t^[]52;c;clipboard^G^Mthird' "$REPLY" "terminal-safe rendering preserves lines and exposes controls"
+assert_eq $'first\nsecond    ^[]52;c;clipboard^G^Mthird' "$REPLY" "terminal-safe rendering preserves lines, expands tabs, and exposes other controls"
 assert_not_contains "$REPLY" $'\e' "terminal-safe rendering removes literal escape bytes"
+zcoder_terminal_safe $'\tmodified:\tfile.txt\n\\t stays literal'
+assert_eq $'    modified:    file.txt\n\\t stays literal' "$REPLY" "terminal-safe rendering distinguishes Git output tabs from literal backslash text"
 
 zcoder_truncate_head_tail "BEGIN-${(l:120::x:)}-END" 60
 assert_contains "$REPLY" "BEGIN-" "bounded tool output preserves its head"

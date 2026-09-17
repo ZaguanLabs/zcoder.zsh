@@ -39,7 +39,7 @@ ui_diff_rows() {
     fi
     # Normalize controls before zdraw's strict text validation. Tabs become
     # visible spaces; filenames and source text are never interpreted as code.
-    zcoder_terminal_safe "$text"; text="${REPLY//$'\t'/    }"
+    zcoder_terminal_safe "$text"; text="$REPLY"
     (( ${#text} > 2048 )) && { text="${text[1,2045]}..."; limited=1; }
     (( total += ${#text} ))
     (( total <= 60000 && ${#UI_DIFF_ROWS} < 1000 && old <= 999999 && new <= 999999 )) || { limited=1; break; }

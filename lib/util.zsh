@@ -114,11 +114,12 @@ zcoder_runtime_cleanup() {
   zf_rm -rf -- "$directory" 2>/dev/null
 }
 
-# Preserve newlines while rendering every other control character visibly.
+# Preserve newlines and expand tabs while rendering other controls visibly.
 # This is for direct terminal output only; persisted transcripts remain exact.
 zcoder_terminal_safe() {
   emulate -L zsh
-  local -a lines=("${(@ps:\n:)1}")
+  local text="${1//$'\t'/    }"
+  local -a lines=("${(@ps:\n:)text}")
   REPLY="${(F)${(@V)lines}}"
 }
 

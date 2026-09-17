@@ -1265,10 +1265,9 @@ ui_input_changed() {
 _ui_paint_footer() {
   (( UI_ACTIVE )) || return 0
   local -i defer_refresh="${1:-0}"
-  local text=" ^P Commands  ^B Sidebar  Enter Send  S/M-Enter Newline  ^Q Quit  Tab Focus  ^Y Copy  Esc Stop  ^O Model  ^R Reason  PgUp/Dn Scroll"
-  [[ "$UI_FOCUS" == chat ]] && text=" ^P Commands  ^B Sidebar  ↑/↓ Select  Enter/Space Fold  ^R Reasoning  Home/End First/Last  PgUp/Dn Scroll  Tab Prompt  ^Y Copy"
-  (( UI_ACTIVITY_DEPTH > 0 )) && text=" Esc Stop  ^B Sidebar  Tab Prompt/Transcript  ↑/↓ Navigate  Enter Fold in Transcript  ^R Reasoning  PgUp/Dn Scroll"
-  text=" Alt+1 Sessions  Alt+2 Prompt $text"
+  local text=" Enter Send  Tab Focus  ^Q Quit  /help More"
+  [[ "$UI_FOCUS" == chat ]] && text=" ↑/↓ Select  Enter Fold  Tab Prompt  /help More"
+  (( UI_ACTIVITY_DEPTH > 0 )) && text=" Esc Stop  Tab Focus  /help More"
   zcoder_clip "$text" "$SCREEN_W"; text="$REPLY"
   zcoder_curses clear foot_win; ui_attr foot_win reverse dim white/black
   zcoder_pad "$text" "$SCREEN_W"; zcoder_curses move foot_win 0 0; zcoder_curses string foot_win "$REPLY"
