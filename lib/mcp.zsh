@@ -193,6 +193,7 @@ _mcp_json_get() {
     fi
     if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
       zjson_next || return 1
+      [[ "$ZJSON_TOKEN_TYPE" != '}' ]] || { _json_trailing_comma; return 1; }
     elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
       return 1
     fi
@@ -201,10 +202,8 @@ _mcp_json_get() {
 }
 
 _mcp_json_string() {
-  local source="$1"
-  zjson_begin "$source" || return 1
-  [[ "$ZJSON_TOKEN_TYPE" == string ]] || return 1
-  REPLY="$ZJSON_TOKEN_VALUE"
+  zjson_parse "$1" || return 1
+  [[ "$ZJSON_TYPE" == string ]]
 }
 
 _mcp_parse_string_array() {
@@ -219,6 +218,7 @@ _mcp_parse_string_array() {
     zjson_next || return 1
     if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
       zjson_next || return 1
+      [[ "$ZJSON_TOKEN_TYPE" != ']' ]] || { _json_trailing_comma; return 1; }
     elif [[ "$ZJSON_TOKEN_TYPE" != ']' ]]; then
       return 1
     fi
@@ -257,6 +257,7 @@ _mcp_config_parse_servers() {
         fi
         if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
           zjson_next || return 1
+          [[ "$ZJSON_TOKEN_TYPE" != '}' ]] || { _json_trailing_comma; return 1; }
         elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
           return 1
         fi
@@ -267,6 +268,7 @@ _mcp_config_parse_servers() {
     fi
     if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
       zjson_next || return 1
+      [[ "$ZJSON_TOKEN_TYPE" != '}' ]] || { _json_trailing_comma; return 1; }
     elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
       return 1
     fi

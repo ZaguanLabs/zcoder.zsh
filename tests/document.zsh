@@ -2,11 +2,14 @@
 emulate -R zsh
 setopt extendedglob
 zmodload zsh/zpty zsh/zselect zsh/datetime zsh/mapfile zsh/files || exit 1
-typeset -g doc_root=${0:A:h:h} doc_output='' doc_chunk='' doc_base
+typeset -g doc_root=${0:A:h:h} doc_output='' doc_chunk='' doc_base doc_capture_base doc_status
 typeset -g doc_actual="$doc_root/.build/document-visuals"
 typeset -g doc_expected="$doc_root/tests/fixtures/document"
 zf_mkdir -p "$doc_actual" || exit 1
-trap 'zpty -d document-ui 2>/dev/null' EXIT
+# Coordination writes must not turn repository storage latency into input
+# latency. Keep persistent visual captures separate from transient status.
+doc_status=$(mktemp -d "${TMPDIR:-/tmp}/zcoder-document.XXXXXXXX") || exit 1
+trap 'zpty -d document-ui 2>/dev/null; zf_rm -rf -- "$doc_status"' EXIT
 doc_fail() { print -ru2 -- "FAIL: $*" "${(V)doc_output[-1200,-1]}"; exit 1; }
 doc_wait() {
   local suffix=$1 expected=$2
@@ -22,7 +25,7 @@ doc_run() {
   trap - EXIT INT TERM
   unset ESCDELAY
   export TERM=xterm-256color ZCODER_COLOR=$doc_profile NO_COLOR=''
-  exec zsh -df "$doc_root/tests/fixtures/document_ui.zsh" "$doc_root" "$doc_base" "$doc_backend"
+  exec zsh -df "$doc_root/tests/fixtures/document_ui.zsh" "$doc_root" "$doc_base" "$doc_backend" "$doc_capture_base"
 }
 (
   source "$doc_root/lib/util.zsh"
@@ -39,8 +42,9 @@ typeset -a stale old_anchor new_anchor
 typeset -i snapshots=0 native=0 move
 typeset -F close_started close_elapsed
 for doc_backend doc_profile in stock auto auto auto auto mono; do
-  doc_base="$doc_actual/$doc_backend-$doc_profile"
-  stale=("$doc_base".*(N) "$doc_base"-*.json(N))
+  doc_base="$doc_status/$doc_backend-$doc_profile"
+  doc_capture_base="$doc_actual/$doc_backend-$doc_profile"
+  stale=("$doc_capture_base"-*.json(N))
   (( ${#stale} )) && zf_rm -f -- "${stale[@]}"
   doc_output=''
   zpty -b document-ui doc_run || doc_fail startup
@@ -81,9 +85,10 @@ for doc_backend doc_profile in stock auto auto auto auto mono; do
   doc_wait phase tools
   close_started=$EPOCHREALTIME
   zpty -w -n document-ui $'\e'
-  doc_wait phase fallback
+  doc_wait help_closed 1
   close_elapsed=$(( EPOCHREALTIME-close_started ))
   (( close_elapsed < 0.8 )) || doc_fail "Escape took ${close_elapsed}s to close help"
+  doc_wait phase fallback
   [[ ${mapfile[$doc_base.native]} == 0 ]] || doc_fail 'partial draw did not fall back'
   zpty -w -n document-ui q
   doc_wait phase large
@@ -93,7 +98,7 @@ for doc_backend doc_profile in stock auto auto auto auto mono; do
   zpty -d document-ui
   for stem in reader-28 help-28 tools-92 fallback-92; do
     [[ ${mapfile[$doc_base.backend]} == zdraw ]] || continue
-    actual="$doc_base-$stem.json"
+    actual="$doc_capture_base-$stem.json"
     [[ -s $actual ]] || doc_fail "missing capture: $actual"
     baseline="$doc_expected/${actual:t}"
     if [[ ${ZCODER_UPDATE_VISUALS:-0} == 1 ]]; then
@@ -106,7 +111,8 @@ for doc_backend doc_profile in stock auto auto auto auto mono; do
     fi
     (( snapshots++ ))
   done
-  print -r -- "PASS: document $doc_backend/$doc_profile navigation, reflow, help and fallback"
+  printf 'PASS: document %s/%s navigation, reflow, help and fallback (Escape %.3fs)\n' \
+    "$doc_backend" "$doc_profile" "$close_elapsed"
 done
 if (( snapshots )); then print -r -- "PASS: $snapshots document visual baselines"
 else

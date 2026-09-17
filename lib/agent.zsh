@@ -936,6 +936,7 @@ _agent_content_is_lfm_json_plan() {
         zjson_discard_value || return 1
         if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
           zjson_next || return 1
+          [[ "$ZJSON_TOKEN_TYPE" != ']' ]] || { _json_trailing_comma; return 1; }
         elif [[ "$ZJSON_TOKEN_TYPE" != ']' ]]; then
           return 1
         fi
@@ -957,6 +958,7 @@ _agent_content_is_lfm_json_plan() {
     fi
     if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
       zjson_next || return 1
+      [[ "$ZJSON_TOKEN_TYPE" != '}' ]] || { _json_trailing_comma; return 1; }
     elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
       return 1
     fi
@@ -1045,6 +1047,7 @@ _agent_lfm_json_is_call_object() {
     zjson_discard_value || return 1
     if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
       zjson_next || return 1
+      [[ "$ZJSON_TOKEN_TYPE" != '}' ]] || { _json_trailing_comma; return 1; }
     elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
       return 1
     fi

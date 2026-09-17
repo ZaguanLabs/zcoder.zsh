@@ -3455,6 +3455,8 @@ test_section hardening_state
 source "${TEST_DIR}/hardening_state.zsh"
 test_section hardening_json_tools
 source "${TEST_DIR}/hardening_json_tools.zsh"
+test_section json_upgrade
+source "${TEST_DIR}/json_upgrade.zsh"
 test_section hardening_protocol
 source "${TEST_DIR}/hardening_protocol.zsh"
 test_section concurrency

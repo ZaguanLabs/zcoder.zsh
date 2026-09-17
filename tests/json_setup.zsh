@@ -44,10 +44,10 @@ make -s -C "$fake" clean
 [[ ! -e $fake/lib/json.zsh.zwc && ! -e $fake/vendor/zjson/lib/zjson.zsh.zwc && ! -e $fake/vendor/zjson/zjson.zsh.zwc ]] || fail 'clean left compiled libraries'
 
 # An incomplete edited checkout must fail without resetting those edits.
-zf_rm "$fake/vendor/zjson/lib/pointer.zsh"
+zf_rm "$fake/vendor/zjson/lib/encode.zsh"
 if output=$(GIT_ALLOW_PROTOCOL=none "$shell_bin" -df "$fake/scripts/setup-json.zsh" 2>&1); then
   fail 'incomplete edited dependency accepted'
 fi
-[[ $output == *'vendor/zjson has local edits'* && ! -e $fake/vendor/zjson/lib/pointer.zsh ]] || fail "edited dependency recovery: $output"
+[[ $output == *'vendor/zjson has local edits'* && ! -e $fake/vendor/zjson/lib/encode.zsh ]] || fail "edited dependency recovery: $output"
 [[ ${mapfile[$fake/vendor/zjson/lib/zjson.zsh]} == *'# preserved local edit'* ]] || fail 'failure reset local source edits'
 print -r -- 'PASS: missing-dependency startup, pinned bootstrap, compiled startup, offline repeat, clean and edited-dependency protection'

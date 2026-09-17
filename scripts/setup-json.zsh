@@ -4,7 +4,7 @@ emulate -R zsh
 setopt errexit nounset pipefail
 typeset project_root=${0:A:h:h} dependency=${0:A:h:h}/vendor/zjson
 typeset source_file exclude excludes=''
-typeset -a sources=(zjson.zsh lib/utf8.zsh lib/zjson.zsh lib/pointer.zsh lib/context.zsh)
+typeset -a sources=(zjson.zsh lib/utf8.zsh lib/zjson.zsh lib/pointer.zsh lib/context.zsh lib/encode.zsh)
 typeset -i complete=1
 for source_file in "${sources[@]}"; do
   [[ -r $dependency/$source_file ]] || complete=0

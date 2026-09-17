@@ -3,6 +3,7 @@ emulate -R zsh
 setopt extendedglob
 zmodload zsh/terminfo zsh/datetime zsh/mapfile || exit 1
 typeset -g fixture_root=$1 fixture_base=$2 fixture_backend=$3
+typeset -g fixture_capture_base=${4:-$2}
 source "$fixture_root/lib/curses.zsh"
 ZCODER_CURSES=$fixture_backend zcoder_curses_load "$fixture_root" || exit 1
 for fixture_lib in util json transcript input terminal ui overlays commands; do
@@ -33,7 +34,7 @@ _ui_document_draw() {
   fi
   if (( fixture_capture )) && [[ $fixture_phase != large ]]; then
     zdraw-fixture overlay_win || exit 10
-    print -r -- "$zdraw_ui_fixture" > "$fixture_base-$fixture_phase-$SCREEN_W.json"
+    print -r -- "$zdraw_ui_fixture" > "$fixture_capture_base-$fixture_phase-$SCREEN_W.json"
   fi
   mapfile[$fixture_base.native]=$document_native
   mapfile[$fixture_base.block]=$block
@@ -55,6 +56,7 @@ ui_document_view Reader intro heading Introduction first paragraph "$prose" \
   ending heading 'More information' last paragraph 'End of document.' || exit 2
 fixture_phase=help
 ui_show_help 'Codex is available.' || exit 3
+mapfile[$fixture_base.help_closed]=1
 (( ${#UI_ROLES} == 1 )) || exit 4
 fixture_phase=fallback
 functions[_fixture_native_document]=${functions[zdraw-document]}

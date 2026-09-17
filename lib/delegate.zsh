@@ -270,6 +270,7 @@ _delegate_json_collect_value() {
         _delegate_json_collect_value "$child_path" || return 1
         if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
           zjson_next || return 1
+          [[ "$ZJSON_TOKEN_TYPE" != '}' ]] || { _json_trailing_comma; return 1; }
         elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
           return 1
         fi
@@ -282,6 +283,7 @@ _delegate_json_collect_value() {
         _delegate_json_collect_value "${path}[]" || return 1
         if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
           zjson_next || return 1
+          [[ "$ZJSON_TOKEN_TYPE" != ']' ]] || { _json_trailing_comma; return 1; }
         elif [[ "$ZJSON_TOKEN_TYPE" != ']' ]]; then
           return 1
         fi

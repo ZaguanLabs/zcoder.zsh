@@ -21,6 +21,21 @@ typeset -ga JSON_MODEL_NAMES=()
 typeset -gi JSON_RUNNING_MODEL_CONTEXT=0
 typeset -gA JSON_OBJECT=()
 
+# zjson's tokenizer is grammar-neutral. Application container parsers must
+# reject closing delimiters immediately after a comma themselves.
+_json_trailing_comma() {
+  emulate -L zsh
+  setopt nomultibyte
+  local prefix="${ZJSON_SOURCE[1,ZJSON_TOKEN_START-1]}"
+  local -a lines=( "${(@ps:\n:)prefix}" )
+  ZJSON_ERROR='trailing comma in JSON container'
+  ZJSON_ERROR_CODE=trailing_comma
+  ZJSON_ERROR_OFFSET=$ZJSON_TOKEN_START
+  ZJSON_ERROR_LINE=${#lines}
+  ZJSON_ERROR_COLUMN=$(( ${#lines[-1]} + 1 ))
+  return 1
+}
+
 _json_parse_tool_function() {
   local key="" name="" args="{}"
   local -i has_args=0
@@ -39,6 +54,7 @@ _json_parse_tool_function() {
     esac
     if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
       zjson_next || return 1
+      [[ "$ZJSON_TOKEN_TYPE" != '}' ]] || { _json_trailing_comma; return 1; }
     elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
       return 1
     fi
@@ -69,6 +85,7 @@ _json_parse_tool_call() {
     fi
     if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
       zjson_next || return 1
+      [[ "$ZJSON_TOKEN_TYPE" != '}' ]] || { _json_trailing_comma; return 1; }
     elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
       return 1
     fi
@@ -88,6 +105,7 @@ _json_parse_tool_calls() {
     _json_parse_tool_call || return 1
     if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
       zjson_next || return 1
+      [[ "$ZJSON_TOKEN_TYPE" != ']' ]] || { _json_trailing_comma; return 1; }
     elif [[ "$ZJSON_TOKEN_TYPE" != ']' ]]; then
       return 1
     fi
@@ -120,6 +138,7 @@ _json_parse_response_message() {
     esac
     if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
       zjson_next || return 1
+      [[ "$ZJSON_TOKEN_TYPE" != '}' ]] || { _json_trailing_comma; return 1; }
     elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
       return 1
     fi
@@ -172,6 +191,7 @@ _json_parse_ollama_response() {
     esac
     if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
       zjson_next || return 1
+      [[ "$ZJSON_TOKEN_TYPE" != '}' ]] || { _json_trailing_comma; return 1; }
     elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
       return 1
     fi
@@ -198,6 +218,7 @@ _json_parse_model_object() {
     fi
     if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
       zjson_next || return 1
+      [[ "$ZJSON_TOKEN_TYPE" != '}' ]] || { _json_trailing_comma; return 1; }
     elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
       ZJSON_ERROR="expected comma or closing model brace"
       return 1
@@ -226,6 +247,7 @@ json_parse_models() {
         _json_parse_model_object || return 1
         if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
           zjson_next || return 1
+          [[ "$ZJSON_TOKEN_TYPE" != ']' ]] || { _json_trailing_comma; return 1; }
         elif [[ "$ZJSON_TOKEN_TYPE" != ']' ]]; then
           ZJSON_ERROR="expected comma or closing models bracket"
           return 1
@@ -237,6 +259,7 @@ json_parse_models() {
     fi
     if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
       zjson_next || return 1
+      [[ "$ZJSON_TOKEN_TYPE" != '}' ]] || { _json_trailing_comma; return 1; }
     elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
       return 1
     fi
@@ -274,6 +297,7 @@ _json_parse_running_model() {
     esac
     if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
       zjson_next || return 1
+      [[ "$ZJSON_TOKEN_TYPE" != '}' ]] || { _json_trailing_comma; return 1; }
     elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
       return 1
     fi
@@ -303,6 +327,7 @@ json_parse_running_model_context() {
         _json_parse_running_model "$target" || return 1
         if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
           zjson_next || return 1
+          [[ "$ZJSON_TOKEN_TYPE" != ']' ]] || { _json_trailing_comma; return 1; }
         elif [[ "$ZJSON_TOKEN_TYPE" != ']' ]]; then
           return 1
         fi
@@ -313,6 +338,7 @@ json_parse_running_model_context() {
     fi
     if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
       zjson_next || return 1
+      [[ "$ZJSON_TOKEN_TYPE" != '}' ]] || { _json_trailing_comma; return 1; }
     elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
       return 1
     fi
@@ -349,6 +375,7 @@ json_parse_flat_object() {
     esac
     if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
       zjson_next || return 1
+      [[ "$ZJSON_TOKEN_TYPE" != '}' ]] || { _json_trailing_comma; return 1; }
     elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
       return 1
     fi

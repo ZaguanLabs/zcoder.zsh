@@ -234,6 +234,7 @@ _agent_compaction_parse_string_array() {
     zjson_next || return 1
     if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
       zjson_next || return 1
+      [[ "$ZJSON_TOKEN_TYPE" != ']' ]] || { _json_trailing_comma; return 1; }
     elif [[ "$ZJSON_TOKEN_TYPE" != ']' ]]; then
       ZJSON_ERROR="expected comma or closing bracket in checkpoint"
       return 1
@@ -282,6 +283,7 @@ agent_parse_compaction_summary() {
     esac
     if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
       zjson_next || return 1
+      [[ "$ZJSON_TOKEN_TYPE" != '}' ]] || { _json_trailing_comma; return 1; }
     elif [[ "$ZJSON_TOKEN_TYPE" != '}' ]]; then
       ZJSON_ERROR="checkpoint comma or closing brace expected"
       return 1
