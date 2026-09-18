@@ -891,7 +891,8 @@ remote_server_emit_message() {
 
 remote_server_emit_status() {
   local status_json=""
-  zjson_quote "$1"; status_json="$REPLY"
+  zcoder_status_display_text "$1"
+  zjson_quote "$REPLY"; status_json="$REPLY"
   _remote_server_publish_json "{\"event\":\"status\",\"status\":${status_json}}"
 }
 

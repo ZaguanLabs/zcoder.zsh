@@ -123,13 +123,7 @@ ui_set_status() {
   emulate -L zsh
   local kind=info value="$1"
   zcoder_terminal_safe "${value[1,256]}"; value="${REPLY//$'\n'/ }"
-  case "${value:l}" in
-    tool:*) kind=busy ;;
-    ready|'goal complete') kind=success ;;
-    *error*|*failed*|denied*) kind=error ;;
-    stopped|incomplete|*blocked*|*budget*|*paused*|*stopped*) kind=warning ;;
-    thinking*|warming*|compacting*|'goal verifying'*|connecting*|checking*|loading*|running*|*' working'|*' consulting') kind=busy ;;
-  esac
+  zcoder_status_kind "$value"; kind="$REPLY"
   UI_STATUS="$value"; UI_STATUS_KIND="$kind"
   [[ "$kind" == error || "$kind" == warning ]] && ui_status_notice "$kind" "$value" 0
   return 0
@@ -175,9 +169,7 @@ ui_status_update() {
   elif [[ "$kind" == busy ]]; then
     # Tool cards already expose individual steps. Keep the header still as
     # generation, tools, compaction and consultations alternate within a turn.
-    case "${text:l}" in
-      thinking*|tool:*|compacting*|'goal verifying'*|running*|*' working'|*' consulting') text=Working ;;
-    esac
+    zcoder_status_display_text "$text" "$kind"; text="$REPLY"
   fi
   case "$kind" in
     error)

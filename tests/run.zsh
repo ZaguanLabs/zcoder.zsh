@@ -1024,6 +1024,20 @@ remote_load_token "$remote_token_file"
 assert_success "remote authentication loads a URL-safe token file" $?
 assert_eq "$remote_token_value" "$REMOTE_TOKEN" "remote authentication trims the token file newline"
 
+for remote_status expected_status in \
+  'Tool: read_file' Working \
+  'Tool: mcp__server__long_tool_name' Working \
+  'Thinking 1' Working \
+  Compacting Working \
+  'Goal verifying 2' Working \
+  'Running command' Working \
+  'Warming Up' 'Warming Up' \
+  Ready Ready \
+  'Running failed' 'Running failed'; do
+  zcoder_status_display_text "$remote_status"
+  assert_eq "$expected_status" "$REPLY" "remote display status maps $remote_status consistently with the TUI"
+done
+
 remote_runtime="$TEST_TMP/remote-runtime"
 zf_mkdir -p "$remote_runtime/events" "$remote_runtime/approvals"
 REMOTE_RUNTIME_DIR="$remote_runtime"
@@ -1040,7 +1054,7 @@ assert_eq $'remote hello\nsecond line' "${JSON_OBJECT[content]}" "remote events 
 _remote_server_next_event 1
 assert_success "remote event polling advances by cursor" $?
 json_parse_flat_object "$REPLY"
-assert_eq "Thinking 1" "${JSON_OBJECT[status]}" "remote status events preserve their display text"
+assert_eq Working "${JSON_OBJECT[status]}" "remote status events preserve their display text"
 _remote_server_next_event 2
 remote_next_status=$?
 assert_failure "remote event polling reports an empty tail" $remote_next_status

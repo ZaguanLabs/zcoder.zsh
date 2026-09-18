@@ -123,6 +123,36 @@ zcoder_terminal_safe() {
   REPLY="${(F)${(@V)lines}}"
 }
 
+# Keep status semantics independent of curses and remote transport so every
+# presentation exposes the same stable display text.
+zcoder_status_kind() {
+  emulate -L zsh
+  local value="$1"
+  REPLY=info
+  case "${value:l}" in
+    tool:*) REPLY=busy ;;
+    ready|'goal complete') REPLY=success ;;
+    *error*|*failed*|denied*) REPLY=error ;;
+    stopped|incomplete|*blocked*|*budget*|*paused*|*stopped*) REPLY=warning ;;
+    thinking*|warming*|compacting*|'goal verifying'*|connecting*|checking*|loading*|running*|*' working'|*' consulting') REPLY=busy ;;
+  esac
+}
+
+zcoder_status_display_text() {
+  emulate -L zsh
+  local value="$1" kind="${2:-}"
+  if [[ -z "$kind" ]]; then
+    zcoder_status_kind "$value"
+    kind="$REPLY"
+  fi
+  if [[ "$kind" == busy ]]; then
+    case "${value:l}" in
+      thinking*|tool:*|compacting*|'goal verifying'*|running*|*' working'|*' consulting') value=Working ;;
+    esac
+  fi
+  REPLY="$value"
+}
+
 # Display only: execution and approval continue to use the original argument.
 zcoder_display_path() {
   local requested="$1" workspace_root='' resolved='' prefix=''

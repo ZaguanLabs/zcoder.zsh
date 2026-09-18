@@ -871,12 +871,19 @@ The event may arrive before its consumed receipt is published.
 ### 10.3 Status event
 
 ```json
-{"seq":2,"event":"status","status":"Running tests"}
+{"seq":2,"event":"status","status":"Working"}
 ```
 
-`status` is display text produced by the server-side agent. Clients should not
-use arbitrary status strings as protocol state. Model readiness and completion
-have their own fields and endpoints.
+`status` is the same normalized display text used by the server-side TUI.
+Routine activity labels such as `Thinking 1`, `Tool: read_file`, `Compacting`,
+`Goal verifying 2`, and `Running command` are emitted as `Working`. Startup and
+terminal labels such as `Connecting`, `Warming Up`, `Ready`, warnings, and
+errors remain distinct display text.
+
+Clients should render the supplied value and must not use arbitrary status
+strings as protocol state or expect raw tool names in status events. Structured
+tool events carry individual tool activity. Model readiness and completion have
+their own fields and endpoints.
 
 ### 10.4 Approval-required event
 
