@@ -4,7 +4,7 @@ setopt extendedglob no_monitor no_notify
 zmodload zsh/datetime zsh/files zsh/mapfile zsh/system zsh/zselect zsh/net/tcp || exit 1
 typeset root=${0:A:h:h} scratch='' library='' response='' response_code='' worker_pid=''
 scratch=$(mktemp -d /tmp/zcoder-remote-interrupt.XXXXXX) || exit 1
-for library in util json mcp http instructions skills transcript tools compact goal agent state input_queue remote; do
+for library in util json mcp http instructions skills transcript command_safety tools compact goal agent agent_prompts agent_lfm state input_queue agent_loop remote; do
   source "$root/lib/$library.zsh"
 done
 typeset -i checks=0

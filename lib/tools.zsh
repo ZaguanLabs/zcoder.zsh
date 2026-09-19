@@ -7,16 +7,25 @@ typeset -g TOOL_RESULT=""
 typeset -g TOOL_DIFF=""
 typeset -gi TOOL_RESULT_OK=0
 typeset -gi TOOL_CANCELLED=0
-typeset -g TOOL_SAFETY_REASON=""
 typeset -gi TOOL_PATCH_RETRY_REQUIRED=0
 typeset -g ZCODER_SEARCH_SCRIPT="${${(%):-%x}:A:h:h}/scripts/search.zsh"
+typeset -g TOOL_PATCH_DESCRIPTION_JSON="" TOOL_PATCH_ARGUMENT_DESCRIPTION_JSON=""
+typeset -g TOOL_PATCH_CONTRACT=$'UNIFIED DIFF CONTRACT (the patch argument must follow this literally):\nGOOD (valid focused edit):\n--- a/lib/example.zsh\n+++ b/lib/example.zsh\n@@ -10,3 +10,3 @@\n marker before\n-enabled=false\n+enabled=true\n marker after\nThe old count is 3: two context lines plus one removed line. The new count is 3: two context lines plus one added line.\nBAD (invalid in this harness):\n*** Begin Patch\n*** Update File: lib/example.zsh\n@@\n-enabled=false\n+enabled=true\n*** End Patch\nThe bad form uses an unsupported wrapper and a bare @@ without numeric ranges.\nRules:\n1. Begin each file section with literal --- a/relative/path and +++ b/relative/path lines.\n2. Every hunk needs numeric old and new ranges: @@ -OLD_START,OLD_COUNT +NEW_START,NEW_COUNT @@. Counts describe hunk body lines, not total file length: context counts on both sides, - only on the old side, and + only on the new side.\n3. Every hunk body line starts with exactly one prefix character: space for unchanged context, - for removal, or + for addition. The prefix is the single first character; do not add words such as old or new after it unless those words occur in the file. Copy context and removed text exactly from the latest read; never use ellipses or placeholders.\n4. Supply only unified diff text. Do not add Markdown fences, prose, JSON text inside the patch value, *** Begin Patch, *** Update File, or *** End Patch markers.'
 
 _tool_schema_is_admitted() {
   (( ! $+functions[agent_tool_is_admitted] )) || agent_tool_is_admitted "$1"
 }
 
 _tool_patch_contract() {
-  REPLY=$'UNIFIED DIFF CONTRACT (the patch argument must follow this literally):\nGOOD (valid focused edit):\n--- a/lib/example.zsh\n+++ b/lib/example.zsh\n@@ -10,3 +10,3 @@\n marker before\n-enabled=false\n+enabled=true\n marker after\nThe old count is 3: two context lines plus one removed line. The new count is 3: two context lines plus one added line.\nBAD (invalid in this harness):\n*** Begin Patch\n*** Update File: lib/example.zsh\n@@\n-enabled=false\n+enabled=true\n*** End Patch\nThe bad form uses an unsupported wrapper and a bare @@ without numeric ranges.\nRules:\n1. Begin each file section with literal --- a/relative/path and +++ b/relative/path lines.\n2. Every hunk needs numeric old and new ranges: @@ -OLD_START,OLD_COUNT +NEW_START,NEW_COUNT @@. Counts describe hunk body lines, not total file length: context counts on both sides, - only on the old side, and + only on the new side.\n3. Every hunk body line starts with exactly one prefix character: space for unchanged context, - for removal, or + for addition. The prefix is the single first character; do not add words such as old or new after it unless those words occur in the file. Copy context and removed text exactly from the latest read; never use ellipses or placeholders.\n4. Supply only unified diff text. Do not add Markdown fences, prose, JSON text inside the patch value, *** Begin Patch, *** Update File, or *** End Patch markers.'
+  REPLY="$TOOL_PATCH_CONTRACT"
+}
+
+_tool_patch_schema_cache() {
+  [[ -n "$TOOL_PATCH_DESCRIPTION_JSON" && -n "$TOOL_PATCH_ARGUMENT_DESCRIPTION_JSON" ]] && return 0
+  zjson_quote $'Apply workspace edits using a raw standard unified diff. Prefer this for several separated changes in one file or changes spanning multiple files. Prefer replace_text for one contiguous change in one existing file.\n'"${TOOL_PATCH_CONTRACT}"$'\nIf rejected, re-read the exact target lines and retry apply_patch. write_file remains unavailable until the corrected patch succeeds or a new user request begins.' || return $?
+  TOOL_PATCH_DESCRIPTION_JSON="$REPLY"
+  zjson_quote "Raw unified diff text satisfying the complete contract in the tool description." || return $?
+  TOOL_PATCH_ARGUMENT_DESCRIPTION_JSON="$REPLY"
 }
 
 _tool_search_schema_json() {
@@ -28,18 +37,13 @@ tools_schema_json() {
     goal_verifier_tools_schema_json
     return
   fi
-  local output='[' comma="" mcp_schemas="" patch_contract="" patch_description="" patch_argument_description="" search_schema=""
+  local output='[' comma="" mcp_schemas="" search_schema=""
   _tool_search_schema_json; search_schema="$REPLY"
   if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
     REPLY="[]"
     return 0
   fi
-  _tool_patch_contract
-  patch_contract="$REPLY"
-  zjson_quote $'Apply workspace edits using a raw standard unified diff. Prefer this for several separated changes in one file or changes spanning multiple files. Prefer replace_text for one contiguous change in one existing file.\n'"${patch_contract}"$'\nIf rejected, re-read the exact target lines and retry apply_patch. write_file remains unavailable until the corrected patch succeeds or a new user request begins.'
-  patch_description="$REPLY"
-  zjson_quote "Raw unified diff text satisfying the complete contract in the tool description."
-  patch_argument_description="$REPLY"
+  _tool_patch_schema_cache || return $?
   # Put installed MCP capabilities first. Smaller local models strongly weight
   # tool order, and project-designated navigation must not be shadowed by the
   # generic built-ins that follow it.
@@ -62,7 +66,7 @@ tools_schema_json() {
 {"type":"function","function":{"name":"replace_text","description":"Replace one exact, uniquely occurring text fragment in an existing workspace file. Prefer this for one contiguous change in one existing file, including a multiline block or function. Read the target first, then pass old_text verbatim with enough surrounding context to make it unique. Use apply_patch for several separated changes or changes spanning multiple files. Unavailable after apply_patch fails.","parameters":{"type":"object","required":["path","old_text","new_text"],"properties":{"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"}}}}}'
   fi
   output+=',
-{"type":"function","function":{"name":"apply_patch","description":'"${patch_description}"',"parameters":{"type":"object","required":["patch"],"properties":{"patch":{"type":"string","description":'"${patch_argument_description}"'}}}}},
+{"type":"function","function":{"name":"apply_patch","description":'"${TOOL_PATCH_DESCRIPTION_JSON}"',"parameters":{"type":"object","required":["patch"],"properties":{"patch":{"type":"string","description":'"${TOOL_PATCH_ARGUMENT_DESCRIPTION_JSON}"'}}}}},
 '"$search_schema"
   comma=,
   output+="${comma}"'
@@ -642,151 +646,6 @@ tool_search() {
   } always {
     zf_rm -f -- "$out_file" "${out_file}.err" 2>/dev/null
   }
-}
-
-_tool_sysadmin_broad_target() {
-  local target="$1" root="${ZCODER_WORKSPACE:A}"
-  target="${(Q)target}"
-  while [[ "$target" != / && "$target" == */ ]]; do target="${target%/}"; done
-  if [[ "$target" == "$root" || "$target" == "${root}/*" || "$target" == "${root}/**" ]]; then
-    return 0
-  fi
-  case "$target" in
-    /|/\*|/\*\*|/\.\*|/etc|/etc/\*|/usr|/usr/\*|/var|/var/\*|/boot|/boot/\*|/home|/home/\*|/root|/root/\*|/dev|/dev/\*|/opt|/opt/\*|/srv|/srv/\*|'$HOME'|'$HOME/*'|'${HOME}'|'${HOME}/*'|\~|\~/\*)
-      return 0
-      ;;
-  esac
-  return 1
-}
-
-# This is deliberately a narrow hard stop, not a promise to understand every
-# possible shell program. It catches commands whose literal argv clearly aims
-# at machine-wide data loss; the prompt and per-command approval cover the much
-# larger class of context-dependent administrative risk.
-tool_sysadmin_command_guard() {
-  setopt localoptions extendedglob
-  local command_text="$1" depth="${2:-0}" raw="" token="" executable="" next=""
-  local -a tokens=()
-  local -i i j
-  (( depth == 0 )) && TOOL_SAFETY_REASON=""
-  [[ "$ZCODER_PROFILE" == sysadmin ]] || return 0
-  if (( depth > 4 )); then
-    TOOL_SAFETY_REASON="excessively nested shell evaluation is blocked"
-    return 1
-  fi
-
-  if [[ "$command_text" == *':(){ :|:& };:'* || "$command_text" == *':(){:|:&};:'* ]]; then
-    TOOL_SAFETY_REASON="fork-bomb syntax is never executable from the sysadmin profile"
-    return 1
-  fi
-
-  tokens=("${(z)command_text}")
-  for (( i=1; i<=${#tokens}; i++ )); do
-    raw="${tokens[i]}"
-    token="${(Q)raw}"
-    executable="${(L)${token:t}}"
-    case "$executable" in
-      sh|bash|zsh|dash|ksh|eval)
-        for (( j=i+1; j<=${#tokens}; j++ )); do
-          next="${(Q)tokens[j]}"
-          if [[ "$executable" == eval || "$next" == -c ]]; then
-            [[ "$executable" == eval ]] || (( j++ ))
-            next="${(Q)tokens[j]:-}"
-            [[ -n "$next" ]] && tool_sysadmin_command_guard "$next" $(( depth + 1 )) || {
-              [[ -n "$TOOL_SAFETY_REASON" ]] && return 1
-            }
-            break
-          fi
-        done
-        ;;
-      mkfs|mkfs.*|blkdiscard)
-        TOOL_SAFETY_REASON="filesystem formatting and whole-device discard commands must be run manually"
-        return 1
-        ;;
-      rm)
-        for (( j=i+1; j<=${#tokens}; j++ )); do
-          next="${(Q)tokens[j]}"
-          [[ "$next" == '&&' || "$next" == '||' || "$next" == ';' || "$next" == '|' || "$next" == '&' ]] && break
-          [[ "$next" == -* ]] && continue
-          if _tool_sysadmin_broad_target "$next"; then
-            TOOL_SAFETY_REASON="recursive or broad deletion target ${(qqq)next} is blocked"
-            return 1
-          fi
-        done
-        ;;
-      find)
-        local -i broad_find=0 destructive_find=0
-        for (( j=i+1; j<=${#tokens}; j++ )); do
-          next="${(Q)tokens[j]}"
-          [[ "$next" == '&&' || "$next" == '||' || "$next" == ';' || "$next" == '|' || "$next" == '&' ]] && break
-          _tool_sysadmin_broad_target "$next" && broad_find=1
-          [[ "$next" == -delete ]] && destructive_find=1
-        done
-        if (( broad_find && destructive_find )); then
-          TOOL_SAFETY_REASON="find -delete on a broad system target is blocked"
-          return 1
-        fi
-        ;;
-      chmod|chown|chgrp)
-        for (( j=i+1; j<=${#tokens}; j++ )); do
-          next="${(Q)tokens[j]}"
-          [[ "$next" == '&&' || "$next" == '||' || "$next" == ';' || "$next" == '|' || "$next" == '&' ]] && break
-          if _tool_sysadmin_broad_target "$next"; then
-            TOOL_SAFETY_REASON="ownership or permission changes on broad target ${(qqq)next} are blocked"
-            return 1
-          fi
-        done
-        ;;
-      dd)
-        for (( j=i+1; j<=${#tokens}; j++ )); do
-          next="${(L)${(Q)tokens[j]}}"
-          [[ "$next" == '&&' || "$next" == '||' || "$next" == ';' || "$next" == '|' || "$next" == '&' ]] && break
-          if [[ "$next" == of=/dev/* ]]; then
-            TOOL_SAFETY_REASON="raw writes to block devices must be run manually"
-            return 1
-          fi
-        done
-        ;;
-      wipefs)
-        for (( j=i+1; j<=${#tokens}; j++ )); do
-          next="${(L)${(Q)tokens[j]}}"
-          if [[ "$next" == -a || "$next" == --all ]]; then
-            TOOL_SAFETY_REASON="erasing filesystem signatures must be run manually"
-            return 1
-          fi
-        done
-        ;;
-      zpool)
-        next="${(L)${(Q)tokens[i+1]:-}}"
-        if [[ "$next" == destroy ]]; then
-          TOOL_SAFETY_REASON="destroying storage pools must be run manually"
-          return 1
-        fi
-        ;;
-      lvremove|vgremove|pvremove)
-        TOOL_SAFETY_REASON="destroying logical-volume storage must be run manually"
-        return 1
-        ;;
-      shred)
-        for (( j=i+1; j<=${#tokens}; j++ )); do
-          next="${(Q)tokens[j]}"
-          if [[ "$next" == /dev/* ]]; then
-            TOOL_SAFETY_REASON="shredding a device must be run manually"
-            return 1
-          fi
-        done
-        ;;
-    esac
-
-    if [[ "$token" == '>' || "$token" == '>|' ]]; then
-      next="${(Q)tokens[i+1]:-}"
-      if [[ "$next" == /dev/* && "$next" != /dev/null ]]; then
-        TOOL_SAFETY_REASON="direct redirection onto a device must be run manually"
-        return 1
-      fi
-    fi
-  done
-  return 0
 }
 
 tool_approve_command() {

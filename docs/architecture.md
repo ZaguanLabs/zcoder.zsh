@@ -10,8 +10,12 @@ application.
 zcoder.zsh              CLI and curses event loop
 lib/
   acp.zsh               ACP v1 stdio broker and protocol translation
-  agent.zsh             Ollama messages and iterative tool loop
+  agent.zsh             model messages, payloads, accounting, and warm-up
+  agent_lfm.zsh         LFM response normalization and JSON recovery
+  agent_loop.zsh        model transport and iterative tool orchestration
+  agent_prompts.zsh     routing, coding, and sysadmin model instructions
   commands.zsh          command catalog, palette, and context inspector
+  command_safety.zsh    catastrophic sysadmin command hard stops
   compact.zsh           token accounting and conversation checkpoints
   goal.zsh              persistent goals and read-only completion verifier
   harnesses.zsh         external harness catalog and availability

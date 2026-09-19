@@ -63,43 +63,49 @@ _http_byte_length() {
 
 _http_dechunk() {
   setopt localoptions extendedglob nomultibyte
-  local wire="$1" output="" size_line="" hex="" data="" trailers=""
-  local -i size
-  while [[ -n "$wire" ]]; do
-    [[ "$wire" == *$'\r\n'* ]] || { HTTP_ERROR="incomplete chunk header"; return 1; }
-    size_line="${wire%%$'\r\n'*}"
-    wire="${wire[$(( ${#size_line} + 3 )),-1]}"
-    hex="${size_line%%;*}"
-    [[ "$hex" == [[:xdigit:]]## && ${#hex} -le 8 ]] || { HTTP_ERROR="invalid chunk size"; return 1; }
-    size=$(( 16#$hex ))
-    (( size <= 67108864 && ${#output} + size <= 67108864 )) || { HTTP_ERROR="HTTP chunked body exceeds 64 MiB"; return 1; }
-    if (( size == 0 )); then
-      if [[ "$wire" == $'\r\n' ]]; then
-        REPLY="$output"; return 0
+  local wire="$1" size_line="" hex="" data="" terminator="" trailer="" extra=""
+  local -a chunks=()
+  local -i size output_size=0 trailer_bytes=0 trailer_count=0
+  {
+    while true; do
+      IFS= read -r -d $'\r' -u 0 size_line || { HTTP_ERROR="incomplete chunk header"; return 1; }
+      IFS= read -r -k 1 -u 0 terminator || { HTTP_ERROR="incomplete chunk header"; return 1; }
+      [[ "$terminator" == $'\n' ]] || { HTTP_ERROR="invalid chunk header"; return 1; }
+      hex="${size_line%%;*}"
+      [[ "$hex" == [[:xdigit:]]## && ${#hex} -le 8 ]] || { HTTP_ERROR="invalid chunk size"; return 1; }
+      size=$(( 16#$hex ))
+      (( size <= 67108864 && output_size + size <= 67108864 )) || { HTTP_ERROR="HTTP chunked body exceeds 64 MiB"; return 1; }
+      if (( size == 0 )); then
+        while true; do
+          IFS= read -r -d $'\r' -u 0 trailer || { HTTP_ERROR="incomplete HTTP chunk trailers"; return 1; }
+          IFS= read -r -k 1 -u 0 terminator || { HTTP_ERROR="incomplete HTTP chunk trailers"; return 1; }
+          [[ "$terminator" == $'\n' ]] || { HTTP_ERROR="invalid HTTP chunk trailers"; return 1; }
+          [[ -n "$trailer" ]] || break
+          (( trailer_count++ ))
+          (( trailer_bytes += ${#trailer} + (trailer_count > 1 ? 2 : 0) ))
+          (( trailer_bytes <= 65536 )) || { HTTP_ERROR="invalid HTTP chunk trailers"; return 1; }
+          [[ "$trailer" == [^:[:space:]]##:* && "$trailer" != *[$'\r\n']* ]] || {
+            HTTP_ERROR="invalid HTTP chunk trailer"; return 1
+          }
+        done
+        IFS= read -r -u 0 extra || { HTTP_ERROR="invalid HTTP chunk trailers"; return 1; }
+        [[ -z "$extra" ]] || { HTTP_ERROR="invalid HTTP chunk trailers"; return 1; }
+        if IFS= read -r -u 0 extra; then
+          HTTP_ERROR="invalid HTTP chunk trailers"
+          return 1
+        fi
+        REPLY="${(j::)chunks}"
+        return 0
       fi
-      [[ "$wire" == *$'\r\n\r\n'* ]] || { HTTP_ERROR="incomplete HTTP chunk trailers"; return 1; }
-      trailers="${wire%%$'\r\n\r\n'*}"
-      [[ -n "$trailers" && ${#trailers} -le 65536 && "$wire" == "$trailers"$'\r\n\r\n' ]] || {
-        HTTP_ERROR="invalid HTTP chunk trailers"; return 1
-      }
-      while [[ -n "$trailers" ]]; do
-        size_line="${trailers%%$'\r\n'*}"
-        [[ "$size_line" == [^:[:space:]]##:* && "$size_line" != *[$'\r\n']* ]] || {
-          HTTP_ERROR="invalid HTTP chunk trailer"; return 1
-        }
-        [[ "$trailers" == *$'\r\n'* ]] || break
-        trailers="${trailers#*$'\r\n'}"
-      done
-      REPLY="$output"; return 0
-    fi
-    (( ${#wire} >= size + 2 )) || { HTTP_ERROR="incomplete HTTP chunk"; return 1; }
-    [[ "${wire[$(( size + 1 )),$(( size + 2 ))]}" == $'\r\n' ]] || { HTTP_ERROR="invalid HTTP chunk terminator"; return 1; }
-    data="${wire[1,$size]}"
-    output+="$data"
-    wire="${wire[$(( size + 3 )),-1]}"
-  done
-  HTTP_ERROR="missing final HTTP chunk"
-  return 1
+      data=""
+      IFS= read -r -k "$size" -u 0 data || { HTTP_ERROR="incomplete HTTP chunk"; return 1; }
+      terminator=""
+      IFS= read -r -k 2 -u 0 terminator || { HTTP_ERROR="incomplete HTTP chunk"; return 1; }
+      [[ "$terminator" == $'\r\n' ]] || { HTTP_ERROR="invalid HTTP chunk terminator"; return 1; }
+      chunks+=("$data")
+      (( output_size += size ))
+    done
+  } <<< "$wire"
 }
 
 _http_close_active() {

@@ -13,7 +13,7 @@ if [[ $ZCODER_CURSES_COMMAND == zdraw ]]; then
   [[ $ZCODER_CURSES_COMMAND == zdraw ]] || exit 15
 fi
 zmodload zsh/terminfo zsh/datetime zsh/mapfile || exit 1
-for fixture_lib in util json skills transcript agent input terminal ui; do
+for fixture_lib in util json skills transcript agent agent_prompts agent_lfm agent_loop input terminal ui; do
   source "$fixture_root/lib/$fixture_lib.zsh"
 done
 typeset -g ZCODER_NAME=zcoder.zsh ZCODER_VERSION=preview ZCODER_MODEL=qwen3-coder

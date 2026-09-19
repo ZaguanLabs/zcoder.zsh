@@ -3,7 +3,7 @@ emulate -R zsh
 setopt extendedglob no_monitor no_notify
 zmodload zsh/curses zsh/terminfo zsh/datetime zsh/mapfile zsh/files zsh/system zsh/zselect zsh/net/tcp
 typeset -g fixture_root="$1" fixture_base="$2"
-for fixture_lib in util json mcp http instructions skills transcript tools compact goal agent state input terminal ui overlays remote; do source "$fixture_root/lib/${fixture_lib}.zsh"; done
+for fixture_lib in util json mcp http instructions skills transcript command_safety tools compact goal agent agent_prompts agent_lfm state agent_loop input terminal ui overlays remote; do source "$fixture_root/lib/${fixture_lib}.zsh"; done
 typeset -g ZCODER_NAME=zcoder ZCODER_VERSION=test ZCODER_MODEL=fixture ZCODER_PROFILE=coding REMOTE_MODE=client
 typeset -g ZCODER_WORKSPACE="${fixture_base:h}" ZCODER_SYNC_OUTPUT=false
 typeset -g REMOTE_TOKEN=fixture_token_012345678901234567890

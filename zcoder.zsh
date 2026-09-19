@@ -16,7 +16,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.18.1"
+typeset -gr ZCODER_VERSION="0.18.2"
 
 typeset -gr ZCODER_DIR="${0:A:h}"
 
@@ -46,7 +46,7 @@ if [[ "${1:-}" == mcp ]]; then
   exit "$mcp_status"
 fi
 
-zcoder_require util json mcp http instructions skills transcript tools compact goal agent state input_queue || exit $?
+zcoder_require util json mcp http instructions skills transcript command_safety tools compact goal agent agent_prompts agent_lfm state input_queue agent_loop || exit $?
 
 # The remote-mode default participates in option parsing before lib/remote.zsh
 # loads; that library preserves any value already set here.
@@ -353,8 +353,8 @@ zcoder_delegate_availability_summary() {
 }
 
 handle_slash_command() {
-  local text="$1" value="" provider="" command_name="" previous_value=""
-  local -i delegate_status=0
+  local text="$1" value="" provider="" command_name="" previous_value="" failure=""
+  local -i delegate_status=0 worker=0
   case "$text" in
     /claude|/claude\ *|/claude!|/claude!\ *|/codex|/codex\ *|/codex!|/codex!\ *|/agy|/agy\ *|/agy!|/agy!\ *|/opencode*|/help|/\?)
       zcoder_require harnesses delegate
@@ -612,48 +612,40 @@ handle_slash_command() {
       agent_context_summary
       ui_append_message system "$REPLY"
       ;;
-    /claude|/codex|/agy)
-      provider="${text#/}"
+    /claude|/codex|/agy|/claude!|/codex!|/agy!|/opencode!)
+      command_name="${text#/}"
+      [[ "$command_name" == *! ]] && worker=1 || worker=0
+      provider="${command_name%!}"
       if [[ "$REMOTE_MODE" == client ]]; then
-        ui_append_message error "External consultations are not exposed by the remote server."
+        (( worker )) && ui_append_message error "External workers are not exposed by the remote server." || \
+          ui_append_message error "External consultations are not exposed by the remote server."
         return 0
       fi
-      ui_append_message error "/${provider} requires a request"
+      (( worker )) && ui_append_message error "/${provider}! requires a request" || \
+        ui_append_message error "/${provider} requires a request"
       ;;
-    /claude\ *|/codex\ *|/agy\ *)
-      if [[ "$REMOTE_MODE" == client ]]; then
-        ui_append_message error "External consultations are not exposed by the remote server."
-        return 0
-      fi
-      provider="${text%% *}"; provider="${provider#/}"
-      value="${text#/${provider} }"
-      delegate_run "$provider" "$value" || delegate_status=$?
-      if (( delegate_status != 0 && delegate_status != 130 && ! DELEGATE_ERROR_REPORTED )); then
-        ui_append_message error "${DELEGATE_ERROR:-${provider} consultation failed}"
-      fi
-      ;;
-    /claude!|/codex!|/agy!|/opencode!)
-      provider="${text#/}"; provider="${provider%!}"
-      if [[ "$REMOTE_MODE" == client ]]; then
-        ui_append_message error "External workers are not exposed by the remote server."
-        return 0
-      fi
-      ui_append_message error "/${provider}! requires a request"
-      ;;
-    /claude!\ *|/codex!\ *|/agy!\ *|/opencode!\ *)
-      if [[ "$REMOTE_MODE" == client ]]; then
-        ui_append_message error "External workers are not exposed by the remote server."
-        return 0
-      fi
+    /claude\ *|/codex\ *|/agy\ *|/opencode\ *|/claude!\ *|/codex!\ *|/agy!\ *|/opencode!\ *)
       command_name="${text%% *}"
+      [[ "$command_name" == *! ]] && worker=1 || worker=0
       provider="${command_name#/}"; provider="${provider%!}"
+      if [[ "$REMOTE_MODE" == client ]]; then
+        (( worker )) && ui_append_message error "External workers are not exposed by the remote server." || \
+          ui_append_message error "External consultations are not exposed by the remote server."
+        return 0
+      fi
       value="${text#${command_name} }"
       if [[ "$provider" == opencode && -z "$ZCODER_OPENCODE_MODEL" ]]; then
         ui_select_opencode_model || { ui_refresh_all; return 0; }
       fi
-      delegate_run "$provider" "$value" execute || delegate_status=$?
+      if (( worker )); then
+        delegate_run "$provider" "$value" execute || delegate_status=$?
+        failure="${provider} worker failed"
+      else
+        delegate_run "$provider" "$value" || delegate_status=$?
+        [[ "$provider" == opencode ]] && failure="OpenCode consultation failed" || failure="${provider} consultation failed"
+      fi
       if (( delegate_status != 0 && delegate_status != 130 && ! DELEGATE_ERROR_REPORTED )); then
-        ui_append_message error "${DELEGATE_ERROR:-${provider} worker failed}"
+        ui_append_message error "${DELEGATE_ERROR:-$failure}"
       fi
       ;;
     /opencode)
@@ -662,20 +654,6 @@ handle_slash_command() {
         return 0
       fi
       ui_select_opencode_model
-      ;;
-    /opencode\ *)
-      if [[ "$REMOTE_MODE" == client ]]; then
-        ui_append_message error "External consultations are not exposed by the remote server."
-        return 0
-      fi
-      value="${text#/opencode }"
-      if [[ -z "$ZCODER_OPENCODE_MODEL" ]]; then
-        ui_select_opencode_model || { ui_refresh_all; return 0; }
-      fi
-      delegate_run opencode "$value" || delegate_status=$?
-      if (( delegate_status != 0 && delegate_status != 130 && ! DELEGATE_ERROR_REPORTED )); then
-        ui_append_message error "${DELEGATE_ERROR:-OpenCode consultation failed}"
-      fi
       ;;
     /opencode-model)
       if [[ "$REMOTE_MODE" == client ]]; then

@@ -17,6 +17,15 @@ hardening_protocol_tests() {
     _http_dechunk $'3;ignored=yes\r\nabc\r\n0\r\nX-Checksum: ok\r\n\r\n'
     assert_success 'chunk extensions and complete trailers remain supported' $?
     assert_eq abc "$REPLY" 'chunk decoder returns only body bytes'
+    wire=''
+    repeat 8000; do wire+=$'1\r\na\r\n'; done
+    wire+=$'0\r\n\r\n'
+    started=$EPOCHREALTIME
+    _http_dechunk "$wire"
+    result=$?; elapsed=$(( EPOCHREALTIME - started ))
+    assert_success 'chunk decoder accepts many small chunks' "$result"
+    assert_eq 8000 "${#REPLY}" 'chunk decoder joins every small chunk'
+    assert_success 'chunk decoder avoids quadratic suffix removal' $(( elapsed < 2 ? 0 : 1 ))
     _mcp_wire_envelope '{"jsonrpc":"2.0","result":{"id":999,"method":"nested"},"id":1}'
     assert_eq 1 "$MCP_WIRE_ID" 'MCP routing uses the top-level response ID'
     assert_eq '' "$MCP_WIRE_METHOD" 'MCP routing ignores nested methods'

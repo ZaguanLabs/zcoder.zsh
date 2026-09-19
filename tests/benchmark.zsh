@@ -4,7 +4,7 @@ emulate -R zsh
 setopt extendedglob
 zmodload zsh/datetime zsh/system || exit 1
 benchmark_root="${0:A:h:h}"
-for benchmark_library in util json http transcript input ui agent; do
+for benchmark_library in util json http transcript input ui agent agent_prompts agent_lfm agent_loop; do
   source "$benchmark_root/lib/$benchmark_library.zsh" || exit 1
 done
 typeset -gi benchmark_samples=${ZCODER_BENCHMARK_SAMPLES:-5}

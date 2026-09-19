@@ -52,16 +52,20 @@ source "${PROJECT_DIR}/lib/http.zsh"
 source "${PROJECT_DIR}/lib/instructions.zsh"
 source "${PROJECT_DIR}/lib/skills.zsh"
 source "${PROJECT_DIR}/lib/input.zsh"
+source "${PROJECT_DIR}/lib/command_safety.zsh"
 source "${PROJECT_DIR}/lib/tools.zsh"
 source "${PROJECT_DIR}/lib/compact.zsh"
 source "${PROJECT_DIR}/lib/goal.zsh"
 source "${PROJECT_DIR}/lib/agent.zsh"
+source "${PROJECT_DIR}/lib/agent_prompts.zsh"
+source "${PROJECT_DIR}/lib/agent_lfm.zsh"
 source "${PROJECT_DIR}/lib/state.zsh"
 source "${PROJECT_DIR}/lib/input_queue.zsh"
 source "${PROJECT_DIR}/lib/harnesses.zsh"
 source "${PROJECT_DIR}/lib/delegate.zsh"
 source "${PROJECT_DIR}/lib/remote.zsh"
 source "${PROJECT_DIR}/lib/acp.zsh"
+source "${PROJECT_DIR}/lib/agent_loop.zsh"
 
 typeset -gi TESTS=0 FAILURES=0
 typeset -g TEST_TMP=""
@@ -1975,6 +1979,7 @@ agent_reset
 tools_schema_json
 assert_contains "$REPLY" "defaults to 100" "list_files schema advertises its conservative default"
 assert_contains "$REPLY" "defaults to 50" "search schema advertises its conservative default"
+assert_success "apply_patch schema caches its static description" $(( ${#TOOL_PATCH_DESCRIPTION_JSON} > 1000 ? 0 : 1 ))
 assert_contains "$REPLY" "GOOD (valid focused edit)" "apply_patch schema includes the valid example"
 assert_contains "$REPLY" '"name":"replace_text"' "tool schema exposes exact structured replacement"
 assert_contains "$REPLY" "-enabled=false" "apply_patch example uses a realistic removed line"

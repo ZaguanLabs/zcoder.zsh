@@ -4,7 +4,7 @@ setopt extendedglob no_monitor no_notify
 zmodload zsh/curses zsh/terminfo zsh/datetime zsh/mapfile zsh/files zsh/system zsh/zselect zsh/net/tcp
 typeset -g fixture_root="$1"
 typeset -gx fixture_base="$2"
-for fixture_lib in util json mcp http instructions skills transcript tools compact goal agent state input terminal process ui overlays harnesses delegate; do
+for fixture_lib in util json mcp http instructions skills transcript command_safety tools compact goal agent agent_prompts agent_lfm state agent_loop input terminal process ui overlays harnesses delegate; do
   source "$fixture_root/lib/${fixture_lib}.zsh"
 done
 typeset -g ZCODER_NAME=zcoder ZCODER_VERSION=test ZCODER_MODEL=alpha ZCODER_PROFILE=coding REMOTE_MODE=local
