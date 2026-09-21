@@ -15,6 +15,7 @@ lib/
   agent_loop.zsh        model transport and iterative tool orchestration
   agent_prompts.zsh     routing, coding, and sysadmin model instructions
   commands.zsh          command catalog, palette, and context inspector
+  command_dispatch.zsh  interactive slash-command routing
   command_safety.zsh    catastrophic sysadmin command hard stops
   compact.zsh           token accounting and conversation checkpoints
   goal.zsh              persistent goals and read-only completion verifier
@@ -41,6 +42,7 @@ lib/
   tools.zsh             schemas, confinement, dispatch, and execution
   terminal.zsh          terminal capabilities and protocol decoding
   transcript.zsh        shared session transcript recording
+  tui.zsh               interactive lifecycle and terminal event loop
   ui.zsh                adaptive curses layout and transcript rendering
   util.zsh              wrapping, truncation, and display helpers
 tests/run.zsh           shell-level unit and integration tests
@@ -66,8 +68,9 @@ protocol codecs traverse once when reading multiple members.
 
 `zcoder_require` sources each library at most once. The core libraries load at
 startup; `acp.zsh` and `remote.zsh` load only when their modes are selected.
-Server and ACP modes skip `input.zsh`, `ui.zsh`, `overlays.zsh`, `commands.zsh`, `stream.zsh`,
-the terminal event handlers, and the curses/terminfo modules. They retain `transcript.zsh` for session
+Server and ACP modes skip `input.zsh`, `ui.zsh`, `overlays.zsh`, `commands.zsh`,
+`command_dispatch.zsh`, `stream.zsh`, `tui.zsh`, the terminal event handlers, and the
+curses/terminfo modules. They retain `transcript.zsh` for session
 history. Remote handshakes load only `harnesses.zsh` for availability discovery;
 `delegate.zsh` loads on the first external consultation or worker command. The
 `mcp` maintenance CLI loads only the configuration and protocol libraries. Every
