@@ -30,7 +30,11 @@ lib/
   overlays.zsh          shared modal lifecycle, pickers, and approval views
   process.zsh           interactive command/search worker and process cleanup
   relay.zsh             same-host discovery, Unix sockets, and task spool
-  remote.zsh            authenticated remote server and client protocol
+  remote.zsh            shared remote state and compatibility loader
+  remote_client.zsh     authenticated remote client and event handling
+  remote_server_agent.zsh
+                        server-side agent, session, and model integration
+  remote_server.zsh     native HTTP listener and request dispatch
   skills.zsh            Agent Skill discovery and progressive loading
   state.zsh             workspace/profile-scoped persistent sessions
   stream.zsh            incremental HTTP/NDJSON and local assistant previews
