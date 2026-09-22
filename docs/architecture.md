@@ -536,6 +536,15 @@ serialized cached events before calculating `Content-Length`. This lets strict
 UTF-8 clients load older binary tool-output events without rewriting stored
 transcript bytes.
 
+The generic `zjson` parser remains strict. At the model boundary, zcoder can
+normalize one complete, independently valid JSON object when a model wraps it
+in prose, a Markdown fence, or a JSON-encoded tool-arguments string. The native
+scanner is size-bounded, string- and escape-aware, and rejects incomplete or
+ambiguous multiple objects. It does not invent missing delimiters or repair
+invalid grammar. Compaction applies its typed checkpoint schema after this
+normalization and uses one concise plain-text handoff request when structured
+generation repeatedly fails or reaches Ollama's output limit.
+
 The buffered HTTP decoder validates chunk sizes, data CRLF delimiters, and the
 terminal zero chunk. Missing completion fails the response even when earlier
 chunks were complete. This complements the incremental framing checks in

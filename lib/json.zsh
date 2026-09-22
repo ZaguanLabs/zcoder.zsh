@@ -12,6 +12,7 @@ typeset -g JSON_RESPONSE_CONTENT=""
 typeset -g JSON_RESPONSE_THINKING=""
 typeset -g JSON_RESPONSE_ERROR=""
 typeset -g JSON_RESPONSE_TOOL_CALLS="[]"
+typeset -g JSON_RESPONSE_DONE_REASON=""
 typeset -gi JSON_RESPONSE_PROMPT_TOKENS=0
 typeset -gi JSON_RESPONSE_OUTPUT_TOKENS=0
 typeset -gi JSON_RESPONSE_DONE=-1
@@ -20,6 +21,97 @@ typeset -ga JSON_TOOL_ARGS=()
 typeset -ga JSON_MODEL_NAMES=()
 typeset -gi JSON_RUNNING_MODEL_CONTEXT=0
 typeset -gA JSON_OBJECT=()
+typeset -gi JSON_MODEL_OBJECT_RECOVERED=0
+
+# Model-authored structured output sometimes arrives as a complete JSON object
+# wrapped in prose, a Markdown fence, or a JSON-encoded tool-argument string.
+# Keep zjson strict and recover only one balanced, independently valid object
+# here. Incomplete strings/containers and multiple objects remain errors.
+json_recover_model_object() {
+  emulate -L zsh
+  setopt extendedglob nomultibyte
+  local source="$1" candidate="" prefix="" suffix="" ch=""
+  local -a chars=()
+  local -i length=${#1} start=0 end=0 depth=0 in_string=0 escaped=0 i
+  local original_error="" original_code=""
+  local -i original_offset=0 original_line=0 original_column=0
+  JSON_MODEL_OBJECT_RECOVERED=0
+
+  if zjson_begin "$source" && [[ "$ZJSON_TOKEN_TYPE" == '{' ]] &&
+      zjson_capture_raw_value && [[ "$ZJSON_TOKEN_TYPE" == eof ]]; then
+    candidate="$REPLY"
+    REPLY="$candidate"
+    return 0
+  fi
+  original_error="$ZJSON_ERROR"; original_code="$ZJSON_ERROR_CODE"
+  original_offset=$ZJSON_ERROR_OFFSET; original_line=$ZJSON_ERROR_LINE
+  original_column=$ZJSON_ERROR_COLUMN
+
+  # Bound the native byte scan. Normal tool arguments and compaction summaries
+  # are far smaller; oversized output should be regenerated, not searched.
+  if (( length == 0 || length > 262144 )); then
+    ZJSON_ERROR="${original_error:-model output does not contain one complete JSON object}"
+    ZJSON_ERROR_CODE="${original_code:-model_object_not_found}"
+    ZJSON_ERROR_OFFSET=$original_offset; ZJSON_ERROR_LINE=$original_line
+    ZJSON_ERROR_COLUMN=$original_column
+    return 1
+  fi
+
+  chars=( "${(@s::)source}" )
+  for (( i=1; i<=length; i++ )); do
+    ch="${chars[i]}"
+    if (( start == 0 )); then
+      if [[ "$ch" == '{' ]]; then
+        start=$i
+        depth=1
+      fi
+      continue
+    fi
+    if (( in_string )); then
+      if (( escaped )); then
+        escaped=0
+      elif [[ "$ch" == '\\' ]]; then
+        escaped=1
+      elif [[ "$ch" == '"' ]]; then
+        in_string=0
+      fi
+      continue
+    fi
+    case "$ch" in
+      '"') in_string=1 ;;
+      '{') (( depth++ )) ;;
+      '}')
+        (( depth-- ))
+        if (( depth == 0 )); then
+          end=$i
+          break
+        fi
+        ;;
+    esac
+  done
+
+  if (( start == 0 || end == 0 )); then
+    ZJSON_ERROR="${original_error:-model output does not contain one complete JSON object}"
+    ZJSON_ERROR_CODE="${original_code:-model_object_not_found}"
+    ZJSON_ERROR_OFFSET=$original_offset; ZJSON_ERROR_LINE=$original_line
+    ZJSON_ERROR_COLUMN=$original_column
+    return 1
+  fi
+  candidate="${(j::)chars[start,end]}"
+  prefix="${(j::)chars[1,start-1]}"
+  suffix="${(j::)chars[end+1,-1]}"
+  # Do not choose one object from an ambiguous multi-object response.
+  if [[ "$prefix$suffix" == *[\{\}]* ]] || ! zjson_validate "$candidate"; then
+    [[ -n "$ZJSON_ERROR" ]] || {
+      ZJSON_ERROR="model output contains more than one JSON object"
+      ZJSON_ERROR_CODE=model_object_ambiguous
+      ZJSON_ERROR_OFFSET=0; ZJSON_ERROR_LINE=0; ZJSON_ERROR_COLUMN=0
+    }
+    return 1
+  fi
+  JSON_MODEL_OBJECT_RECOVERED=1
+  REPLY="$candidate"
+}
 
 # zjson's tokenizer is grammar-neutral. Application container parsers must
 # reject closing delimiters immediately after a comma themselves.
@@ -37,7 +129,7 @@ _json_trailing_comma() {
 }
 
 _json_parse_tool_function() {
-  local key="" name="" args="{}"
+  local key="" name="" args="{}" encoded_args=""
   local -i has_args=0
   [[ "$ZJSON_TOKEN_TYPE" == '{' ]] || return 1
   zjson_next || return 1
@@ -50,6 +142,16 @@ _json_parse_tool_function() {
     case "$key:$ZJSON_TOKEN_TYPE" in
       name:string) name="$ZJSON_TOKEN_VALUE"; zjson_next || return 1 ;;
       arguments:'{') zjson_capture_value || return 1; args="$REPLY"; has_args=1 ;;
+      arguments:string)
+        encoded_args="$ZJSON_TOKEN_VALUE"
+        if ! zjson_with_context json_recover_model_object "$encoded_args"; then
+          _zjson_fail invalid_tool_arguments \
+            "tool arguments string must contain one complete JSON object" "$ZJSON_TOKEN_START"
+          return 1
+        fi
+        args="$REPLY"; has_args=1
+        zjson_next || return 1
+        ;;
       *) zjson_skip_value || return 1 ;;
     esac
     if [[ "$ZJSON_TOKEN_TYPE" == ',' ]]; then
@@ -159,6 +261,7 @@ _json_parse_ollama_response() {
   JSON_RESPONSE_THINKING=""
   JSON_RESPONSE_ERROR=""
   JSON_RESPONSE_TOOL_CALLS="[]"
+  JSON_RESPONSE_DONE_REASON=""
   JSON_RESPONSE_PROMPT_TOKENS=0
   JSON_RESPONSE_OUTPUT_TOKENS=0
   JSON_RESPONSE_DONE=-1
@@ -179,6 +282,7 @@ _json_parse_ollama_response() {
       error:string) JSON_RESPONSE_ERROR="$ZJSON_TOKEN_VALUE"; zjson_next || return 1 ;;
       done:true) JSON_RESPONSE_DONE=1; zjson_next || return 1 ;;
       done:false) JSON_RESPONSE_DONE=0; zjson_next || return 1 ;;
+      done_reason:string) JSON_RESPONSE_DONE_REASON="$ZJSON_TOKEN_VALUE"; zjson_next || return 1 ;;
       prompt_eval_count:number)
         [[ "$ZJSON_TOKEN_VALUE" == <0-> ]] && JSON_RESPONSE_PROMPT_TOKENS="$ZJSON_TOKEN_VALUE"
         zjson_next || return 1

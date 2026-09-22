@@ -748,6 +748,8 @@ assert_success "connected MCP tools precede generic built-ins" $?
 assert_contains "$REPLY" "only when project instructions do not designate an MCP navigation tool" "search schema defers to project-designated MCP navigation"
 agent_build_payload
 assert_contains "$REPLY" 'modern/find-symbol [read_only] -> mcp__modern__find_symbol' "regular Ollama payloads include connected MCP routing"
+TZ=UTC0 agent_datetime_prompt_block 0
+assert_eq $'\n\nCurrent date and time: 1970-01-01T00:00:00+0000 (UTC)' "$REPLY" "system prompt timestamps have a stable local ISO representation"
 saved_tool_phase="$AGENT_TOOL_PHASE"
 AGENT_TOOL_PHASE=routing
 tools_schema_json
@@ -763,6 +765,7 @@ assert_contains "$REPLY" '"think":false' "routing decision disables model thinki
 assert_not_contains "$REPLY" '"tools":' "routing payload omits the native tool channel"
 agent_resolve_system_prompt
 assert_contains "$REPLY" "routing layer with no executable tools" "routing payload uses the short phase-specific prompt"
+assert_contains "${REPLY##*$'\n'}" "Current date and time: " "routing system prompts end with the current date and time"
 assert_contains "$REPLY" "Classify the requested outcome, not individual words" "routing prompt avoids keyword-triggered discovery"
 assert_contains "$REPLY" "context, not a delivery destination" "routing prompt separates audiences from external destinations"
 assert_contains "$REPLY" "If uncertain between respond and another mode, choose respond" "routing prompt resolves ambiguity without tools"
@@ -896,12 +899,29 @@ tool_run_command "print -r -- approved" . 2
 assert_success "run_command honors allow policy" $?
 assert_contains "$TOOL_RESULT" "approved" "run_command captures combined output"
 
-json_parse_ollama_response '{"message":{"content":"done","thinking":"work","tool_calls":[{"type":"function","function":{"name":"read_file_range","arguments":{"path":"a b.txt","start_line":2,"end_line":4}}}]},"done":true,"prompt_eval_count":321,"eval_count":22}'
+json_parse_ollama_response '{"message":{"content":"done","thinking":"work","tool_calls":[{"type":"function","function":{"name":"read_file_range","arguments":{"path":"a b.txt","start_line":2,"end_line":4}}}]},"done":true,"done_reason":"stop","prompt_eval_count":321,"eval_count":22}'
 assert_success "Ollama response JSON parses" $?
 assert_eq "read_file_range" "${JSON_TOOL_NAMES[1]}" "tool name is decoded"
 assert_eq '{"path":"a b.txt","start_line":2,"end_line":4}' "${JSON_TOOL_ARGS[1]}" "tool arguments are preserved as JSON"
 assert_eq "321" "$JSON_RESPONSE_PROMPT_TOKENS" "Ollama prompt token usage is decoded"
 assert_eq "22" "$JSON_RESPONSE_OUTPUT_TOKENS" "Ollama output token usage is decoded"
+assert_eq "stop" "$JSON_RESPONSE_DONE_REASON" "Ollama completion reason is decoded"
+
+json_parse_ollama_response '{"message":{"tool_calls":[{"function":{"name":"read_file","arguments":"{\"path\":\"wrapped.txt\"}"}}]}}'
+assert_success "JSON-encoded tool argument objects parse" $?
+assert_eq '{"path":"wrapped.txt"}' "${JSON_TOOL_ARGS[1]}" "JSON-encoded tool arguments are normalized to an object"
+json_parse_ollama_response '{"message":{"tool_calls":[{"function":{"name":"read_file","arguments":"not JSON"}}]}}'
+assert_failure "non-JSON tool argument strings fail closed" $?
+assert_eq "0" "${#JSON_TOOL_NAMES}" "rejected string arguments publish no partial tool calls"
+
+json_recover_model_object $'Model preface\n```json\n{"message":"a } inside a string","nested":{"ok":true}}\n```'
+assert_success "one complete model-authored object can be recovered from wrapping text" $?
+assert_eq '{"message":"a } inside a string","nested":{"ok":true}}' "$REPLY" "object recovery respects braces inside strings"
+assert_eq "1" "$JSON_MODEL_OBJECT_RECOVERED" "wrapped object recovery is reported"
+json_recover_model_object 'first {"a":1} second {"b":2}'
+assert_failure "ambiguous multiple model objects are rejected" $?
+json_recover_model_object 'preface {"a":"truncated"'
+assert_failure "truncated model objects are never repaired" $?
 
 json_parse_ollama_response '{"message":{"tool_calls":[{"function":{"name":"list_files","arguments":{}}},{"function":{"name":"search","arguments":{"query":"TODO"}}}]}}'
 assert_success "parallel tool-call JSON parses" $?
@@ -1659,6 +1679,8 @@ assert_contains "$REPLY" "separate read-only verifier" "active goals explain ind
 goal_verifier_system_prompt
 assert_contains "$REPLY" "Implement and verify the requested feature" "verifier prompts retain the exact objective independently of compacted history"
 GOAL_VERIFIER_ACTIVE=1
+agent_resolve_system_prompt
+assert_contains "${REPLY##*$'\n'}" "Current date and time: " "goal verifier system prompts end with the current date and time"
 tools_schema_json
 assert_contains "$REPLY" '"name":"read_file_range"' "goal verifiers receive read-only evidence tools"
 assert_not_contains "$REPLY" '"name":"write_file"' "goal verifier schemas omit workspace writes"
@@ -2077,6 +2099,14 @@ assert_contains "$REPLY" '"num_ctx":131072' "automatic context preserves a known
 typeset -g MOCK_CHECKPOINT='{"schema_version":1,"objective":"complete the requested change","constraints":["preserve project rules"],"decisions":["use focused edits because the project requires them"],"artifacts":["lib/example.zsh: inspected"],"facts":["make test is required"],"completed":["localized the change"],"active":["implementing"],"blocked":[],"next":["finish the edit"]}'
 agent_parse_compaction_summary "$MOCK_CHECKPOINT"
 assert_success "structured compaction checkpoints validate" $?
+agent_normalize_compaction_summary $'Checkpoint follows:\n```json\n'"$MOCK_CHECKPOINT"$'\n```'
+assert_success "wrapped complete compaction objects are normalized" $?
+assert_eq "$MOCK_CHECKPOINT" "$REPLY" "compaction normalization preserves the recovered JSON object"
+assert_eq "1" "$JSON_MODEL_OBJECT_RECOVERED" "compaction reports wrapped-object recovery"
+agent_normalize_compaction_summary '{"schema_version":1,"objective":"truncated"'
+assert_failure "truncated compaction objects remain invalid" $?
+agent_normalize_plain_compaction_summary '{"schema_version":1,"objective":"still truncated after fallback"'
+assert_failure "plain compaction fallback rejects another JSON fragment" $?
 agent_parse_compaction_summary '{"schema_version":1,"objective":"missing the required arrays"}'
 assert_failure "incomplete compaction checkpoints fail closed" $?
 agent_parse_compaction_summary '{"schema_version":1,"objective":"wrong next type","constraints":[],"decisions":[],"artifacts":[],"facts":[],"completed":[],"active":[],"blocked":[],"next":"continue"}'
@@ -2109,9 +2139,12 @@ compact_status=$?
 assert_success "manual compaction completes" "$compact_status"
 assert_contains "$MOCK_COMPACT_PAYLOAD" "old tool output" "compaction request includes detailed tool history"
 assert_contains "$MOCK_COMPACT_PAYLOAD" "You are zcoder" "compaction reuses the normal stable system prefix"
-assert_contains "$MOCK_COMPACT_PAYLOAD" '"next":{"type":"array","items":{"type":"string"}}' "compaction payload enforces array fields with a JSON schema"
+assert_contains "$MOCK_COMPACT_PAYLOAD" '"next":{"type":"array","maxItems":4,"items":{"type":"string","maxLength":240}}' "compaction payload bounds array fields with a JSON schema"
 assert_contains "$MOCK_COMPACT_PAYLOAD" '"additionalProperties":false' "compaction schema rejects undeclared checkpoint fields"
 assert_not_contains "$MOCK_COMPACT_PAYLOAD" '"tools":' "compaction payload does not expose a competing tool-call channel"
+assert_contains "$MOCK_COMPACT_PAYLOAD" 'CONTEXT CHECKPOINT COMPACTION' "compaction uses Codex-style handoff framing"
+assert_contains "$MOCK_COMPACT_PAYLOAD" 'do not inventory every file read' "compaction prompt suppresses repetitive project inventories"
+assert_contains "$MOCK_COMPACT_PAYLOAD" 'Hard output limit' "compaction asks the model to finish inside an explicit character budget"
 assert_eq "$MOCK_CHECKPOINT" "$AGENT_COMPACTION_SUMMARY" "compaction stores the validated model checkpoint"
 assert_eq "1" "$AGENT_COMPACTION_COUNT" "compaction advances its checkpoint counter"
 assert_eq "3" "${#AGENT_MESSAGES}" "replacement history preserves bounded recent records and appends a continuation cue"
@@ -2228,12 +2261,40 @@ rejected_history="${(j:\n:)AGENT_MESSAGES}"
 agent_compact_history manual >/dev/null
 rejected_compact_status=$?
 assert_failure "compaction fails after invalid checkpoint retries are exhausted" "$rejected_compact_status"
-assert_eq "2" "$MOCK_COMPACTION_ATTEMPTS" "compaction honors its corrective retry limit"
-assert_contains "$HTTP_ERROR" "after 2 attempts" "exhausted compaction reports the number of attempts"
+assert_eq "3" "$MOCK_COMPACTION_ATTEMPTS" "compaction adds one plain-text fallback after corrective JSON retries"
+assert_contains "$HTTP_ERROR" "after 3 attempts" "exhausted compaction reports every attempted checkpoint"
 assert_eq "$rejected_history" "${(j:\n:)AGENT_MESSAGES}" "exhausted retries preserve exact history"
 assert_eq "0" "$AGENT_COMPACTION_COUNT" "exhausted retries do not advance checkpoint state"
 assert_eq "0" "$AGENT_COMPACTION_IN_PROGRESS" "exhausted retries clear the compaction guard"
 assert_contains "${MOCK_COMPACTION_PAYLOADS[2]}" "Correction attempt 1 of 1" "deterministic correction retries carry a distinct attempt marker"
+assert_not_contains "${MOCK_COMPACTION_PAYLOADS[3]}" '"format":' "plain fallback removes the JSON grammar"
+assert_contains "${MOCK_COMPACTION_PAYLOADS[3]}" "concise plain-text handoff" "plain fallback carries focused handoff instructions"
+
+typeset -gi MOCK_COMPACTION_ATTEMPTS=0
+MOCK_COMPACTION_PAYLOADS=()
+agent_ollama_chat() {
+  (( MOCK_COMPACTION_ATTEMPTS++ ))
+  MOCK_COMPACTION_PAYLOADS+=("$1")
+  if (( MOCK_COMPACTION_ATTEMPTS == 1 )); then
+    zjson_quote '{"schema_version":1,"objective":"output ended before the object closed"'
+    HTTP_BODY='{"message":{"content":'"$REPLY"'},"done":true,"done_reason":"length","prompt_eval_count":1800,"eval_count":2048}'
+  else
+    zjson_quote $'Progress\n- Preserved the completed implementation and exact user requests.\n\nNext\n- Run the remaining verification and report the observed result.'
+    HTTP_BODY='{"message":{"content":'"$REPLY"'},"done":true,"done_reason":"stop","prompt_eval_count":1800,"eval_count":40}'
+  fi
+  HTTP_ERROR=""
+  return 0
+}
+agent_reset
+agent_add_message user "preserve the request across output-limit fallback"
+agent_add_message assistant "discardable history ${(l:70000::f:)}"
+agent_add_message user "continue after the plain checkpoint"
+agent_compact_history manual >/dev/null
+length_fallback_status=$?
+assert_success "output-limited structured compaction falls back to a plain handoff" "$length_fallback_status"
+assert_eq "2" "$MOCK_COMPACTION_ATTEMPTS" "an output-limit reason skips futile structured retries"
+assert_contains "$AGENT_COMPACTION_SUMMARY" "Preserved the completed implementation" "plain fallback becomes the continuation checkpoint"
+assert_not_contains "${MOCK_COMPACTION_PAYLOADS[2]}" '"format":' "output-limit fallback does not constrain the response to JSON"
 
 ZCODER_COMPACT_RETRY_LIMIT=2
 typeset -gi MOCK_COMPACTION_ATTEMPTS=0

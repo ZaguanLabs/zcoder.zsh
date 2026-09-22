@@ -377,15 +377,25 @@ agent_add_assistant_message() {
   agent_context_refresh_estimate
 }
 
+agent_datetime_prompt_block() {
+  local LC_TIME=C timestamp=''
+  local epoch="${1:-$EPOCHSECONDS}"
+  strftime -s timestamp '%Y-%m-%dT%H:%M:%S%z (%Z)' "$epoch" || return 1
+  REPLY=$'\n\nCurrent date and time: '"$timestamp"
+}
+
 agent_system_prompt_parts() {
   # Ordered reply fields: base, project, skills, MCP, relay, checkpoint,
-  # completion rules, goal, loop guidance. Payloads and accounting share this
-  # assembly to keep inspection aligned with the guidance sent to the model.
+  # completion rules, goal, loop guidance, current time. Payloads and
+  # accounting share this assembly to keep inspection aligned with the
+  # guidance sent to the model. Keep the time last so every prompt ends with it.
   local base="$AGENT_SYSTEM_PROMPT" project='' skills='' mcp='' relay='' checkpoint=''
-  local completion='' goal='' loop='' routing_instructions=''
+  local completion='' goal='' loop='' routing_instructions='' datetime=''
+  agent_datetime_prompt_block || return 1
+  datetime="$REPLY"
   if (( ${GOAL_VERIFIER_ACTIVE:-0} )) && (( $+functions[goal_verifier_system_prompt] )); then
     goal_verifier_system_prompt
-    reply=("$REPLY" '' '' '' '' '' '' '' '')
+    reply=("$REPLY" '' '' '' '' '' '' '' '' "$datetime")
     return 0
   fi
   if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
@@ -433,7 +443,7 @@ agent_system_prompt_parts() {
     goal="$REPLY"
   fi
   [[ -n "$AGENT_LOOP_NUDGE" ]] && loop=$'\n\n'"$AGENT_LOOP_NUDGE"
-  reply=("$base" "$project" "$skills" "$mcp" "$relay" "$checkpoint" "$completion" "$goal" "$loop")
+  reply=("$base" "$project" "$skills" "$mcp" "$relay" "$checkpoint" "$completion" "$goal" "$loop" "$datetime")
 }
 
 agent_resolve_system_prompt() {
@@ -534,13 +544,13 @@ _agent_context_bill() {
   local -i relay_tokens=0 goal_tokens=0 loop_tokens=0
   local -i compacted_tokens=0 tool_schema_tokens=0 user_tokens=0 assistant_tokens=0 tool_result_tokens=0 reasoning_tokens=0 skill_resource_tokens=0 message_tokens=0
   # Inspector parsing must not overwrite a response still owned by the turn.
-  local JSON_RESPONSE_CONTENT='' JSON_RESPONSE_THINKING='' JSON_RESPONSE_ERROR='' JSON_RESPONSE_TOOL_CALLS=''
+  local JSON_RESPONSE_CONTENT='' JSON_RESPONSE_THINKING='' JSON_RESPONSE_ERROR='' JSON_RESPONSE_TOOL_CALLS='' JSON_RESPONSE_DONE_REASON=''
   local -a JSON_TOOL_NAMES=() JSON_TOOL_ARGS=()
   local -i JSON_RESPONSE_DONE=-1 JSON_RESPONSE_PROMPT_TOKENS=0 JSON_RESPONSE_OUTPUT_TOKENS=0
   local -i index=0 reasoning_bytes=0 message_bytes=0 removed=0
 
   agent_system_prompt_parts
-  base=$reply[1]; instructions="$reply[2]$reply[7]"; skills=$reply[3]
+  base="$reply[1]$reply[10]"; instructions="$reply[2]$reply[7]"; skills=$reply[3]
   mcp=$reply[4]; relay=$reply[5]; compacted=$reply[6]; goal=$reply[8]; loop=$reply[9]
   if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
     agent_route_schema_json; tools="$REPLY"

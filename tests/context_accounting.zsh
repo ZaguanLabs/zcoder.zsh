@@ -136,7 +136,7 @@ context_accounting_tests() {
     GOAL_VERIFIER_ACTIVE=1
     agent_context_bill
     baseline=$AGENT_CONTEXT_COMPONENT_VALUES[1]
-    goal_verifier_system_prompt
+    agent_resolve_system_prompt
     agent_context_component_tokens "$REPLY"
     assert_eq "$REPLY" "$baseline" 'verifier accounting uses its actual system prompt'
     assert_eq 0:0:0 "$AGENT_CONTEXT_COMPONENT_VALUES[goal_index]:$AGENT_CONTEXT_COMPONENT_VALUES[relay_index]:$AGENT_CONTEXT_COMPONENT_VALUES[loop_index]" 'verifier accounting excludes ordinary worker guidance and avoids counting the goal twice'

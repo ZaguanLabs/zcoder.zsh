@@ -66,7 +66,11 @@ assert_eq 123 "$JSON_RESPONSE_PROMPT_TOKENS" "final reported prompt usage surviv
 assert_eq 45 "$JSON_RESPONSE_OUTPUT_TOKENS" "final reported output usage survives accumulation"
 agent_stream_record '{"done":false}'
 assert_failure "records after done are rejected" $?
-for stream_record in '{broken' '{"done":false} trailing' '{"message":{"content":"missing done"}}' '{"done":"true"}' '{"error":"model failed"}' '{"message":{"tool_calls":[{"function":{"arguments":{}}}]},"done":true}' '{"message":{"tool_calls":[{"function":{"name":"list_files","arguments":"{}"}}]},"done":true}' '{"message":{"tool_calls":[{"function":{"name":"list_files"}}]},"done":true}'; do
+agent_stream_reset
+agent_stream_record '{"message":{"tool_calls":[{"function":{"name":"read_file","arguments":"{\"path\":\"string.zsh\"}"}}]},"done":true}'
+assert_success "complete JSON-encoded tool arguments are accepted in streaming" $?
+assert_eq '{"path":"string.zsh"}' "${JSON_TOOL_ARGS[1]}" "streaming normalizes JSON-encoded tool arguments"
+for stream_record in '{broken' '{"done":false} trailing' '{"message":{"content":"missing done"}}' '{"done":"true"}' '{"error":"model failed"}' '{"message":{"tool_calls":[{"function":{"arguments":{}}}]},"done":true}' '{"message":{"tool_calls":[{"function":{"name":"list_files","arguments":"not JSON"}}]},"done":true}' '{"message":{"tool_calls":[{"function":{"name":"list_files"}}]},"done":true}'; do
   agent_stream_reset
   agent_stream_record "$stream_record"
   assert_failure "invalid or failed Ollama stream records are rejected" $?
