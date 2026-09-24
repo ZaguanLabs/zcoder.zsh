@@ -409,7 +409,7 @@ state_new_session() {
   SESSION_TITLE="New Job"
   agent_reset
   transcript_reset
-  state_save_and_refresh
+  state_save_session || return 1
 }
 
 state_load_session() {
