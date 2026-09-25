@@ -1096,6 +1096,7 @@ _ui_render_one_message() {
     _ui_add_tool_content "$content" "$width"
   elif [[ -n "$content" ]]; then
     case "$role" in
+      user) _ui_add_wrapped "$content" "$width" "│ " "$attr" ;;
       assistant|claude|codex|agy|opencode|*_worker)
         zcoder_terminal_safe "$content"
         _ui_add_markdown "$REPLY" "$width" "$attr"

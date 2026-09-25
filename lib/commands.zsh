@@ -53,6 +53,7 @@ commands_init() {
   _commands_add "Show help" /help run all 'shortcuts commands'
   _commands_add "Open command palette" /commands run all 'search shortcuts'
   _commands_add "Quit zcoder" /quit run all 'exit'
+  _commands_add "Quit zcoder (alias for /quit)" /exit run all 'quit'
 }
 
 # Inline completion uses literal command prefixes and copies its matches so a
