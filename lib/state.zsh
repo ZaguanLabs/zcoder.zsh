@@ -571,8 +571,14 @@ state_init() {
       return 1
     fi
   elif [[ "$start_mode" == resume ]] && (( ${#SESSION_IDS} > 0 )); then
-    state_load_session "${SESSION_IDS[1]}" || state_new_session
+    state_load_session "${SESSION_IDS[1]}" || {
+      state_new_session || return 1
+      state_refresh_sessions_list
+    }
   else
-    state_new_session
+    state_new_session || return 1
+    # Startup publishes the new session to the sidebar; API creation can skip
+    # this scan because session-list requests refresh their own cache.
+    state_refresh_sessions_list
   fi
 }

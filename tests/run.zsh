@@ -1705,6 +1705,9 @@ ZCODER_MODEL_OVERRIDE=0
 state_init
 assert_eq "1" "$STATE_ENABLED" "session storage initializes in the standard config root"
 saved_session_id="$CURRENT_SESSION_ID"
+assert_eq "$saved_session_id" "${SESSION_IDS[1]:-}" "first startup publishes the current session in the sidebar"
+assert_eq "New Job" "${SESSION_TITLES[1]:-}" "first startup publishes the current session title"
+assert_eq "$ZCODER_MODEL" "${SESSION_MODELS[1]:-}" "first startup publishes the current session model"
 _state_valid_id "$saved_session_id"
 assert_success "new sessions receive traversal-safe identifiers" $?
 state_note_user $'Repair the deployment\nwithout losing context'
@@ -1742,6 +1745,7 @@ launch_session_id="$CURRENT_SESSION_ID"
 [[ "$launch_session_id" != "$saved_session_id" ]]
 assert_success "interactive startup creates a fresh session instead of resuming the latest one" $?
 assert_eq "0" "${#AGENT_MESSAGES}" "fresh startup sessions begin without prior model history"
+assert_contains "${(j:,:)SESSION_IDS}" "$launch_session_id" "fresh startup publishes the new session alongside existing sessions"
 assert_contains "${(j:,:)SESSION_IDS}" "$saved_session_id" "fresh startup keeps older sessions available for selection"
 state_init
 [[ "$launch_session_id" != "$CURRENT_SESSION_ID" ]]
