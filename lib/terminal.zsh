@@ -12,6 +12,8 @@ typeset -gi TERMINAL_NOREFRESH_INPUT=0
 typeset -ga TERMINAL_EVENT_FLAGS=()
 typeset -gi TERMINAL_CAN_PASTE=0 TERMINAL_NATIVE_PASTE=0 TERMINAL_EVENT_POLL=0
 typeset -gi TERMINAL_CAN_SYNC=0 TERMINAL_NATIVE_QUERY=0 TERMINAL_NATIVE_SYNC=0
+typeset -gi TERMINAL_CAN_KEYBOARD=0 TERMINAL_NATIVE_KEYBOARD=0
+typeset -g TERMINAL_KEYBOARD_STATE=inactive
 typeset -gi TERMINAL_INPUT_FD=-1 TERMINAL_WAIT_MS=20
 typeset -gi TERMINAL_PASTE_BYTES=0 TERMINAL_PASTE_REJECTED=0 TERMINAL_PASTE_LIMIT=1048576
 typeset -ga TERMINAL_PASTE_CHUNKS=()
@@ -25,12 +27,14 @@ terminal_detect_input() {
   local -a reply=()
   TERMINAL_NOREFRESH_INPUT=0; TERMINAL_EVENT_FLAGS=()
   TERMINAL_CAN_PASTE=0; TERMINAL_EVENT_POLL=0; TERMINAL_CAN_SYNC=0
+  TERMINAL_CAN_KEYBOARD=0
   if zcoder_curses_features &&
      (( ${reply[(Ie)structured_events]} && ${reply[(Ie)norefresh_events]} )); then
     TERMINAL_NOREFRESH_INPUT=1
     TERMINAL_EVENT_FLAGS=(norefresh)
     (( ${reply[(Ie)mouse]} )) && TERMINAL_EVENT_FLAGS+=(mouse)
     (( ${reply[(Ie)streaming_paste]} )) && TERMINAL_CAN_PASTE=1
+    (( ${reply[(Ie)capability_queries]} && ${reply[(Ie)keyboard_events]} )) && TERMINAL_CAN_KEYBOARD=1
     (( ${reply[(Ie)event_poll]} && ${reply[(Ie)input_info]} )) && TERMINAL_EVENT_POLL=1
     (( ${reply[(Ie)capability_queries]} && ${reply[(Ie)synchronized_output]} &&
        ${reply[(Ie)staged_refresh]} )) && TERMINAL_CAN_SYNC=1
@@ -67,6 +71,20 @@ terminal_start() {
     fi
   fi
   _terminal_sync_start
+  # zdraw permits one pending capability query. Queue keyboard detection behind
+  # native sync detection, including its timeout, regardless of sync policy.
+  [[ $TERMINAL_SYNC_STATE == pending ]] && (( TERMINAL_NATIVE_QUERY )) || _terminal_keyboard_start
+  return 0
+}
+
+_terminal_keyboard_start() {
+  emulate -L zsh
+  [[ $TERMINAL_KEYBOARD_STATE == inactive ]] || return 0
+  TERMINAL_KEYBOARD_STATE=unavailable
+  if (( TERMINAL_CAN_KEYBOARD )) && zcoder_curses query on 2>/dev/null; then
+    TERMINAL_NATIVE_QUERY=1
+    zcoder_curses query request keyboard_events 1000 2>/dev/null && TERMINAL_KEYBOARD_STATE=pending
+  fi
   return 0
 }
 
@@ -104,6 +122,9 @@ terminal_end() {
     UI_SELECTION_ENABLED=0
   fi
   (( TERMINAL_NATIVE_SYNC )) && zcoder_curses sync off 2>/dev/null
+  if (( TERMINAL_NATIVE_KEYBOARD )); then
+    zcoder_curses keyboard off 2>/dev/null || zcoder_curses end 2>/dev/null
+  fi
   (( TERMINAL_NATIVE_QUERY )) && zcoder_curses query off 2>/dev/null
   if (( TERMINAL_NATIVE_PASTE )); then
     # An unfinished paste cannot be disabled. End the session to abandon its
@@ -120,6 +141,7 @@ terminal_end() {
   TERMINAL_NOREFRESH_INPUT=0; TERMINAL_EVENT_FLAGS=()
   TERMINAL_CAN_PASTE=0; TERMINAL_NATIVE_PASTE=0; TERMINAL_EVENT_POLL=0
   TERMINAL_CAN_SYNC=0; TERMINAL_NATIVE_QUERY=0; TERMINAL_NATIVE_SYNC=0
+  TERMINAL_CAN_KEYBOARD=0; TERMINAL_NATIVE_KEYBOARD=0; TERMINAL_KEYBOARD_STATE=inactive
   TERMINAL_INPUT_FD=-1; TERMINAL_WAIT_MS=20
   TERMINAL_PASTE_BYTES=0; TERMINAL_PASTE_REJECTED=0; TERMINAL_PASTE_CHUNKS=(); TERMINAL_EVENT_TEXT=''
   TERMINAL_SEQUENCE=''; TERMINAL_INPUT_QUEUE=(); TERMINAL_PASTE=0; TERMINAL_PASTE_TAIL=''; TERMINAL_CSI_DISCARD=0
@@ -139,6 +161,7 @@ terminal_suspend() {
     TERMINAL_FRAME_ACTIVE=0
   fi
   zcoder_curses suspend 2>/dev/null || return $?
+  [[ $TERMINAL_KEYBOARD_STATE == pending ]] && TERMINAL_KEYBOARD_STATE=cancelled
   if (( TERMINAL_NATIVE_QUERY )) && [[ $TERMINAL_SYNC_STATE == pending ]]; then
     TERMINAL_SYNC_STATE=cancelled
   fi
@@ -200,6 +223,16 @@ terminal_poll() {
 # Called only for structured capability records from the single input owner.
 _terminal_capability_event() {
   emulate -L zsh
+  (( TERMINAL_NATIVE_QUERY )) || return 0
+  [[ $2 == (reply|timeout) ]] || return 0
+  if [[ $1 == keyboard_events ]]; then
+    [[ $TERMINAL_KEYBOARD_STATE == pending ]] || return 0
+    TERMINAL_KEYBOARD_STATE=unavailable
+    if [[ $2 == reply ]] && zcoder_curses keyboard on 2>/dev/null; then
+      TERMINAL_NATIVE_KEYBOARD=1; TERMINAL_KEYBOARD_STATE=supported
+    fi
+    return 0
+  fi
   (( TERMINAL_NATIVE_QUERY )) && [[ $1 == synchronized_output && $TERMINAL_SYNC_STATE == pending ]] || return 0
   case $2 in
     timeout) TERMINAL_SYNC_STATE='no reply' ;;
@@ -212,6 +245,46 @@ _terminal_capability_event() {
         TERMINAL_SYNC_STATE=unavailable
       fi
       ;;
+  esac
+  _terminal_keyboard_start
+  return 0
+}
+
+# Adapt enhanced records to the existing editor/dialog key contract. Release
+# events and unsupported modifier combinations must never insert or approve.
+_terminal_keyboard_event() {
+  emulate -L zsh
+  [[ ${terminal_event[action]} == (press|repeat) && ${terminal_event[supported]} == yes ]] || return 0
+  local -i modifiers=$(( ${terminal_event[modifier_bits]:-0} & 63 ))
+  local -i code=${terminal_event[code]:-0}
+  local text=${terminal_event[text]:-} char=''
+  case ${terminal_event[key]} in
+    ENTER)
+      case $modifiers in
+        0) terminal_key=ENTER ;;
+        1|2) terminal_key=SENTER ;;
+      esac
+      ;;
+    ESC) (( modifiers == 0 )) && terminal_byte=$'\e' ;;
+    TAB)
+      (( modifiers == 0 )) && terminal_byte=$'\t'
+      (( modifiers == 1 )) && terminal_key=BTAB
+      ;;
+    BACKSPACE) (( modifiers == 0 )) && terminal_key=BACKSPACE ;;
+    U+*)
+      if (( modifiers == 4 && code >= 97 && code <= 122 )); then
+        printf -v char '\\%03o' $(( code - 96 ))
+        printf -v terminal_byte '%b' "$char"
+      elif (( modifiers == 2 && (code == 49 || code == 50) )); then
+        TERMINAL_INPUT_QUEUE+=($'\e' '' '' "$(( code - 48 ))" '' '')
+      elif (( modifiers <= 1 )); then
+        # Associated text can contain several scalars; feed characters through
+        # the same queue used by legacy input without exposing control bytes.
+        text=${text//[$'\x00'-$'\x1f'$'\x7f']/}
+        for char in ${(s::)text}; do TERMINAL_INPUT_QUEUE+=("$char" '' ''); done
+      fi
+      ;;
+    *) (( modifiers == 0 )) && terminal_key=${terminal_event[key]} ;;
   esac
   return 0
 }
@@ -386,7 +459,13 @@ terminal_read_event() {
         fi
         case ${terminal_event[type]} in
           character) terminal_byte=${terminal_event[text]} ;;
-          key) terminal_key=${terminal_event[key]} ;;
+          key)
+            if [[ ${terminal_event[source]} == kitty ]]; then
+              _terminal_keyboard_event
+            else
+              terminal_key=${terminal_event[key]}
+            fi
+            ;;
           resize) terminal_key=RESIZE ;;
           capability)
             _terminal_capability_event "${terminal_event[name]}" "${terminal_event[phase]}" "${terminal_event[report]}"

@@ -18,11 +18,13 @@ functions[_fixture_approval_input]="${functions[_ui_approval_input]}"
 _ui_approval_input() {
   _fixture_approval_input
   mapfile[${fixture_base}.approval]="${modal_done}:${TERMINAL_SYNC_STATE}"
+  mapfile[${fixture_base}.keyboard]="$TERMINAL_KEYBOARD_STATE"
   mapfile[${fixture_base}.approval_paste]="$modal_key:$modal_done:$TERMINAL_PASTE_BYTES"
   mapfile[${fixture_base}.approval_legacy_paste]="$TERMINAL_PASTE:$TERMINAL_PASTE_DISCARDING:$modal_done"
 }
 ui_init || exit 1
 mapfile[${fixture_base}.input]="$TERMINAL_NOREFRESH_INPUT"
+mapfile[${fixture_base}.can_keyboard]="$TERMINAL_CAN_KEYBOARD"
 mapfile[${fixture_base}.native]="$TERMINAL_NATIVE_PASTE:$TERMINAL_EVENT_POLL"
 mapfile[${fixture_base}.grapheme]="$INPUT_GRAPHEME"
 ui_confirm_command 'This fixture only records the choice; it never runs commands.'

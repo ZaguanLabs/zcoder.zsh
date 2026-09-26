@@ -1235,7 +1235,7 @@ _ui_paint_input() {
   (( UI_ACTIVE )) || return 0
   local -i defer_refresh="${1:-0}"
   local -i max_rows=$(( INPUT_H - UI_SLASH_ROWS - 2 )) row visual_row cursor_y cursor_x total
-  local visible="" marker="" title=" [2] Prompt (Enter sends · Shift-Enter newline) "
+  local visible="" marker="" title=" [2] Prompt (Enter sends · Alt-Enter newline) "
   ui_input_width
   input_layout "$REPLY" "$max_rows"
   if (( UI_ACTIVITY_DEPTH > 0 )); then
@@ -1245,7 +1245,7 @@ _ui_paint_input() {
   total=${#INPUT_VISUAL_LINES}
   zcoder_curses clear input_win
   if (( total > INPUT_VISIBLE_ROWS && UI_ACTIVITY_DEPTH == 0 )); then
-    title=" [2] Prompt (Enter sends · Shift-Enter newline · ${INPUT_VIEW_TOP}-$(( INPUT_VIEW_TOP + INPUT_VISIBLE_ROWS - 1 ))/${total}) "
+    title=" [2] Prompt (Enter sends · Alt-Enter newline · ${INPUT_VIEW_TOP}-$(( INPUT_VIEW_TOP + INPUT_VISIBLE_ROWS - 1 ))/${total}) "
   fi
   (( UI_SLASH_ROWS > 0 )) && title=" [2] Prompt (slash commands) "
   _ui_panel_frame input_win input "$title" "$(( SCREEN_W - 4 ))"

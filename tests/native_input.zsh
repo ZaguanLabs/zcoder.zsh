@@ -1,6 +1,61 @@
 # Native records keep paste payload out of the legacy character/key channel.
 () {
   emulate -L zsh
+  local saved_curses=$functions[zcoder_curses]
+  local -a calls=() TERMINAL_INPUT_QUEUE=()
+  local -i TERMINAL_NATIVE_QUERY=1 TERMINAL_CAN_KEYBOARD=1 TERMINAL_NATIVE_KEYBOARD=0
+  local TERMINAL_KEYBOARD_STATE=inactive terminal_byte='' terminal_key='' action=''
+  local -A terminal_event=()
+  zcoder_curses() { calls+=("${(j: :)@}"); return 0; }
+  {
+    _terminal_keyboard_start
+    assert_eq 'query on|query request keyboard_events 1000' "${(j:|:)calls}" 'keyboard detection uses native query ownership'
+    _terminal_capability_event keyboard_events late 0
+    assert_eq pending "$TERMINAL_KEYBOARD_STATE" 'late keyboard replies cannot activate or cancel a pending query'
+    _terminal_capability_event keyboard_events reply 0
+    assert_eq supported:1 "$TERMINAL_KEYBOARD_STATE:$TERMINAL_NATIVE_KEYBOARD" 'zero current keyboard flags still prove protocol support'
+    terminal_event=(key ENTER action press supported yes modifier_bits 1 code 13)
+    _terminal_keyboard_event
+    assert_eq ':SENTER' "$terminal_byte:$terminal_key" 'enhanced Shift-Enter maps to editor newline'
+    terminal_key=''; terminal_event[modifier_bits]=2
+    _terminal_keyboard_event
+    assert_eq SENTER "$terminal_key" 'enhanced Alt-Enter retains newline behavior'
+    terminal_key=''; terminal_event[modifier_bits]=0
+    _terminal_keyboard_event
+    assert_eq ENTER "$terminal_key" 'plain enhanced Enter retains submission'
+    terminal_key=''; terminal_event[action]=release
+    _terminal_keyboard_event
+    assert_eq ':' "$terminal_byte:$terminal_key" 'Enter release cannot submit again'
+    terminal_event=(key U+0079 action release supported yes modifier_bits 0 code 121 text y)
+    _terminal_keyboard_event
+    assert_eq 0 "${#TERMINAL_INPUT_QUEUE}" 'release text cannot answer an approval'
+    terminal_event[action]=press; terminal_event[modifier_bits]=8
+    _terminal_keyboard_event
+    assert_eq 0 "${#TERMINAL_INPUT_QUEUE}" 'unsupported modified text cannot answer an approval'
+    terminal_event[modifier_bits]=0; terminal_event[text]=$'a\x03é'
+    _terminal_keyboard_event
+    assert_eq 'a:::é::' "${(j.:.)TERMINAL_INPUT_QUEUE}" 'associated text preserves Unicode and removes controls'
+    TERMINAL_INPUT_QUEUE=()
+    terminal_event=(key U+0032 action press supported yes modifier_bits 2 code 50)
+    _terminal_keyboard_event
+    assert_eq $'\e:::2::' "${(j.:.)TERMINAL_INPUT_QUEUE}" 'Alt-2 retains the legacy focus shortcut'
+    terminal_event=(key U+0063 action press supported yes modifier_bits 4 code 99)
+    _terminal_keyboard_event
+    assert_eq $'\x03' "$terminal_byte" 'enhanced Ctrl-C retains cancellation'
+    TERMINAL_KEYBOARD_STATE=pending; TERMINAL_NATIVE_KEYBOARD=0; calls=()
+    _terminal_capability_event keyboard_events timeout ''
+    _terminal_capability_event keyboard_events reply 0
+    assert_eq unavailable:0:0 "$TERMINAL_KEYBOARD_STATE:$TERMINAL_NATIVE_KEYBOARD:${#calls}" 'timeout preserves legacy input and rejects a delayed reply'
+    TERMINAL_NATIVE_KEYBOARD=1; calls=()
+    terminal_end
+    assert_eq 'keyboard off|query off' "${(j:|:)calls}" 'teardown restores keyboard flags before releasing query ownership'
+  } always {
+    functions[zcoder_curses]=$saved_curses
+  }
+}
+
+() {
+  emulate -L zsh
   local saved_curses=$functions[zcoder_curses] saved_features=$functions[zcoder_curses_features]
   local -a TERMINAL_INPUT_QUEUE=() TERMINAL_EVENT_FLAGS=(norefresh) TERMINAL_PASTE_CHUNKS=()
   local -i TERMINAL_NATIVE_PASTE=1 TERMINAL_CAN_PASTE=1 TERMINAL_NOREFRESH_INPUT=1 TERMINAL_EVENT_POLL=1

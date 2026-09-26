@@ -7,7 +7,7 @@ Starting in 0.12.0, you can send another message while zcoder works.
 | Enter during an active turn | After the current response and its complete tool batch, before the next model request |
 | Ctrl+G during an active turn | After the current task finishes |
 | `! command` with Enter or Ctrl+G | Executes after the current task finishes; output enters context without a model response |
-| Shift+Enter or Alt+Enter | Inserts a newline without sending |
+| Alt+Enter (also Shift+Enter when reported separately) | Inserts a newline without sending |
 
 The interface confirms acceptance and clears the editor. The message appears
 as a user entry when the agent consumes it. Steering does not interrupt a

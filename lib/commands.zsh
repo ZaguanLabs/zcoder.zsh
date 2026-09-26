@@ -313,7 +313,7 @@ ui_show_help() {
     prompt heading 'Prompt editing'
     send bullet 'Enter: Send a prompt, or steer an active turn.'
     queue_key bullet 'Ctrl+G: Queue a follow-up while busy.'
-    newline bullet 'Shift+Enter: Insert a newline. Use Alt+Enter if your terminal does not report Shift+Enter separately.'
+    newline bullet 'Alt+Enter: Insert a newline. Shift+Enter also works when the terminal reports it separately (including negotiated Kitty keyboard support).'
     paste bullet 'Paste: Multiline text keeps its formatting.'
     stop bullet 'Escape: Stop a running Ollama response, local tool wait, or external delegate.'
     clear bullet 'Ctrl+U: Clear input.'

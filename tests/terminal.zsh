@@ -218,6 +218,13 @@ for terminal_pty_mode in "${terminal_pty_modes[@]}"; do
   zpty -w -n terminal-ui $'\e[?2026;2$y'
   terminal_pty_wait "$terminal_pty_base.approval" '0:supported'
   assert_success "a real terminal reply enables synchronization without approving or dismissing the dialog" $?
+  if [[ ${mapfile[$terminal_pty_base.can_keyboard]:-0} == 1 ]]; then
+    assert_contains "$terminal_pty_output" $'\e[?u' 'keyboard negotiation follows the sync reply'
+    zpty -w -n terminal-ui $'\e[?0u'
+    terminal_pty_wait "$terminal_pty_base.keyboard" supported
+    assert_success 'Kitty reporting zero flags enables enhanced keyboard input' $?
+    assert_contains "$terminal_pty_output" $'\e[>27u' 'keyboard activation pushes its flags'
+  fi
   terminal_native_paste=${mapfile[$terminal_pty_base.native]:-0:0}
   terminal_expected_native=0:0
   [[ $terminal_pty_mode == auto ]] && terminal_expected_native=${terminal_input_features#*:}
@@ -290,7 +297,14 @@ for terminal_pty_mode in "${terminal_pty_modes[@]}"; do
     terminal_pty_wait "$terminal_pty_base.cursor" 3
     assert_success 'the real editor moves its caret past a newly joined emoji' $?
   fi
-  zpty -w -n terminal-ui $'\x07'
+  if [[ ${mapfile[$terminal_pty_base.can_keyboard]:-0} == 1 ]]; then
+    zpty -w -n terminal-ui $'\e[117;5u\e[97;1;97u\e[13;2u\e[98;1;98u\e[13;3u\e[13;3:3u\e[99;1;99u'
+    terminal_pty_wait "$terminal_pty_base.draft" $'a\nb\nc'
+    assert_success 'real Kitty packets preserve typing, Ctrl-U, Shift-Enter and Alt-Enter without release duplication' $?
+    zpty -w -n terminal-ui $'\e[103;5u'
+  else
+    zpty -w -n terminal-ui $'\x07'
+  fi
   terminal_pty_wait "$terminal_pty_base.diagnostics" 1
   assert_success "terminal diagnostics opens after background activity" $?
   assert_eq "$terminal_expected_sync" "${mapfile[$terminal_pty_base.sync]}" 'negotiated synchronization uses the selected backend'
@@ -314,6 +328,9 @@ for terminal_pty_mode in "${terminal_pty_modes[@]}"; do
   assert_eq 'disabled (invalid setting):0' "${mapfile[$terminal_pty_base.invalid]:-}" "invalid configuration fails closed"
   assert_eq 'no reply:0' "${mapfile[$terminal_pty_base.auto]:-}" "a silent terminal retains normal rendering"
   assert_contains "$terminal_pty_output" $'\e[?2004l' "UI exit restores bracketed paste mode"
+  if [[ ${mapfile[$terminal_pty_base.can_keyboard]:-0} == 1 ]]; then
+    assert_contains "$terminal_pty_output" $'\e[<u' 'UI exit pops enhanced keyboard flags'
+  fi
   assert_eq 1 "${mapfile[$terminal_pty_base.restored]:-}" 'UI teardown restores terminal modes even during an unfinished native paste'
   zpty -d terminal-ui
 done

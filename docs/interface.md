@@ -418,7 +418,7 @@ Window resizing and changing the prompt's height rebuild the layout as needed.
 | Key | Action |
 | --- | --- |
 | Enter | Send the prompt; fold the selected entry when transcript has focus |
-| Shift+Enter | Insert a newline; Alt+Enter is the fallback |
+| Alt+Enter | Insert a newline; Shift+Enter also works with negotiated Kitty keyboard support or a distinct terminal key encoding |
 | Escape | Stop the active operation; continue with accepted input queued for that turn, if any |
 | Tab | Complete the selected slash command; otherwise move focus between prompt, sidebar, and transcript |
 | Alt+1 / Alt+2 | Focus [1] Sessions / [2] Prompt; Alt+1 also reveals a hidden sidebar when space allows |
