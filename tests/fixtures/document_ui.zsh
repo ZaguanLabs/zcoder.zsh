@@ -3,6 +3,7 @@ emulate -R zsh
 setopt extendedglob
 zmodload zsh/terminfo zsh/datetime zsh/mapfile || exit 1
 typeset -g fixture_root=$1 fixture_base=$2 fixture_backend=$3
+typeset -g ZCODER_DIR=$fixture_root
 typeset -g fixture_capture_base=${4:-$2}
 source "$fixture_root/lib/curses.zsh"
 ZCODER_CURSES=$fixture_backend zcoder_curses_load "$fixture_root" || exit 1
@@ -37,6 +38,10 @@ _ui_document_draw() {
     print -r -- "$zdraw_ui_fixture" > "$fixture_capture_base-$fixture_phase-$SCREEN_W.json"
   fi
   mapfile[$fixture_base.native]=$document_native
+  mapfile[$fixture_base.markdown]=$document_markdown
+  mapfile[$fixture_base.markdown_backend]=$UI_MARKDOWN_BACKEND
+  mapfile[$fixture_base.markdown_fallbacks]=$UI_MARKDOWN_FALLBACKS
+  mapfile[$fixture_base.text]="${(F)modal_lines}"
   mapfile[$fixture_base.block]=$block
   mapfile[$fixture_base.width]=$SCREEN_W
   mapfile[$fixture_base.first]=$modal_selected
@@ -58,6 +63,11 @@ fixture_phase=help
 ui_show_help 'Codex is available.' || exit 3
 mapfile[$fixture_base.help_closed]=1
 (( ${#UI_ROLES} == 1 )) || exit 4
+fixture_phase=markdown_failure
+functions[_fixture_markdown_layout]=${functions[_ui_markdown_native_layout]}
+_ui_markdown_native_layout() { return 1; }
+ui_document_view --markdown 'Markdown failure' heading heading 'Still literal' body bullet 'Ctrl+G: Keep *all* text and /commands.' || exit 8
+functions[_ui_markdown_native_layout]=${functions[_fixture_markdown_layout]}
 fixture_phase=fallback
 functions[_fixture_native_document]=${functions[zdraw-document]}
 zdraw-document() { zdraw fill overlay_win 2 2 2 10 '' X; return 1; }

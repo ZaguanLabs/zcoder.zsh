@@ -310,19 +310,21 @@ ui_show_help() {
   local availability=$1 id kind text body=''
   # One source for the structured reader and plain-text transcript fallback.
   local -a blocks=(
-    prompt heading 'Prompt editing'
+    prompt heading 'Start here'
     send bullet 'Enter: Send a prompt, or steer an active turn.'
+    stop bullet 'Escape: Stop a running Ollama response, local tool wait, or external delegate.'
+    focus bullet 'Tab: Move focus between the prompt, visible session sidebar, and transcript.'
+    palette bullet 'Ctrl+P or /commands: Open the searchable command palette.'
+    editing subheading 'Prompt editing'
     queue_key bullet 'Ctrl+G: Queue a follow-up while busy.'
     newline bullet 'Alt+Enter: Insert a newline. Shift+Enter also works when the terminal reports it separately (including negotiated Kitty keyboard support).'
     paste bullet 'Paste: Multiline text keeps its formatting.'
-    stop bullet 'Escape: Stop a running Ollama response, local tool wait, or external delegate.'
     clear bullet 'Ctrl+U: Clear input.'
     word bullet 'Ctrl+W: Delete a word.'
     exit bullet 'Ctrl+Q: Exit.'
 
     navigation heading 'Navigation and copying'
     sidebar bullet 'Ctrl+B: Hide or show the sidebar.'
-    focus bullet 'Tab: Move focus between the prompt, visible session sidebar, and transcript.'
     panels bullet 'Alt+1: Focus [1] Sessions. Alt+2: Focus [2] Prompt. Bare 1/2 also work outside the prompt.'
     saved_jobs bullet 'Up/Down in the sidebar: Resume another saved job.'
     mouse_copy bullet 'Left-drag in chat: Select visible text with native zdraw. Ctrl+Y copies the selection; Escape clears it before stopping a running task.'
@@ -331,7 +333,6 @@ ui_show_help() {
 
     commands heading 'Commands and transcript'
     suggestions bullet '/ in an idle prompt: Show slash suggestions. Up/Down selects; Tab or Enter completes; Escape closes. Enter on a complete command runs it.'
-    palette bullet 'Ctrl+P or /commands: Open the searchable command palette.'
     select_entry bullet 'Up/Down or k/j with transcript focus: Select an entry.'
     first_last bullet 'Home/End with transcript focus: Select the first or last entry.'
     fold bullet 'Enter/Space with transcript focus: Fold or unfold the entry body.'
@@ -343,6 +344,7 @@ ui_show_help() {
     goal_tokens bullet '/goal --tokens N OBJECTIVE: Set a token limit for the goal.'
     goal_status bullet '/goal: Show goal status.'
     goal_control bullet '/goal pause | /goal resume | /goal clear: Control the current goal.'
+    goal_example code '/goal --tokens 8000 Fix the failing tests'
 
     delegates subheading 'External agents'
     claude bullet '/claude REQUEST: Ask Claude for a read-only consultation.'
@@ -351,6 +353,7 @@ ui_show_help() {
     opencode bullet '/opencode REQUEST: Ask OpenCode for a read-only consultation.'
     workers bullet 'Add ! for a workspace-editing worker, for example /codex! REQUEST.'
     opencode_model bullet '/opencode with no request: Select its provider/model.'
+    delegate_example code '/codex Review the retry logic for bugs'
     local_agents bullet '/list-agents: List other local zcoder instances.'
     incoming bullet '/agents pause | /agents resume: Pause or resume incoming work.'
 
@@ -379,13 +382,15 @@ ui_show_help() {
     if [[ $kind == (heading|subheading) ]]; then
       [[ -n $body ]] && body+=$'\n'
       body+="$text"$'\n'
+    elif [[ $kind == code ]]; then
+      body+="  $text"$'\n'
     else
       body+="- $text"$'\n'
     fi
   done
   body=${body%$'\n'}
   blocks+=(availability heading 'Available agent runtimes' runtimes paragraph "$availability")
-  if (( UI_ACTIVE )) && ui_document_view 'Help' "${blocks[@]}"; then
+  if (( UI_ACTIVE )) && ui_document_view --markdown 'Help' "${blocks[@]}"; then
     return 0
   fi
   # Preserve access to help outside curses or when a terminal cannot fit a view.

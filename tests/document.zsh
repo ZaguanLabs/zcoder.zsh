@@ -76,18 +76,32 @@ for doc_backend doc_profile in stock auto auto auto auto mono; do
   doc_wait first 1
   zpty -w -n document-ui q
   doc_wait phase help
+  if [[ ${mapfile[$doc_base.markdown_backend]} == zmdown ]]; then
+    [[ ${mapfile[$doc_base.markdown]} == 1 ]] || doc_fail 'help did not use Markdown spans'
+  fi
   command stty rows 24 cols 92 < "${mapfile[$doc_base.tty]}" || doc_fail 'help resize'
   doc_wait width 92
-  for stem in navigation commands tools; do
+  for stem in editing navigation commands tools; do
     zpty -w -n document-ui ']'
     doc_wait block_id "$stem"
   done
   doc_wait phase tools
+  command stty rows 10 cols 28 < "${mapfile[$doc_base.tty]}" || doc_fail 'narrow help resize'
+  doc_wait width 28
+  [[ ${mapfile[$doc_base.block_id]} == tools ]] || doc_fail 'narrow help lost the section'
+  command stty rows 24 cols 92 < "${mapfile[$doc_base.tty]}" || doc_fail 'wide help resize'
+  doc_wait width 92
+  [[ ${mapfile[$doc_base.block_id]} == tools ]] || doc_fail 'wide help lost the section'
+  [[ ${mapfile[$doc_base.markdown_fallbacks]} == 0 ]] || doc_fail 'help drawing rejected Markdown spans'
   close_started=$EPOCHREALTIME
   zpty -w -n document-ui $'\e'
   doc_wait help_closed 1
   close_elapsed=$(( EPOCHREALTIME-close_started ))
   (( close_elapsed < 0.8 )) || doc_fail "Escape took ${close_elapsed}s to close help"
+  doc_wait phase markdown_failure
+  [[ ${mapfile[$doc_base.markdown]} == 0 ]] || doc_fail 'rejected Markdown did not fall back'
+  [[ ${mapfile[$doc_base.text]} == *'Ctrl+G: Keep *all* text and /commands.'* ]] || doc_fail 'Markdown fallback changed literal text'
+  zpty -w -n document-ui q
   doc_wait phase fallback
   [[ ${mapfile[$doc_base.native]} == 0 ]] || doc_fail 'partial draw did not fall back'
   zpty -w -n document-ui q

@@ -4,16 +4,18 @@
   local saved_curses=$functions[zcoder_curses]
   local -a calls=() TERMINAL_INPUT_QUEUE=()
   local -i TERMINAL_NATIVE_QUERY=1 TERMINAL_CAN_KEYBOARD=1 TERMINAL_NATIVE_KEYBOARD=0
-  local TERMINAL_KEYBOARD_STATE=inactive terminal_byte='' terminal_key='' action=''
+  local TERMINAL_KEYBOARD_STATE=inactive terminal_byte='' terminal_key='' action='' TERMINAL_FD=''
   local -A terminal_event=()
   zcoder_curses() { calls+=("${(j: :)@}"); return 0; }
   {
+    exec {TERMINAL_FD}> "$TEST_TMP/keyboard-policy"
     _terminal_keyboard_start
     assert_eq 'query on|query request keyboard_events 1000' "${(j:|:)calls}" 'keyboard detection uses native query ownership'
     _terminal_capability_event keyboard_events late 0
     assert_eq pending "$TERMINAL_KEYBOARD_STATE" 'late keyboard replies cannot activate or cancel a pending query'
     _terminal_capability_event keyboard_events reply 0
     assert_eq supported:1 "$TERMINAL_KEYBOARD_STATE:$TERMINAL_NATIVE_KEYBOARD" 'zero current keyboard flags still prove protocol support'
+    assert_eq $'\e[=25u' "${mapfile[$TEST_TMP/keyboard-policy]}" 'editor keeps enhanced keys and text without requesting release events'
     terminal_event=(key ENTER action press supported yes modifier_bits 1 code 13)
     _terminal_keyboard_event
     assert_eq ':SENTER' "$terminal_byte:$terminal_key" 'enhanced Shift-Enter maps to editor newline'
@@ -49,7 +51,12 @@
     TERMINAL_NATIVE_KEYBOARD=1; calls=()
     terminal_end
     assert_eq 'keyboard off|query off' "${(j:|:)calls}" 'teardown restores keyboard flags before releasing query ownership'
+    TERMINAL_NATIVE_QUERY=1; TERMINAL_KEYBOARD_STATE=pending; calls=()
+    _terminal_capability_event keyboard_events reply 0
+    assert_eq unavailable:0 "$TERMINAL_KEYBOARD_STATE:$TERMINAL_NATIVE_KEYBOARD" 'a failed keyboard policy write cannot advertise a configured mode'
+    assert_eq 'keyboard on|keyboard off' "${(j:|:)calls}" 'a failed keyboard policy write releases its native stack entry'
   } always {
+    [[ -n $TERMINAL_FD ]] && exec {TERMINAL_FD}>&-
     functions[zcoder_curses]=$saved_curses
   }
 }

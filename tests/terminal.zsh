@@ -335,3 +335,5 @@ for terminal_pty_mode in "${terminal_pty_modes[@]}"; do
   zpty -d terminal-ui
 done
 unfunction terminal_test_feed terminal_pty_wait terminal_pty_run
+zsh -df "$TEST_DIR/keyboard_exit.zsh"
+assert_success 'enhanced keyboard exit leaves no release bytes after startup or resume' $?

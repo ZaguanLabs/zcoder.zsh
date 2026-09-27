@@ -88,6 +88,14 @@ _terminal_keyboard_start() {
   return 0
 }
 
+# zdraw pushes flags 27 for its general event API. This editor needs enhanced
+# keys and associated text, but never key releases. Replace only that owned
+# stack entry with flags 25; its eventual pop still restores the caller's mode.
+# Otherwise Enter's release can arrive after /quit hands input to the shell.
+_terminal_keyboard_configure() {
+  _terminal_write $'\e[=25u'
+}
+
 _terminal_sync_start() {
   emulate -L zsh
   case "$TERMINAL_SYNC_POLICY" in
@@ -176,6 +184,10 @@ terminal_suspend() {
 terminal_resume() {
   emulate -L zsh
   _terminal_present resume 2>/dev/null || return $?
+  # Native resume pushes its default flags again after the suspend-time pop.
+  if (( TERMINAL_NATIVE_KEYBOARD )); then
+    _terminal_keyboard_configure || return $?
+  fi
   if (( ! TERMINAL_NATIVE_PASTE )) && [[ -n $TERMINAL_FD ]]; then
     _terminal_write $'\e[?2004h'
   fi
@@ -229,7 +241,13 @@ _terminal_capability_event() {
     [[ $TERMINAL_KEYBOARD_STATE == pending ]] || return 0
     TERMINAL_KEYBOARD_STATE=unavailable
     if [[ $2 == reply ]] && zcoder_curses keyboard on 2>/dev/null; then
-      TERMINAL_NATIVE_KEYBOARD=1; TERMINAL_KEYBOARD_STATE=supported
+      TERMINAL_NATIVE_KEYBOARD=1
+      if _terminal_keyboard_configure; then
+        TERMINAL_KEYBOARD_STATE=supported
+      else
+        # Retain ownership on a failed pop so ordinary teardown can clean up.
+        zcoder_curses keyboard off 2>/dev/null && TERMINAL_NATIVE_KEYBOARD=0
+      fi
     fi
     return 0
   fi
