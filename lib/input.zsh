@@ -305,7 +305,7 @@ input_decode_terminal_event() {
 
   if [[ "$INPUT_TERM_STATE" == escape ]]; then
     # A digit typed after a separate, older Escape remains ordinary input.
-    if [[ $INPUT_ESCAPE_BUF == $'\e' && $ch == (1|2) ]] &&
+    if [[ $INPUT_ESCAPE_BUF == $'\e' && $ch == [1-7] ]] &&
        (( EPOCHREALTIME - INPUT_ESCAPE_AT > 0.2 )); then
       INPUT_TERM_STATE=normal; INPUT_ESCAPE_BUF=''
       return 1
@@ -319,6 +319,26 @@ input_decode_terminal_event() {
       $'\e2'|$'\e[50;3u'|$'\e[27;3;50~')
         INPUT_TERM_STATE=normal; INPUT_ESCAPE_BUF=''
         INPUT_EVENT_ACTION=focus_prompt
+        ;;
+      $'\e3'|$'\e[51;3u'|$'\e[27;3;51~')
+        INPUT_TERM_STATE=normal; INPUT_ESCAPE_BUF=''
+        INPUT_EVENT_ACTION=focus_tab; INPUT_EVENT_TEXT=3
+        ;;
+      $'\e4'|$'\e[52;3u'|$'\e[27;3;52~')
+        INPUT_TERM_STATE=normal; INPUT_ESCAPE_BUF=''
+        INPUT_EVENT_ACTION=focus_tab; INPUT_EVENT_TEXT=4
+        ;;
+      $'\e5'|$'\e[53;3u'|$'\e[27;3;53~')
+        INPUT_TERM_STATE=normal; INPUT_ESCAPE_BUF=''
+        INPUT_EVENT_ACTION=focus_tab; INPUT_EVENT_TEXT=5
+        ;;
+      $'\e6'|$'\e[54;3u'|$'\e[27;3;54~')
+        INPUT_TERM_STATE=normal; INPUT_ESCAPE_BUF=''
+        INPUT_EVENT_ACTION=focus_tab; INPUT_EVENT_TEXT=6
+        ;;
+      $'\e7'|$'\e[55;3u'|$'\e[27;3;55~')
+        INPUT_TERM_STATE=normal; INPUT_ESCAPE_BUF=''
+        INPUT_EVENT_ACTION=focus_tab; INPUT_EVENT_TEXT=7
         ;;
       $'\e[200~')
         INPUT_TERM_STATE="paste"
@@ -337,6 +357,11 @@ input_decode_terminal_event() {
           $'\e\n' $'\e\r'
           $'\e1' $'\e2' $'\e[49;3u' $'\e[50;3u'
           $'\e[27;3;49~' $'\e[27;3;50~'
+          $'\e3' $'\e[51;3u' $'\e[27;3;51~'
+          $'\e4' $'\e[52;3u' $'\e[27;3;52~'
+          $'\e5' $'\e[53;3u' $'\e[27;3;53~'
+          $'\e6' $'\e[54;3u' $'\e[27;3;54~'
+          $'\e7' $'\e[55;3u' $'\e[27;3;55~'
         )
         local candidate=""
         local -i is_prefix=0

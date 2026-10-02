@@ -176,6 +176,10 @@ agent_relay_turn() {
 }
 
 _agent_run_turn() {
+  local AGENT_OPEN_DOCUMENTS="${AGENT_OPEN_DOCUMENTS:-}"
+  if (( ${UI_ACTIVE:-0} )); then
+    document_context_snapshot; AGENT_OPEN_DOCUMENTS="$REPLY"
+  fi
   # Local sessions and both headless brokers use the same persisted inbox.
   # Fixtures/one-shot callers without a saved session retain their old path.
   if (( ! $+functions[input_queue_open] || ! ${STATE_ENABLED:-0} )) || [[ ! -d "$ZCODER_SESSIONS_DIR/${CURRENT_SESSION_ID}.session" ]]; then

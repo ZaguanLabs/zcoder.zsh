@@ -139,6 +139,7 @@ _remote_server_reap_worker() {
 
 _remote_server_turn_worker() {
   local prompt="$1" session_id="$2" connection_fd="${3:-}" structured_events="${4:-0}" queued_continuation="${5:-0}" saved_policy="" exit_code=0
+  local AGENT_OPEN_DOCUMENTS="${6:-}"
   trap 'mcp_shutdown_all >/dev/null 2>&1 || true' EXIT
   trap 'exit 130' INT TERM HUP
   _http_close_inherited_fds "$REMOTE_LISTEN_FD" "$connection_fd" "${(@k)REMOTE_CONNECTION_PHASE}"
@@ -187,7 +188,7 @@ _remote_server_start_turn() {
   _remote_server_clear_turn_runtime
   mapfile[$REMOTE_RUNTIME_DIR/active_structured_events]="$structured_events" || return 1
   input_queue_open "$REMOTE_SESSION_ID" "$REMOTE_TURN_ID" || return 1
-  (_remote_server_turn_worker "$prompt" "$REMOTE_SESSION_ID" "$connection_fd" "$structured_events") &
+  (_remote_server_turn_worker "$prompt" "$REMOTE_SESSION_ID" "$connection_fd" "$structured_events" 0 "${5:-}") &
   pid=$!
   mapfile[$REMOTE_RUNTIME_DIR/active.pid]="$pid" || { kill -TERM "$pid" 2>/dev/null; return 1; }
   REPLY="$REMOTE_TURN_ID"
@@ -201,18 +202,20 @@ _remote_server_queue_turn() {
   input_queue_open "$REMOTE_SESSION_ID" "$REMOTE_TURN_ID" || return 1
   mapfile[$REMOTE_RUNTIME_DIR/pending_prompt]="$prompt" || return 1
   mapfile[$REMOTE_RUNTIME_DIR/pending_structured_events]="$structured_events" || return 1
+  mapfile[$REMOTE_RUNTIME_DIR/pending_open_documents]="${3:-}" || return 1
   REPLY="$REMOTE_TURN_ID"
 }
 
 _remote_server_progress_pending_turn() {
-  local connection_fd="${1:-}" prompt="" structured_events="0"
+  local connection_fd="${1:-}" prompt="" structured_events="0" open_documents=""
   [[ -f "$REMOTE_RUNTIME_DIR/pending_prompt" ]] || return 0
   _remote_server_model_poll || true
   if [[ "$REMOTE_MODEL_STATUS" == ready ]]; then
     prompt="${mapfile[$REMOTE_RUNTIME_DIR/pending_prompt]}"
     structured_events="${mapfile[$REMOTE_RUNTIME_DIR/pending_structured_events]:-0}"
-    zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" "$REMOTE_RUNTIME_DIR/pending_structured_events" 2>/dev/null
-    _remote_server_start_turn "$prompt" "$connection_fd" "$structured_events" "$REMOTE_TURN_ID" || {
+    open_documents="${mapfile[$REMOTE_RUNTIME_DIR/pending_open_documents]:-}"
+    zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" "$REMOTE_RUNTIME_DIR/pending_structured_events" "$REMOTE_RUNTIME_DIR/pending_open_documents" 2>/dev/null
+    _remote_server_start_turn "$prompt" "$connection_fd" "$structured_events" "$REMOTE_TURN_ID" "$open_documents" || {
       remote_server_emit_message error "Could not start the prepared remote turn."
       _remote_server_publish_json '{"event":"complete","exit_code":1}'
       return 1
@@ -220,7 +223,7 @@ _remote_server_progress_pending_turn() {
   elif [[ "$REMOTE_MODEL_STATUS" == error ]]; then
     local CURRENT_SESSION_ID="$REMOTE_SESSION_ID" INPUT_QUEUE_TURN_ID="$REMOTE_TURN_ID"
     input_queue_close true || true
-    zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" "$REMOTE_RUNTIME_DIR/pending_structured_events" 2>/dev/null
+    zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" "$REMOTE_RUNTIME_DIR/pending_structured_events" "$REMOTE_RUNTIME_DIR/pending_open_documents" 2>/dev/null
     remote_server_emit_message error "Remote model preparation failed: ${REMOTE_MODEL_ERROR:-unknown error}"
     _remote_server_publish_json '{"event":"complete","exit_code":1}'
     return 1
@@ -235,7 +238,7 @@ _remote_server_cancel_turn() {
   REMOTE_CANCEL_CONTINUED=0
   input_queue_close true || true
   if [[ -f "$REMOTE_RUNTIME_DIR/pending_prompt" ]]; then
-    zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" "$REMOTE_RUNTIME_DIR/pending_structured_events" 2>/dev/null
+    zf_rm -f "$REMOTE_RUNTIME_DIR/pending_prompt" "$REMOTE_RUNTIME_DIR/pending_structured_events" "$REMOTE_RUNTIME_DIR/pending_open_documents" 2>/dev/null
   else
     [[ "$pid" == <1-> ]] || return 1
     if kill -0 "$pid" 2>/dev/null; then
@@ -294,7 +297,7 @@ _remote_server_hello_json() {
   zjson_quote "$REMOTE_MODEL_STATUS"; model_status_json="$REPLY"
   zjson_quote "$REMOTE_MODEL_ERROR"; model_error_json="$REPLY"
   zjson_quote "$harnesses"; harnesses_json="$REPLY"
-  REPLY="{\"protocol\":1,\"server_name\":${name_json},\"workspace\":${workspace_json},\"model\":${model_json},\"profile\":${profile_json},\"command_policy\":${policy_json},\"model_status\":${model_status_json},\"model_error\":${model_error_json},\"harnesses\":${harnesses_json},\"sessions\":true,\"goals\":true,\"input_queue\":true}"
+  REPLY="{\"protocol\":1,\"server_name\":${name_json},\"workspace\":${workspace_json},\"model\":${model_json},\"profile\":${profile_json},\"command_policy\":${policy_json},\"model_status\":${model_status_json},\"model_error\":${model_error_json},\"harnesses\":${harnesses_json},\"sessions\":true,\"goals\":true,\"input_queue\":true,\"documents\":true,\"document_context\":true}"
   _remote_server_git_json
 }
 
@@ -459,6 +462,19 @@ _remote_server_dispatch_request() {
   _remote_server_reap_worker
   target="$REMOTE_REQUEST_TARGET"
   case "$REMOTE_REQUEST_METHOD:$target" in
+    POST:/v1/document)
+      local -a reply=()
+      local document_path_json document_text_json
+      if ! json_parse_flat_object "$REMOTE_REQUEST_BODY" || [[ ${JSON_OBJECT_TYPES[path]:-} != string ]]; then
+        _remote_http_error "$fd" 400 'path must be a string'; return
+      fi
+      if ! document_read "${JSON_OBJECT[path]}"; then
+        _remote_http_error "$fd" 400 "$REPLY"; return
+      fi
+      zjson_quote "$reply[1]"; document_path_json=$REPLY
+      zjson_quote "$reply[2]"; document_text_json=$REPLY
+      _remote_http_send "$fd" 200 "{\"path\":$document_path_json,\"text\":$document_text_json}"
+      ;;
     POST:/v1/input) _remote_server_input_request "$fd" submit ;;
     POST:/v1/input/status|POST:/v1/input/list|POST:/v1/input/drop)
       _remote_server_input_request "$fd" "${target:t}" ;;
@@ -486,6 +502,14 @@ _remote_server_dispatch_request() {
         _remote_http_error "$fd" 400 "invalid turn request: ${ZJSON_ERROR:-parse error}"
         return
       fi
+      local open_documents=''
+      if (( ${+JSON_OBJECT[open_documents]} )); then
+        if [[ "${JSON_OBJECT_TYPES[open_documents]}" != string || -z "${JSON_OBJECT[open_documents]}" ]] ||
+            ! document_context_validate "${JSON_OBJECT[open_documents]}"; then
+          _remote_http_error "$fd" 400 'open_documents must encode at most four workspace-relative Markdown paths'; return
+        fi
+        open_documents="$REPLY"
+      fi
       prompt="${JSON_OBJECT[prompt]:-}"
       [[ -n "$prompt" && "${JSON_OBJECT_TYPES[prompt]:-}" == string ]] || {
         _remote_http_error "$fd" 400 "prompt must be a non-empty string"
@@ -500,7 +524,7 @@ _remote_server_dispatch_request() {
       fi
       _remote_server_model_ensure 1 "$fd" || true
       if [[ "$REMOTE_MODEL_STATUS" == warming ]]; then
-        if ! _remote_server_queue_turn "$prompt" "$structured_events"; then
+        if ! _remote_server_queue_turn "$prompt" "$structured_events" "$open_documents"; then
           _remote_http_error "$fd" 500 "could not queue the remote turn during model warm-up"
           return
         fi
@@ -511,7 +535,7 @@ _remote_server_dispatch_request() {
         _remote_http_error "$fd" 503 "${REMOTE_MODEL_ERROR:-model preparation failed}"
         return
       fi
-      if ! _remote_server_start_turn "$prompt" "$fd" "$structured_events"; then
+      if ! _remote_server_start_turn "$prompt" "$fd" "$structured_events" '' "$open_documents"; then
         _remote_http_error "$fd" 500 "could not start the remote turn"
         return
       fi
@@ -652,7 +676,7 @@ remote_server_stop() {
         wait "$pid" 2>/dev/null || true
       fi
       zf_rm -f "$REMOTE_RUNTIME_DIR/active.pid" "$REMOTE_RUNTIME_DIR/pending_prompt" \
-        "$REMOTE_RUNTIME_DIR/pending_structured_events" "$REMOTE_RUNTIME_DIR/server.pid" 2>/dev/null
+        "$REMOTE_RUNTIME_DIR/pending_structured_events" "$REMOTE_RUNTIME_DIR/pending_open_documents" "$REMOTE_RUNTIME_DIR/server.pid" 2>/dev/null
     fi
   fi
   if [[ -n "$REMOTE_LISTEN_FD" ]]; then

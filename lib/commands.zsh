@@ -24,6 +24,7 @@ commands_init() {
   _commands_add "Change Ollama host" '/host ' draft local 'server connection'
   _commands_add "Start a new session" /new run all 'clear conversation job'
   _commands_add "Browse saved sessions" /sessions run all 'history jobs'
+  _commands_add "Open Markdown document" '/open ' draft all 'reader read-only tabs documentation'
   _commands_add "Copy transcript" /copy run all 'clipboard export'
   _commands_add "Compact conversation" /compact run local 'context checkpoint'
   _commands_add "Show goal status" /goal run goals 'objective verifier'
@@ -377,6 +378,12 @@ ui_show_help() {
     queue bullet '/queue: List pending input.'
     queue_resume bullet '/queue resume: Restart pending input.'
     queue_drop bullet '/queue drop ID: Discard a queued message.'
+
+    documents heading 'Read-only documents'
+    document_open bullet '/open FILE.md: Open a workspace Markdown document in one of four tabs. Paths may contain spaces.'
+    document_tabs bullet 'Alt+3: Return to Coding and focus the prompt. Alt+4 through Alt+7: Open documents. Alt+2 returns to the prompt and preserves its draft.'
+    document_keys bullet 'In a document: Up/Down or j/k scroll, PgUp/PgDn page, Home/End jump, r reloads, and x closes the tab.'
+    document_remote bullet 'Remote documents come from the connected server workspace. Files are limited to 256 KiB; no document edits are supported.'
   )
   for id kind text in "${blocks[@]}"; do
     if [[ $kind == (heading|subheading) ]]; then

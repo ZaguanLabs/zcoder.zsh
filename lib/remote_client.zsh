@@ -104,6 +104,8 @@ remote_client_handshake() {
   sessions="${JSON_OBJECT[sessions]:-false}"
   goals="${JSON_OBJECT[goals]:-false}"
   REMOTE_INPUT_SUPPORTED="${JSON_OBJECT[input_queue]:-false}"
+  REMOTE_DOCUMENTS_SUPPORTED=${JSON_OBJECT[documents]:-false}
+  REMOTE_DOCUMENT_CONTEXT_SUPPORTED=${JSON_OBJECT[document_context]:-false}
   [[ "$protocol" == 1 ]] || { REMOTE_ERROR="unsupported remote protocol: ${protocol:-missing}"; return 1; }
   REMOTE_SERVER_NAME="$server_name"
   ZCODER_WORKSPACE="$workspace"
@@ -509,7 +511,8 @@ remote_client_cancel_turn() {
 }
 
 remote_client_user_turn() {
-  local REMOTE_INPUT_TURN_ID=''
+  local REMOTE_INPUT_TURN_ID='' open_documents=''
+  document_context_snapshot; open_documents="$REPLY"
   local -i interactive=0 REMOTE_CANCEL_CONTINUED=0
   REMOTE_REQUEST_CANCELLED=0
   remote_client_idle_cancel
@@ -540,6 +543,12 @@ _remote_client_user_turn() {
   zjson_quote "$user_content"; prompt_json="$REPLY"
   turn_payload="{\"prompt\":${prompt_json}}"
   (( ${ACP_WORKER_ACTIVE:-0} || ${UI_ACTIVE:-0} )) && turn_payload="{\"prompt\":${prompt_json},\"structured_events\":true}"
+  if [[ "$REMOTE_DOCUMENT_CONTEXT_SUPPORTED" == true && -n "$open_documents" ]]; then
+    zjson_quote "$open_documents"
+    turn_payload="${turn_payload%\}},\"open_documents\":$REPLY}"
+  elif [[ -n "$open_documents" && "$open_documents" != '[]' ]]; then
+    agent_emit system 'This server does not support open-document paths. Include document paths in your request or update the server.'
+  fi
   remote_client_model_ensure
   poll_status=$?
   if (( poll_status != 0 )); then
@@ -721,6 +730,12 @@ _remote_client_input_request() {
   zjson_quote "$id"; payload+=',"message_id":'"$REPLY"
   zjson_quote "$mode"; payload+=',"mode":'"$REPLY"
   zjson_quote "$text"; payload+=',"text":'"$REPLY"'}'
+  if [[ "$action" == submit && "$REMOTE_DOCUMENT_CONTEXT_SUPPORTED" == true && -n "${6:-}" ]]; then
+    zjson_quote "$6"
+    payload="${payload%\}},\"open_documents\":$REPLY}"
+  elif [[ "$action" == submit && -n "${6:-}" && "$6" != '[]' ]]; then
+    agent_emit system 'This server does not support open-document paths. Include document paths in your request or update the server.'
+  fi
   [[ "$action" == submit ]] && endpoint=/v1/input
   remote_client_request POST "$endpoint" "$payload" || return $?
   json_parse_flat_object "$HTTP_BODY" || { REMOTE_ERROR='invalid input queue response'; return 1; }
@@ -738,5 +753,5 @@ _remote_client_input_request() {
 }
 
 remote_client_submit_input() {
-  remote_client_input_request submit "$REMOTE_INPUT_TURN_ID" "$1" "$2" "$3"
+  remote_client_input_request submit "$REMOTE_INPUT_TURN_ID" "$1" "$2" "$3" "${4:-}"
 }

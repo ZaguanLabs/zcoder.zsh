@@ -1,14 +1,20 @@
 # Remote server integration with agent turns, sessions, and model preparation.
 
 _remote_server_input_request() {
-  local fd="$1" action="$2" session='' turn='' id='' mode='' text='' session_dir='' field=''
+  local fd="$1" action="$2" session='' turn='' id='' mode='' text='' session_dir='' field='' open_documents=''
   local -a reply=()
   json_parse_flat_object "$REMOTE_REQUEST_BODY" || { _remote_http_error "$fd" 400 'invalid input request'; return; }
-  for field in session_id turn_id message_id mode text; do
+  for field in session_id turn_id message_id mode text open_documents; do
     if (( ${+JSON_OBJECT[$field]} )) && [[ "${JSON_OBJECT_TYPES[$field]}" != string ]]; then
       _remote_http_error "$fd" 400 "$field must be a string"; return
     fi
   done
+  if [[ "$action" == submit ]] && (( ${+JSON_OBJECT[open_documents]} )); then
+    if [[ -z "${JSON_OBJECT[open_documents]}" ]] || ! document_context_validate "${JSON_OBJECT[open_documents]}"; then
+      _remote_http_error "$fd" 400 'invalid open_documents'; return
+    fi
+    open_documents="$REPLY"
+  fi
   session="${JSON_OBJECT[session_id]:-}"
   turn="${JSON_OBJECT[turn_id]:-}"
   id="${JSON_OBJECT[message_id]:-}"
@@ -28,7 +34,7 @@ _remote_server_input_request() {
     local CURRENT_SESSION_ID="$session" INPUT_QUEUE_TURN_ID="${mapfile[$session_dir/input_queue/active]:-}"
     input_queue_close true || true
   fi
-  if input_queue_request "$action" "$session" "$turn" "$id" "$mode" "$text"; then
+  if input_queue_request "$action" "$session" "$turn" "$id" "$mode" "$text" "$open_documents"; then
     _remote_http_send "$fd" 200 "$REPLY"
   else
     _remote_http_error "$fd" 409 "${INPUT_QUEUE_ERROR:-input queue operation failed}"
@@ -251,7 +257,7 @@ remote_server_request_approval() {
 _remote_server_clear_turn_runtime() {
   zf_rm -f "$REMOTE_RUNTIME_DIR"/events/*.json(N) \
     "$REMOTE_RUNTIME_DIR"/approvals/*.response(N) \
-    "$REMOTE_RUNTIME_DIR"/{pending_approval,pending_prompt,pending_structured_events,worker.done}(N) 2>/dev/null
+    "$REMOTE_RUNTIME_DIR"/{pending_approval,pending_prompt,pending_structured_events,pending_open_documents,worker.done}(N) 2>/dev/null
 }
 
 _remote_server_next_event() {

@@ -3,13 +3,15 @@
 - Status: implementation-derived specification
 - Protocol: zcoder remote protocol 1
 - Source baseline: zcoder.zsh 0.12.0
-- Last updated: 2026-09-07
+- Extension coverage: read-only document API in the working tree (unreleased)
+- Last updated: 2026-10-02
 
 This document specifies the remote-agent system implemented by zcoder.zsh in
 enough detail to build a different client, a different server, a protocol
 gateway, or a replacement transport. It covers the wire API, state ownership,
 model readiness, turn execution, event delivery, approvals, cancellation,
-session persistence, security boundaries, failure behavior, and the supporting
+session persistence, read-only workspace documents, security boundaries, failure
+behavior, and the supporting
 services needed for a complete implementation.
 
 The existing [remote-agent guide](remote.md) is the operator-facing setup guide.
@@ -80,10 +82,13 @@ The client owns:
 - display of server-authored messages, reasoning, tool results, and statuses;
 - the local approval dialog for commands that the server asks to run;
 - the user's cancellation gesture;
-- an in-memory view of the server's session list and selected transcript.
+- an in-memory view of the server's session list and selected transcript;
+- read-only document tabs and their scroll positions when the server advertises
+  document reading.
 
-The client does not receive a general remote filesystem API. It does not run
-the server's tools locally and does not keep a second durable copy of the
+The optional document endpoint reads bounded Markdown files inside the server's
+workspace. It provides no directory listing, file mutation, or general remote
+filesystem API. The client does not run the server's tools locally and does not keep a second durable copy of the
 server's conversation.
 
 The following systems are separate and must not be conflated with this API:
@@ -283,8 +288,8 @@ The token-file contract is:
 The token is a server-wide capability. Protocol 1 has no users, roles, token
 rotation endpoint, scopes, expiration, request signature, nonce, or replay
 protection. Anyone holding it has all protocol permissions, including reading
-transcripts, submitting prompts, approving commands, switching sessions, and
-cancelling work.
+transcripts and supported workspace documents, submitting prompts, approving
+commands, switching sessions, and cancelling work.
 
 ### 5.2 HTTP profile
 
@@ -371,7 +376,7 @@ The server can return:
 | ---: | --- |
 | 200 | Successful synchronous request |
 | 202 | Turn accepted or queued |
-| 400 | Malformed HTTP, invalid JSON, invalid field, or invalid cursor |
+| 400 | Malformed HTTP, invalid JSON, invalid field/cursor, or rejected document read |
 | 401 | Missing or incorrect bearer token |
 | 404 | Unknown endpoint or inaccessible/nonexistent session |
 | 409 | State conflict: busy turn, stale approval, no cancellable turn |
@@ -399,6 +404,7 @@ combination falls through to 404.
 | GET | `/v1/session?id=ID&after=N` | Return transcript item `N + 1` for one session | 200 |
 | POST | `/v1/session/select` | Select a server-owned session | 200 |
 | POST | `/v1/session/new` | Create and select an empty session | 200 |
+| POST | `/v1/document` | Read a bounded workspace Markdown file when `documents` is supported | 200 |
 | POST | `/v1/approval` | Answer the current one-use command approval | 200 |
 | POST | `/v1/cancel` | Cancel a queued prompt or active worker | 200 |
 
@@ -411,6 +417,10 @@ section 9.6 below. Their schemas, limits, receipt states, and closure rules
 are part of this protocol-1 contract. The
 [operator guide](queued-input.md) describes the corresponding TUI controls.
 The existing busy response for `POST /v1/turn` remains unchanged.
+
+The optional `documents` capability and read-only endpoint are specified in
+section 13.7. This extension keeps protocol number 1 and has no dependency on
+session or input-queue support.
 
 ## 7. Handshake: `GET /v1/hello`
 
@@ -435,7 +445,9 @@ Example response:
   "model_error": "",
   "harnesses": "claude,codex",
   "sessions": true,
-  "input_queue": true
+  "input_queue": true,
+  "documents": true,
+  "document_context": true
 }
 ```
 
@@ -457,6 +469,8 @@ is non-normative.
 | `harnesses` | string | Comma-separated installed server commands from `claude,codex,agy,opencode` |
 | `sessions` | boolean | `true` when session endpoints are supported |
 | `input_queue` | boolean | `true` when queued-input endpoints are supported; missing means unsupported |
+| `documents` | boolean | `true` when `POST /v1/document` is supported; missing means unsupported |
+| `document_context` | boolean | `true` when turns and queued input accept open document paths; missing means unsupported |
 
 The client replaces its local workspace, model, profile, and command-policy
 display state with these values. Local CLI values do not override them.
@@ -474,6 +488,8 @@ uses these rules:
 - missing or non-true `sessions` disables remote session browsing and creation;
 - missing or non-true `input_queue` disables active-turn submissions; retain
   the user's draft until a normal turn can start;
+- missing or non-true `documents` disables remote document reads; report that
+  the server needs an update and never substitute a client-local file;
 - `protocol` is never optional.
 
 An alternative server intended for current clients should send every field in
@@ -579,6 +595,32 @@ turn endpoint repeats the check and can queue the prompt behind a new warm-up.
 `prompt` must be a JSON string and must be non-empty. A whitespace-only string
 is technically non-empty and is accepted. There is no prompt-specific limit
 beyond the total request-body limit.
+
+When `document_context: true` is advertised, clients may include
+`open_documents`, a **string containing a JSON array** of workspace-relative
+Markdown paths (the protocol retains scalar request fields):
+
+```json
+{"prompt":"Read the open docs","open_documents":"[\"docs/design.md\",\"docs/plan.md\"]"}
+```
+
+The array contains zero to four non-empty strings of at most 4,096 characters
+each; the encoded string is limited to 131,072 characters. Paths must be relative,
+have a `.md` or `.markdown` extension (case-insensitive), and contain neither NUL
+nor `..` path components. Invalid metadata returns HTTP 400. This validates
+metadata only: files may have moved after opening, and every later `read_file`
+call still enforces workspace and symlink confinement.
+
+The server includes these **paths only** in the worker's system prompt, explaining
+that “the open docs” or “the open files” refers to this list. It does not attach
+file contents, read files automatically, change the user's prompt text, or grant
+edit permission. Filenames are escaped data. An explicit `"[]"` means no open
+documents; omission means no reader metadata and never inherits another client's
+list. The list is captured at submission and survives model warm-up. It remains
+in effect for that turn until newer queued input replaces it.
+
+Clients must omit this field unless the capability is advertised. The TUI shows
+a notice when documents are open but the server cannot receive their paths.
 
 ### 9.2 Concurrency rule
 
@@ -687,6 +729,11 @@ server's workspace/profile.
 | `message_id` | Client-generated ID, unique within the session: 1–64 characters from `A-Z a-z 0-9 _ -` |
 | `mode` | `steer` or `follow_up`; omitted or empty defaults to `steer` in this implementation |
 | `text` | 1–65,536 UTF-8 bytes; multiline text and trailing newlines are retained |
+| `open_documents` | Optional JSON-encoded string array of open paths, with the same capability and validation as section 9.1; contents are never included |
+
+The path snapshot is persisted with queued input and becomes the system-prompt
+list when that input is consumed. It replaces the previous list; omission clears
+reader metadata. Changing tabs after submission does not change queued paths.
 
 A new submission must address the selected session's accepting run. Admission
 is available during warm-up and worker execution. A stale or closed run is
@@ -736,7 +783,7 @@ A crash between saving history and its receipt can leave a message showing
 receipt without appending the user message again.
 
 Repeat an uncertain submission with the **same session, message ID, turn ID,
-mode, and exact text**. An exact retry returns the current receipt, including
+mode, exact text, and open-document path snapshot**. An exact retry returns the current receipt, including
 after the run closes. Reusing an ID with different input returns 409.
 Do not allocate a new ID or replace the old turn ID merely because an HTTP
 response was lost. Status queries remain available after completion.
@@ -1074,7 +1121,7 @@ Cancellation is cooperative at the server-worker boundary but forceful from
 the agent's perspective. It cannot roll back workspace changes already made,
 commands already run, or external side effects already committed.
 
-## 13. Remote sessions
+## 13. Remote sessions and workspace documents
 
 ### 13.1 Ownership and scope
 
@@ -1227,6 +1274,74 @@ After a handshake advertising `sessions: true`, the current client:
 Failed explicit selection stops startup without creating a replacement session.
 Servers without session support reject explicit resume requests.
 
+### 13.7 Read-only documents: `POST /v1/document`
+
+This optional endpoint is advertised by `documents: true` in `/v1/hello`.
+It requires the same bearer token as every other route. Access is scoped to the
+server's workspace, independent of the selected session or current turn.
+
+Request:
+
+```json
+{"path":"docs/Design notes.md"}
+```
+
+`path` must be a nonempty JSON string without NUL bytes. Relative paths resolve
+against the configured server workspace; absolute paths are accepted only when
+their resolved targets remain inside that workspace. Spaces are literal filename
+characters. The API does not parse shell quoting, expand variables or globs, or
+execute path text. Optional quote removal in the TUI's `/open` command happens
+before the client builds this request.
+
+Successful response (HTTP 200):
+
+```json
+{"path":"docs/Design notes.md","text":"# Design notes\n\nDocument contents.\n"}
+```
+
+Both fields are strings. `path` is the canonical workspace-relative filename,
+including symlink resolution, and supplies the client's document identity.
+`text` contains the file contents as JSON string data, including Markdown syntax
+and trailing newlines. The endpoint does not render Markdown. The client renders
+it through zmdown where available, with its existing Zsh fallback, and makes
+terminal control characters safe at the presentation boundary.
+
+Server validation and limits:
+
+- Resolve symlinks and reject targets outside the canonical workspace.
+- Require a readable regular file. Directories and special files are rejected.
+- Require the resolved filename's extension to be `.md` or `.markdown`,
+  case-insensitively.
+- Accept empty files; reject files containing NUL bytes.
+- Limit file content to 262,144 bytes (256 KiB), including a bounded read that
+  detects growth beyond the limit. This is the source-file limit; JSON escaping
+  may make the HTTP response larger.
+
+Invalid JSON, a missing or non-string `path`, missing/unreadable files, workspace
+escapes, unsupported extensions, NUL-containing data, and oversized documents return
+HTTP 400 with the standard `{"error":"..."}` envelope. Authentication failures
+return 401. An older server without this route returns 404 if called directly;
+clients should use capability detection. The document-size failure is 400,
+distinct from the shared HTTP request-envelope limit's 413 response.
+
+The read remains available during model warm-up, an active turn, and a pending
+command approval. It neither submits model work nor adds document text to model
+context or chat history. It does not create/select a session, advance an event
+cursor, write a file, or grant approval. Although the route uses POST, repeating
+it only reads the file again; contents may differ after another process writes
+it. Protocol 1 provides no document revision, change subscription, or atomic
+snapshot guarantee during concurrent writes.
+
+The TUI exposes `/open FILE.md` and `r` for an explicit reread. It keeps at most
+four document tabs in memory for the current application run, identifies reopened
+files by the returned canonical path, and preserves previous contents after a
+failed reload. Tabs, selected tab, and scroll positions are client presentation
+state and are not persisted in server sessions. These UI limits do not impose a
+server-side open-document count or allocate document handles. Approval dialogs
+retain exclusive input ownership while displayed. The tab strip is shown only
+while documents are open, with document tabs next to Coding. Closing a document
+or selecting Coding focuses the prompt.
+
 ## 14. Complete client flow
 
 ```text
@@ -1236,7 +1351,7 @@ start
   ├─ GET /v1/hello
   ├─ require protocol == 1
   ├─ adopt server workspace/model/profile/policy
-  ├─ remember whether input_queue == true
+  ├─ remember whether input_queue == true and documents == true
   ├─ if sessions supported: enumerate, reuse blank or create new
   └─ display ready/warming/error state
 
@@ -1283,6 +1398,17 @@ should fail closed when no safe interactive input channel exists.
 Store IDs per server and session. The shared-token API does not identify which
 browser created a message. Without retained client records, show the server's
 pending listing as text and offer session-wide recovery as described in 9.6.
+
+### 14.2 Document reader flow
+
+1. Enable remote reading only when the handshake advertises `documents: true`.
+2. On an explicit open or reload, send the filename to `POST /v1/document`.
+3. Validate a response containing a nonempty string `path` and string `text`.
+4. Display the document in a read-only view using the canonical path as its
+   identity. Keep the chat draft and transcript independent of document state.
+5. On failure, report the error and retain any previously loaded document.
+6. Continue normal turn and approval handling; a document response is neither an
+   agent event nor a completion signal. Never fall back to the client's disk.
 
 ## 15. Complete server flow
 
@@ -1546,6 +1672,9 @@ while projecting the legacy global view.
 | Approval POST failure | Report error, request cancellation, stop the turn loop |
 | Completion | Return its validated exit code and refresh sessions |
 | Session 404 | Report load/select failure without changing server state |
+| Missing `documents` capability | Explain that the server needs an update; do not read locally |
+| Document read/reload failure | Report the error; preserve any previously loaded contents |
+| Malformed document response | Reject the replacement document and preserve the existing view |
 
 ### 18.2 Server fail-closed rules
 
@@ -1578,7 +1707,7 @@ timeouts, and should make that decision visible.
 
 The bearer token prevents unauthenticated use but the native connection is not
 encrypted. The token, prompts, reasoning, source excerpts, tool results,
-commands, approvals, and transcripts are observable and modifiable by an
+commands, approvals, transcripts, and document contents are observable and modifiable by an
 on-path attacker.
 
 Use the native server only:
@@ -1613,8 +1742,8 @@ per-read deadlines.
 ### 19.3 Terminal safety
 
 All server-originated strings are untrusted at the client, including server
-name, workspace, model, messages, reasoning, tool output, errors, and exact
-commands. They can contain escape, OSC, carriage-return, backspace, BEL, or
+name, workspace, model, messages, reasoning, tool output, document paths and
+contents, errors, and exact commands. They can contain escape, OSC, carriage-return, backspace, BEL, or
 other control bytes.
 
 An alternative client must render these visibly or through a UI primitive that
@@ -1798,6 +1927,28 @@ use the hardened model.
 - Reconnect restores pending state using server/session-scoped client IDs;
   lost client records do not imply a structured server queue inventory exists.
 
+### 21.10 Read-only document tests
+
+- Missing/non-true `documents` disables reads without accessing client-local files.
+- Open document paths reach local and remote system prompts without file contents.
+- Closed tabs disappear from the next submitted list; no client inherits another's list.
+- Warm-up and queued input retain their submission snapshot, including exact retries.
+- Missing/non-true `document_context` omits metadata and produces a TUI notice
+  when paths would otherwise be sent.
+- The document endpoint requires bearer authentication, including during a turn.
+- A relative path, an in-workspace absolute path, and an in-workspace symlink
+  identify the same canonical workspace-relative document.
+- Spaces, Markdown syntax, Unicode, trailing newlines, and empty files survive
+  the request/response contract.
+- Traversal and symlinks outside the workspace are rejected.
+- Directories, special files, unsupported extensions, missing/unreadable files,
+  NUL-containing files, and content above 262,144 bytes return 400.
+- Malformed JSON and a missing/non-string path return 400.
+- Reads during work do not submit turns, mutate files, or bypass approvals.
+- Failed reads or malformed responses preserve an existing document and draft.
+- Client tabs reuse canonical identities, retain stable shortcuts after closing,
+  and enforce their four-document limit without server-side tab state.
+
 ## 22. End-to-end acceptance scenarios
 
 An implementation is functionally complete when all of these scenarios work.
@@ -1849,6 +2000,17 @@ An implementation is functionally complete when all of these scenarios work.
 4. Client loads every visible event to `none`.
 5. A prompt continues that server-side model/tool history.
 6. A new session request resets agent state and creates a durable empty job.
+
+### Scenario F: reading a document while work runs
+
+1. Handshake advertises `documents: true`; the client starts an ordinary turn.
+2. The user opens `docs/Design notes.md` through the document endpoint.
+3. The client renders the server's Markdown in a read-only tab while preserving
+   the draft, transcript, and normal turn handling.
+4. An approval event brings its approval dialog to the foreground.
+5. After the server-side file changes, explicit reload retrieves its new contents.
+6. A later failed reload retains the previous view; closing the tab leaves the
+   file and server session untouched.
 
 ## 23. Recommended implementation sequence
 
@@ -1902,7 +2064,12 @@ The current behavior described here is implemented across:
 
 | File | Relevant responsibility |
 | --- | --- |
-| `lib/remote.zsh` | Protocol client/server, API routing, events, approvals, readiness, cancellation |
+| `lib/remote.zsh` | Shared remote state and loading boundary |
+| `lib/remote_client.zsh` | Handshake capabilities, authenticated client requests, turn/event handling |
+| `lib/remote_server.zsh` | HTTP admission, capability advertisement, API routing, document responses |
+| `lib/remote_server_agent.zsh` | Server agent lifecycle, events, approvals, readiness, sessions |
+| `lib/document_files.zsh` | Bounded, workspace-confined read-only Markdown file access |
+| `lib/document_tabs.zsh` | Client document loading, tab state, rendering, navigation, and reload |
 | `lib/http.zsh` | Native TCP HTTP client, byte lengths, response parsing, async Ollama workers |
 | `lib/json.zsh` | Flat-object parsing and JSON string encoding |
 | `lib/agent.zsh` | Local/remote turn dispatch, emitted messages/statuses, normal agent loop |
@@ -1911,10 +2078,11 @@ The current behavior described here is implemented across:
 | `lib/input_queue.zsh` | Queue admission, receipts, ordering, discard, persistence, and recovery |
 | `zcoder.zsh` | CLI modes, startup authority, TUI integration, lifecycle cleanup |
 | `tests/run.zsh` | Unit and integration contract coverage |
+| `tests/document_tabs.zsh` | Document validation, remote endpoint, local/remote reader PTYs, resize, and approval checks |
 | `tests/input_queue.zsh` | Queued-input delivery, API receipts, remote forwarding, restart recovery, and live UI/ACP checks |
 
-When exact wire compatibility matters, treat `lib/remote.zsh` in the target
-release as the final executable authority. Protocol 1 has been extended with
+When exact wire compatibility matters, treat `lib/remote.zsh` and the modules it
+loads in the target release as the final executable authority. Protocol 1 has been extended with
 optional capability fields and endpoints without changing its protocol number,
 so a replacement should use capability detection rather than assuming every
 protocol-1 peer implements every later feature.

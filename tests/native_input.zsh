@@ -41,6 +41,13 @@
     terminal_event=(key U+0032 action press supported yes modifier_bits 2 code 50)
     _terminal_keyboard_event
     assert_eq $'\e:::2::' "${(j.:.)TERMINAL_INPUT_QUEUE}" 'Alt-2 retains the legacy focus shortcut'
+    local -i tab_digit
+    for tab_digit in 3 4 5 6 7; do
+      TERMINAL_INPUT_QUEUE=()
+      terminal_event=(key U+003$tab_digit action press supported yes modifier_bits 2 code $((48+tab_digit)))
+      _terminal_keyboard_event
+      assert_eq "$tab_digit" "${TERMINAL_INPUT_QUEUE[4]}" "enhanced Alt-$tab_digit reaches tab selection"
+    done
     terminal_event=(key U+0063 action press supported yes modifier_bits 4 code 99)
     _terminal_keyboard_event
     assert_eq $'\x03' "$terminal_byte" 'enhanced Ctrl-C retains cancellation'

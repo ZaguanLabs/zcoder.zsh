@@ -6,6 +6,7 @@ source "${${(%):-%x}:A:h}/ui_preferences.zsh"
 source "${${(%):-%x}:A:h}/markdown.zsh"
 source "${${(%):-%x}:A:h}/markdown_native.zsh"
 source "${${(%):-%x}:A:h}/selection.zsh"
+source "${${(%):-%x}:A:h}/document_tabs.zsh"
 
 typeset -gi UI_ACTIVE=0 UI_ACTIVITY_DEPTH=0
 # 0: ordinary lifecycle; 1: retained zdraw session; 2: ended fallback session.
@@ -59,7 +60,14 @@ _ui_window_key() {
     header) fields+=("$UI_STATUS_DISPLAY" "$UI_STATUS_ATTR" "$UI_GIT_DISPLAY" "$ZCODER_NAME" "$ZCODER_VERSION" "$ZCODER_MODEL" "$OLLAMA_HOST" "$ZCODER_WORKSPACE" "${REMOTE_MODE:-local}" "$REMOTE_SERVER_NAME" "$REMOTE_ENDPOINT") ;;
     sidebar) fields+=("$UI_FOCUS" "$ZCODER_WORKSPACE" "$ZCODER_PROFILE" "$ZCODER_COMMAND_POLICY" "${TOOL_PATCH_RETRY_REQUIRED:-0}" "${#INSTRUCTION_SOURCES}" "$CURRENT_SESSION_ID"
       "${(j: :)${(@q)SESSION_IDS}}" "${(j: :)${(@q)SESSION_TITLES}}" "${(j: :)${(@q)SKILL_DISCOVERABLE_NAMES}}" "${(j: :)${(@q)SKILL_ACTIVE_NAMES}}") ;;
-    chat) fields+=("$UI_FOCUS" "$UI_TRANSCRIPT_GENERATION" "${#UI_ROLES}" "$UI_RENDER_CACHE_KEY" "$ZCODER_MODEL" "$UI_SELECTED_EVENT" "$UI_SCROLL" "$UI_AUTO_SCROLL") ;;
+    chat)
+      fields+=("$UI_DOCUMENT_TAB" "$UI_DOCUMENT_GENERATION" "$UI_FOCUS")
+      if (( UI_DOCUMENT_TAB > 3 )); then
+        fields+=("${UI_DOCUMENT_SCROLLS[$UI_DOCUMENT_TAB]:-0}")
+      else
+        fields+=("$UI_TRANSCRIPT_GENERATION" "${#UI_ROLES}" "$UI_RENDER_CACHE_KEY" "$ZCODER_MODEL" "$UI_SELECTED_EVENT" "$UI_SCROLL" "$UI_AUTO_SCROLL")
+      fi
+      ;;
     input) fields+=("$UI_FOCUS" "$INPUT_BUF" "$INPUT_POS" "$INPUT_VIEW_TOP" "$(( UI_ACTIVITY_DEPTH > 0 ))" "$UI_SLASH_ROWS" "$UI_SLASH_SELECTED" "${UI_SLASH_CACHE_KEY:-}") ;;
     footer) fields+=("$UI_FOCUS" "$(( UI_ACTIVITY_DEPTH > 0 ))" "${zdraw_text_selection[selected]:-0}") ;;
   esac
@@ -80,7 +88,7 @@ _ui_draw_window() {
     [[ $REPLY == "$UI_SELECTION_VIEW" ]] && return 0
     ui_selection_cancel
   fi
-  [[ "$name" == chat ]] && (( UI_RENDER_DIRTY_FROM > 0 || UI_REVEAL_SELECTED )) && dirty=1
+  [[ "$name" == chat ]] && (( UI_DOCUMENT_TAB == 3 && (UI_RENDER_DIRTY_FROM > 0 || UI_REVEAL_SELECTED) )) && dirty=1
   _ui_window_key "$name"
   if (( dirty )) || [[ "${UI_WINDOW_KEYS[$name]:-}" != "$REPLY" ]]; then
     "_ui_paint_${name}" 1
@@ -302,7 +310,7 @@ ui_focus_panel() {
         ui_preferences_save || ui_status_notice warning 'Could not save the sidebar preference.'
       fi
       ;;
-    2|prompt) UI_FOCUS=input ;;
+    2|prompt) UI_DOCUMENT_TAB=3; UI_FOCUS=input ;;
     *) return 1 ;;
   esac
   ui_refresh_all
@@ -685,6 +693,7 @@ ui_copy_view() {
   (( UI_ACTIVE )) || return 1
   (( $+functions[state_save_session] )) && state_save_session
   if (( $# )); then transcript=$1
+  elif (( UI_DOCUMENT_TAB > 3 )); then transcript=${UI_DOCUMENT_TEXTS[$UI_DOCUMENT_TAB]}
   else ui_plain_transcript; transcript="$REPLY"; fi
   zcoder_terminal_safe "$transcript"; transcript="$REPLY"
   if ! ui_suspend; then
@@ -1136,6 +1145,7 @@ ui_render_messages() {
 
 _ui_paint_chat() {
   (( UI_ACTIVE )) || return 0
+  if (( UI_DOCUMENT_TAB > 3 )); then _ui_document_tab_draw; return 0; fi
   local -i defer_refresh="${1:-0}"
   local -i inner_w=$(( SCREEN_W - SIDE_W - 2 )) inner_h=$(( SCREEN_H - TOP_H - INPUT_H - FOOT_H - 2 ))
   local -i total row idx max_scroll segment_start segment_count segment_index
@@ -1191,7 +1201,11 @@ _ui_paint_chat() {
   zcoder_curses clear chat_win
   [[ "$UI_FOCUS" == chat ]] && ui_attr chat_win -dim bold accent/surface || ui_attr chat_win -dim -bold border/surface
   ui_border chat_win
-  zcoder_curses move chat_win 0 2; ui_attr chat_win bold cyan/black; zcoder_curses string chat_win " Agent Transcript (${#UI_ROLES} events) "
+  if (( ${#UI_DOCUMENT_PATHS} )); then
+    _ui_document_tabs_draw
+  else
+    ui_draw_row chat_win 0 2 "$(( inner_w-2 ))" 'bold cyan/black' " Agent Transcript (${#UI_ROLES} events) "
+  fi
   for (( row=1; row<=inner_h; row++ )); do
     idx=$(( UI_SCROLL + row ))
     (( idx <= total )) || continue
@@ -1227,7 +1241,7 @@ _ui_paint_chat() {
       (( ${#row_spans} )) && ui_draw_row chat_win "$row" 1 "$inner_w" "${row_spans[@]}"
     fi
   done
-  (( UI_SCROLL > 0 )) && { zcoder_curses move chat_win 0 $(( inner_w - 12 )); ui_attr chat_win dim yellow/black; zcoder_curses string chat_win " [PgUp/PgDn] "; }
+
   (( defer_refresh )) || terminal_refresh chat_win
 }
 
@@ -1298,6 +1312,10 @@ _ui_paint_footer() {
   elif (( UI_SELECTION_ENABLED )); then
     text+='  Drag Select'
   fi
+  if (( UI_DOCUMENT_TAB > 3 )); then
+    text=' ↑/↓ Scroll  PgUp/PgDn Page  r Reload  x Close  Alt+3 Coding'
+    (( UI_ACTIVITY_DEPTH > 0 )) && text+='  Esc Stop'
+  fi
   zcoder_clip "$text" "$SCREEN_W"; text="$REPLY"
   zcoder_curses clear foot_win; ui_attr foot_win reverse dim white/black
   zcoder_pad "$text" "$SCREEN_W"; zcoder_curses move foot_win 0 0; zcoder_curses string foot_win "$REPLY"
@@ -1306,6 +1324,7 @@ _ui_paint_footer() {
 
 ui_refresh_all() {
   (( UI_ACTIVE )) || return 0
+  [[ $UI_FOCUS == document ]] || UI_DOCUMENT_TAB=3
   # Focus and activity transitions can open/close inline completion too.
   if (( ! ${UI_MODAL_ACTIVE:-0} && $+functions[ui_slash_update] )); then
     local -i previous_slash_rows=$UI_SLASH_ROWS
@@ -1373,12 +1392,18 @@ ui_activity_input() {
   if [[ "$INPUT_TERM_STATE" == normal && "$ch" == $'\e' ]]; then UI_ACTIVITY_ESCAPE_AT=$EPOCHREALTIME; fi
   if input_decode_terminal_event "$ch" "$key"; then
     if [[ "$INPUT_EVENT_ACTION" == focus_sessions || "$INPUT_EVENT_ACTION" == focus_prompt ]]; then ui_focus_panel "${INPUT_EVENT_ACTION#focus_}"
-    elif [[ "$INPUT_EVENT_ACTION" == newline ]]; then input_insert $'\n'; ui_input_changed
-    elif [[ "$INPUT_EVENT_ACTION" == paste && -n "$INPUT_EVENT_TEXT" ]]; then input_insert "$INPUT_EVENT_TEXT"; ui_input_changed
+    elif [[ "$INPUT_EVENT_ACTION" == focus_tab ]]; then ui_document_select "$INPUT_EVENT_TEXT"
+    elif [[ "$INPUT_EVENT_ACTION" == newline && $UI_FOCUS != document ]]; then input_insert $'\n'; ui_input_changed
+    elif [[ "$INPUT_EVENT_ACTION" == paste && -n "$INPUT_EVENT_TEXT" && $UI_FOCUS != document ]]; then input_insert "$INPUT_EVENT_TEXT"; ui_input_changed
     elif [[ "$INPUT_EVENT_ACTION" == paste_rejected ]]; then ui_status_notice warning "$INPUT_EVENT_TEXT"
     fi
   elif [[ $UI_FOCUS != input && -z $key && $ch == (1|2) ]]; then ui_focus_panel "$ch"
+  elif ui_document_input "$ch" "$key"; then :
   elif [[ "$ch" == $'\x02' ]]; then ui_toggle_sidebar
+  elif [[ $UI_FOCUS == input && $INPUT_BUF == (/open|/open\ *) &&
+          ( $ch == $'\r' || $ch == $'\n' || $key == ENTER || $key == PADENTER ) ]]; then
+    input_submit; ui_input_changed
+    handle_slash_command "$INPUT_SUBMITTED"
   elif [[ "$UI_FOCUS" == input && -n "${INPUT_QUEUE_TURN_ID:-}${REMOTE_INPUT_TURN_ID:-}" &&
           ( "$ch" == $'\r' || "$ch" == $'\n' || "$key" == ENTER || "$key" == PADENTER || "$ch" == $'\x07' ) ]] && (( $+functions[input_queue_ui_submit] )); then
     if [[ "$ch" == $'\x07' ]]; then input_queue_ui_submit follow_up || return $?
@@ -1395,7 +1420,7 @@ ui_activity_input() {
   elif [[ "$key" == NPAGE ]]; then
     (( UI_SCROLL+=6 )); ui_draw_chat
   elif [[ "$UI_FOCUS" == chat ]]; then ui_chat_input "$ch" "$key" || true
-  else ui_editor_input "$ch" "$key" || true
+  elif [[ $UI_FOCUS == input ]]; then ui_editor_input "$ch" "$key" || true
   fi
   return 0
 }

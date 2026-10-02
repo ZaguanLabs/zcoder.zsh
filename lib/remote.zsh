@@ -1,5 +1,7 @@
 # Shared state and loading for the authenticated remote-agent transports.
 
+source "${${(%):-%x}:A:h}/document_context.zsh"
+
 typeset -g REMOTE_MODE="${REMOTE_MODE:-local}"
 typeset -g REMOTE_SERVER_NAME="${REMOTE_SERVER_NAME:-}"
 typeset -g REMOTE_SERVER_PORT="${REMOTE_SERVER_PORT:-7337}"
@@ -25,6 +27,7 @@ typeset -gF REMOTE_MODEL_DEADLINE=0.0 REMOTE_SERVER_MODEL_CHECK_TIMEOUT=10.0
 typeset -g REMOTE_GIT_STATUS='Git: unavailable'
 typeset -gi REMOTE_GIT_SUPPORTED=0
 typeset -g REMOTE_HARNESSES=""
+typeset -g REMOTE_DOCUMENTS_SUPPORTED=false REMOTE_DOCUMENT_CONTEXT_SUPPORTED=false
 typeset -gi REMOTE_SESSIONS_SUPPORTED=0
 typeset -gi REMOTE_HARNESS_DISCOVERY_SUPPORTED=0
 typeset -gi REMOTE_GOALS_SUPPORTED=0
@@ -86,6 +89,7 @@ remote_load_token() {
 
 # Keep the historical public module as the single loading boundary. The
 # implementation files divide client, server-agent, and HTTP listener ownership.
+source "${${(%):-%x}:A:h}/document_files.zsh" || return $?
 source "${${(%):-%x}:A:h}/remote_client.zsh" || return $?
 source "${${(%):-%x}:A:h}/remote_server_agent.zsh" || return $?
 source "${${(%):-%x}:A:h}/remote_server.zsh" || return $?

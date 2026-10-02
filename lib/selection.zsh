@@ -181,6 +181,18 @@ ui_selection_copy() {
 # Success means consumed. Paste records can never become copy/clear commands.
 ui_selection_event() {
   emulate -L zsh
+  if (( ${UI_DOCUMENT_TAB:-3} > 3 && ! ${UI_MODAL_ACTIVE:-0} )); then
+    if [[ ${terminal_event[type]} == mouse ]]; then
+      if (( terminal_event[x]>SIDE_W && terminal_event[x]<SCREEN_W-1 && terminal_event[y]>TOP_H && terminal_event[y]<SCREEN_H-INPUT_H-FOOT_H-1 )); then
+        case " ${terminal_event[buttons]-} " in
+          *' PRESSED4 '*) ui_document_input k '' ;;
+          *' PRESSED5 '*) ui_document_input j '' ;;
+        esac
+      fi
+      return 0
+    fi
+    return 1
+  fi
   (( UI_SELECTION_ENABLED )) || return 1
   local -A zdraw_selection_event=("${(@kv)terminal_event}")
   local -i was_selected=${zdraw_text_selection[selected]:-0} consumed=0

@@ -51,6 +51,15 @@ handle_slash_command() {
     return 0
   fi
   case "$text" in
+    /open|/open\ *)
+      value=${text#/open}; value=${value##[[:space:]]#}; value=${value%%[[:space:]]#}
+      # The remainder is a literal path; optionally remove a single quote pair.
+      # No expansion, globbing, command substitution or shell evaluation occurs.
+      if [[ $value == \"*\" || $value == \'*\' ]]; then value=${value[2,-2]}; fi
+      if [[ -z $value ]]; then ui_status_notice warning 'Usage: /open <filename.md>'; ui_draw_header
+      else ui_document_open "$value"; fi
+      return 0
+      ;;
     /commands)
       ui_command_palette
       return 0

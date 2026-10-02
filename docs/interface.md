@@ -156,6 +156,59 @@ Alt+1 reveals a manually hidden sidebar when the terminal is wide enough.
 Remote sessions use the same sidebar controls but remain stored on the named
 server. See [Remote-agent server](remote.md).
 
+## Read Markdown documents
+
+Use `/open README.md` to read a workspace document inside zcoder. A tab strip
+above the chat appears when a document is open, with **[3 Coding]** followed
+immediately by up to four document tabs named after their files. Closing the last
+document hides the strip. **Alt+3** returns to Coding and focuses the prompt;
+**Alt+4** through **Alt+7** select documents.
+**Alt+2** returns to Coding and focuses your preserved prompt draft.
+
+Paths are relative to the workspace. Absolute paths inside it also work, and
+paths with spaces can be entered literally or wrapped in a pair of quotes:
+
+```text
+/open docs/architecture.md
+/open "docs/Design notes.md"
+```
+
+The reader is strictly read-only. Documents use the same zmdown rendering and
+syntax highlighting as chat, with the existing Zsh fallback when native Markdown
+is unavailable. Each document keeps its scroll position when switching tabs.
+
+| Reader control | Action |
+| --- | --- |
+| Up/Down or k/j | Scroll |
+| Page Up/Page Down | Scroll a page |
+| Home/End | Go to the beginning/end |
+| Mouse wheel with native zdraw | Scroll the document |
+| r | Reload the file from disk |
+| x | Close the document and focus the prompt in Coding |
+| Tab or Alt+2 | Return to the prompt |
+| Ctrl+Y (when idle) | Open the document source in the terminal copy view |
+
+Opening an existing document selects its tab. Closing a tab keeps the other
+numbers unchanged; the next document reuses the vacant slot. When four documents
+are open, close one before opening another. Tabs last for the current application
+run and are not saved in chat history. Opening a document does not add its contents
+to the model's context.
+
+Each submitted request includes the **paths** of the open documents in the
+system prompt. You can say “Read the open docs and explain how they fit together.”
+The model can then read those files with `read_file`; their contents are never
+attached automatically. The path list is captured when you submit, including
+queued steering and follow-ups. Closing tabs updates the next submitted list.
+
+You can switch tabs, read documents, and use `/open` while the model is working.
+Command approval dialogs still take precedence. Files are snapshots: press `r`
+after a model updates the document. A failed reload keeps the previous contents.
+Documents must be regular `.md` or `.markdown` files of at most 256 KiB, with
+symlinks resolving inside the workspace.
+
+In a remote session, `/open` and `r` read the **server's workspace**. The server
+must support document reading; older servers report that an update is needed.
+
 ## Select and copy chat text
 
 With the optional native runtime (`make native`), left-click and drag over text

@@ -93,10 +93,12 @@ main_tui() {
     if input_decode_terminal_event "$ch" "$key"; then
       if [[ "$INPUT_EVENT_ACTION" == focus_sessions || "$INPUT_EVENT_ACTION" == focus_prompt ]]; then
         ui_focus_panel "${INPUT_EVENT_ACTION#focus_}"
-      elif [[ "$INPUT_EVENT_ACTION" == newline ]]; then
+      elif [[ "$INPUT_EVENT_ACTION" == focus_tab ]]; then
+        ui_document_select "$INPUT_EVENT_TEXT"
+      elif [[ "$INPUT_EVENT_ACTION" == newline && $UI_FOCUS != document ]]; then
         input_insert $'\n'
         ui_input_changed
-      elif [[ "$INPUT_EVENT_ACTION" == paste && -n "$INPUT_EVENT_TEXT" ]]; then
+      elif [[ "$INPUT_EVENT_ACTION" == paste && -n "$INPUT_EVENT_TEXT" && $UI_FOCUS != document ]]; then
         input_insert "$INPUT_EVENT_TEXT"
         ui_input_changed
       elif [[ "$INPUT_EVENT_ACTION" == paste_rejected ]]; then
@@ -108,7 +110,7 @@ main_tui() {
     elif [[ "$ch" == $'\x11' || "$ch" == $'\x04' ]]; then
       break
     elif [[ "$ch" == $'\x03' ]]; then
-      input_clear; ui_input_changed
+      if [[ $UI_FOCUS != document ]]; then input_clear; ui_input_changed; fi
     elif [[ "$ch" == $'\x0e' ]]; then
       handle_slash_command /new
     elif [[ "$ch" == $'\x19' ]]; then
@@ -137,6 +139,8 @@ main_tui() {
       esac
       [[ "$UI_FOCUS" == chat ]] && { UI_AUTO_SCROLL=0; UI_REVEAL_SELECTED=1; }
       ui_refresh_all
+    elif ui_document_input "$ch" "$key"; then :
+    elif [[ $UI_FOCUS == document ]]; then :
     elif [[ "$key" == PPAGE ]]; then
       UI_AUTO_SCROLL=0; (( UI_SCROLL -= 6 )); (( UI_SCROLL < 0 )) && UI_SCROLL=0; ui_draw_chat
     elif [[ "$key" == NPAGE ]]; then

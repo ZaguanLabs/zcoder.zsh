@@ -293,7 +293,7 @@ _terminal_keyboard_event() {
       if (( modifiers == 4 && code >= 97 && code <= 122 )); then
         printf -v char '\\%03o' $(( code - 96 ))
         printf -v terminal_byte '%b' "$char"
-      elif (( modifiers == 2 && (code == 49 || code == 50) )); then
+      elif (( modifiers == 2 && code >= 49 && code <= 55 )); then
         TERMINAL_INPUT_QUEUE+=($'\e' '' '' "$(( code - 48 ))" '' '')
       elif (( modifiers <= 1 )); then
         # Associated text can contain several scalars; feed characters through

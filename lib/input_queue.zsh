@@ -1,8 +1,9 @@
 # User input belongs to the session owner, never to an HTTP/ACP broker's copy
 # of AGENT_MESSAGES. Private records are published atomically under an OS lock.
+source "${${(%):-%x}:A:h}/document_context.zsh"
 typeset -g INPUT_QUEUE_TURN_ID='' INPUT_QUEUE_ERROR=''
 typeset -g REMOTE_INPUT_TURN_ID='' REMOTE_INPUT_SUPPORTED=false
-typeset -g INPUT_QUEUE_DRAFT_ID='' INPUT_QUEUE_DRAFT_KEY=''
+typeset -g INPUT_QUEUE_DRAFT_ID='' INPUT_QUEUE_DRAFT_KEY='' INPUT_QUEUE_DRAFT_DOCUMENTS=''
 typeset -gi INPUT_QUEUE_MODEL_PENDING=0
 
 input_queue_has_steer() {
@@ -79,13 +80,15 @@ input_queue_open() {
 input_queue_submit() {
   emulate -L zsh
   setopt extendedglob
-  local session="$1" turn="$2" id="$3" mode="$4" body="$5"
+  local session="$1" turn="$2" id="$3" mode="$4" body="$5" open_documents="${6:-}"
   local queue_dir='' queue_lock='' record='' body_json='' seq='' file='' id_part=''
   local -a files=() matches=()
   local -i bytes=0
   INPUT_QUEUE_ERROR=''
   [[ -n "$id" && ${#id} -le 64 && "$id" != *[^A-Za-z0-9_-]* ]] || { INPUT_QUEUE_ERROR='invalid message ID'; return 1; }
   [[ "$mode" == steer || "$mode" == follow_up ]] || { INPUT_QUEUE_ERROR='mode must be steer or follow_up'; return 1; }
+  document_context_validate "$open_documents" || { INPUT_QUEUE_ERROR='invalid open_documents'; return 1; }
+  open_documents="$REPLY"
   # Shell commands never steer a model that is already working.
   [[ "$body" == \!* ]] && mode=follow_up
   _http_byte_length "$body"; bytes=$REPLY
@@ -94,6 +97,10 @@ input_queue_submit() {
   {
     zjson_quote "$body"; body_json="$REPLY"
     zjson_quote "$turn"; record='{"turn_id":'"$REPLY"',"message_id":"'"$id"'","mode":"'"$mode"'","text":'"$body_json"'}'
+    if [[ -n "$open_documents" ]]; then
+      zjson_quote "$open_documents"
+      record="${record%\}},\"open_documents\":$REPLY}"
+    fi
     matches=("$queue_dir/items/"*-"$id".json(N))
     if (( ${#matches} )); then
       [[ "${mapfile[$matches[1]]}" == "$record" ]] || { INPUT_QUEUE_ERROR='message ID already used for different input'; return 1; }
@@ -148,6 +155,10 @@ _input_queue_drain() {
       text="${JSON_OBJECT[text]}"
       [[ "$mode" == steer && "$text" == \!* ]] && break
       [[ "$mode" == all || "$mode" == recovery || "${JSON_OBJECT[mode]}" == "$mode" ]] || continue
+      # Replace, rather than merge, the latest submitted tab list. Omission
+      # from a headless client also clears a previous interactive snapshot.
+      document_context_validate "${JSON_OBJECT[open_documents]:-}" || { INPUT_QUEUE_ERROR='invalid queued open_documents'; return 1; }
+      AGENT_OPEN_DOCUMENTS="$REPLY"
       selected='"input_id":"'"$id"'"'
       found=0
       message_index=0
@@ -222,24 +233,26 @@ input_queue_ui_submit() {
   local mode="${1:-steer}" text="$INPUT_BUF" id="${EPOCHSECONDS}_${sysparams[pid]}_$RANDOM" receipt=''
   local key="$CURRENT_SESSION_ID|$INPUT_QUEUE_TURN_ID|$REMOTE_INPUT_TURN_ID|$mode|$text"
   if [[ "$INPUT_QUEUE_DRAFT_KEY" == "$key" ]]; then id="$INPUT_QUEUE_DRAFT_ID"
-  else INPUT_QUEUE_DRAFT_ID="$id"; INPUT_QUEUE_DRAFT_KEY="$key"
+  else
+    INPUT_QUEUE_DRAFT_ID="$id"; INPUT_QUEUE_DRAFT_KEY="$key"
+    document_context_snapshot; INPUT_QUEUE_DRAFT_DOCUMENTS="$REPLY"
   fi
   [[ -n "$text" ]] || return 0
   [[ "$text" == \!* ]] && mode=follow_up
   # Slash commands have control effects owned by the idle loop.
   [[ "$text" != /* ]] || { ui_append_message error 'Send slash commands after the active turn finishes.'; return 0; }
   if [[ "${REMOTE_MODE:-local}" == client ]]; then
-    remote_client_submit_input "$id" "$mode" "$text" || {
+    remote_client_submit_input "$id" "$mode" "$text" "$INPUT_QUEUE_DRAFT_DOCUMENTS" || {
       (( $? == 130 )) && return 130
       ui_append_message error "$REMOTE_ERROR"; return 0
     }
   else
-    input_queue_submit "$CURRENT_SESSION_ID" "$INPUT_QUEUE_TURN_ID" "$id" "$mode" "$text" || {
+    input_queue_submit "$CURRENT_SESSION_ID" "$INPUT_QUEUE_TURN_ID" "$id" "$mode" "$text" "$INPUT_QUEUE_DRAFT_DOCUMENTS" || {
       ui_append_message error "Input not queued: $INPUT_QUEUE_ERROR"; return 0
     }
   fi
   input_submit
-  INPUT_QUEUE_DRAFT_KEY=''; INPUT_QUEUE_DRAFT_ID=''
+  INPUT_QUEUE_DRAFT_KEY=''; INPUT_QUEUE_DRAFT_ID=''; INPUT_QUEUE_DRAFT_DOCUMENTS=''
   local label=steering
   [[ "$mode" == follow_up ]] && label=follow-up
   ui_append_message system "Queued $label [$id]: $text"
@@ -305,7 +318,7 @@ _input_queue_request() {
   local -A JSON_OBJECT=() JSON_OBJECT_TYPES=()
   INPUT_QUEUE_ERROR=''
   case "$action" in
-    submit) input_queue_submit "$session" "$turn" "$id" "$mode" "$body"; return $? ;;
+    submit) input_queue_submit "$session" "$turn" "$id" "$mode" "$body" "${7:-}"; return $? ;;
     status) input_queue_status "$session" "$id"; return $? ;;
     list|drop) ;;
     *) INPUT_QUEUE_ERROR='unknown input queue action'; return 1 ;;

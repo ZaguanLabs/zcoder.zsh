@@ -4,6 +4,7 @@ input_queue_tests() {
   local ZCODER_WORKSPACE="$TEST_TMP" ZCODER_PROFILE=coding ZCODER_MODEL=queue-fixture
   local REMOTE_MODE=local REMOTE_TURN_ID='' ACP_INPUT_TURN_ID='' INPUT_QUEUE_TURN_ID=first
   local ZCODER_TOOL_EXPOSURE=full ZCODER_STREAM=false AGENT_CONTEXT_TOOLS='[]'
+  local AGENT_OPEN_DOCUMENTS=''
   local AGENT_SYSTEM_PROMPT=fixture SESSION_TITLE='New Job' STATE_SAVED_SESSION_ID=''
   local -i STATE_ENABLED=1 STATE_LOADING=0 UI_ACTIVE=0 ACP_WORKER_ACTIVE=0 REMOTE_SERVER_WORKER=0
   local -i AGENT_REQUIRE_FINISH_TOOL=0 AGENT_WARMUP_ACTIVE=0 AGENT_TRANSPORT_RETRY_LIMIT=0
@@ -77,6 +78,29 @@ input_queue_tests() {
     assert_contains "$REPLY" discarded 'users can explicitly discard pending input'
     input_queue_submit "$CURRENT_SESSION_ID" first one steer $'Exact 世界\nsecond line\n'
     assert_success 'a completed turn still answers an exact retry' $?
+
+    input_queue_open "$CURRENT_SESSION_ID" documents
+    INPUT_QUEUE_TURN_ID=documents
+    input_queue_submit "$CURRENT_SESSION_ID" documents paths steer 'Read the open docs' '["docs/one.md","docs/two.md"]'
+    assert_success 'queued input accepts document paths without reading them' $?
+    input_queue_submit "$CURRENT_SESSION_ID" documents paths steer 'Read the open docs' '["docs/one.md","docs/two.md"]'
+    assert_success 'queued path snapshot retries are idempotent' $?
+    input_queue_submit "$CURRENT_SESSION_ID" documents paths steer 'Read the open docs' '[]'
+    assert_failure 'retrying an ID with a different path snapshot is rejected' $?
+    input_queue_drain steer
+    assert_eq '["docs/one.md","docs/two.md"]' "$AGENT_OPEN_DOCUMENTS" 'consumption restores the queued path list'
+    agent_resolve_system_prompt
+    assert_contains "$REPLY" 'docs/two.md' 'queued paths enter the system prompt'
+    agent_history_payload_json
+    assert_not_contains "$REPLY" 'docs/two.md' 'queued paths do not rewrite user history'
+    input_queue_submit "$CURRENT_SESSION_ID" documents closed steer 'Now continue' '[]'
+    input_queue_drain steer
+    assert_eq '[]' "$AGENT_OPEN_DOCUMENTS" 'an empty submitted list clears previous queued paths'
+    input_queue_close true
+    # Restore this fixture's earlier history count before the process test.
+    AGENT_MESSAGES=("${AGENT_MESSAGES[1]}")
+    state_save_session
+    INPUT_QUEUE_TURN_ID=first
 
     # A real child publishes while the owner holds separate history arrays.
     input_queue_open "$CURRENT_SESSION_ID" first

@@ -165,6 +165,25 @@ or other idle controls. Foreground work supersedes pending polls, and their old
 responses cannot replace newer model state. Headless clients retain synchronous
 HTTP.
 
+## Read-only Markdown documents
+
+`/open FILE.md` opens a document from the connected server's workspace, and `r`
+reloads it. The client never substitutes a file from its own filesystem. Updated
+servers advertise `documents: true` in `/v1/hello`; older servers produce a clear
+unsupported-reader notice.
+
+The authenticated `POST /v1/document` endpoint accepts `{"path":"docs/guide.md"}`
+and returns `path` (the canonical workspace-relative filename) and `text`. It
+uses the same regular-file, workspace, symlink, Markdown-extension and 256 KiB
+limits as the local reader. Invalid requests return HTTP 400. Reading does not
+submit a model turn or change any file, and remains available while work runs.
+
+Servers also advertise `document_context: true` when requests can carry the
+open document paths. The client sends only the workspace-relative paths, never
+the reader's document contents, with turns and queued input. The model can read
+the files when asked. A server without this capability gets a normal request,
+and the client displays a notice to include paths explicitly or update it.
+
 ## Sessions and current limitations
 
 The API and local TUI share the server user's session store

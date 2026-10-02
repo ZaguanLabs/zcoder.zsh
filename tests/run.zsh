@@ -3500,6 +3500,8 @@ fi
 if test_integration document; then
   zsh -df "${TEST_DIR}/document.zsh"
   assert_success "document navigation, anchored reflow and visual baselines pass" $?
+  zsh -df "${TEST_DIR}/document_tabs.zsh"
+  assert_success "read-only Markdown tabs work locally and remotely during activity" $?
 fi
 test_section git_status
 source "${TEST_DIR}/git_status.zsh"
@@ -3543,6 +3545,8 @@ test_section tool_labels
 source "${TEST_DIR}/tool_labels.zsh"
 test_section context_accounting
 source "${TEST_DIR}/context_accounting.zsh"
+test_section document_context
+source "${TEST_DIR}/document_context.zsh"
 test_section input_queue
 source "${TEST_DIR}/input_queue.zsh"
 if test_integration remote_interrupt; then

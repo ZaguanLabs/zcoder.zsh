@@ -1,5 +1,7 @@
 # Ollama conversation state and iterative tool-call loop.
 
+source "${${(%):-%x}:A:h}/document_context.zsh"
+
 typeset -ga AGENT_MESSAGES=()
 typeset -ga AGENT_ACCOUNTING_MESSAGES=() AGENT_ACCOUNTING_BYTES=() AGENT_ACCOUNTING_REASONING_BYTES=()
 typeset -gi AGENT_ACCOUNTING_CACHE_BYTES=0
@@ -386,16 +388,16 @@ agent_datetime_prompt_block() {
 
 agent_system_prompt_parts() {
   # Ordered reply fields: base, project, skills, MCP, relay, checkpoint,
-  # completion rules, goal, loop guidance, current time. Payloads and
+  # completion rules, goal, loop guidance, open documents, current time. Payloads and
   # accounting share this assembly to keep inspection aligned with the
   # guidance sent to the model. Keep the time last so every prompt ends with it.
   local base="$AGENT_SYSTEM_PROMPT" project='' skills='' mcp='' relay='' checkpoint=''
-  local completion='' goal='' loop='' routing_instructions='' datetime=''
+  local completion='' goal='' loop='' routing_instructions='' datetime='' documents=''
   agent_datetime_prompt_block || return 1
   datetime="$REPLY"
   if (( ${GOAL_VERIFIER_ACTIVE:-0} )) && (( $+functions[goal_verifier_system_prompt] )); then
     goal_verifier_system_prompt
-    reply=("$REPLY" '' '' '' '' '' '' '' '' "$datetime")
+    reply=("$REPLY" '' '' '' '' '' '' '' '' '' "$datetime")
     return 0
   fi
   if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
@@ -443,7 +445,8 @@ agent_system_prompt_parts() {
     goal="$REPLY"
   fi
   [[ -n "$AGENT_LOOP_NUDGE" ]] && loop=$'\n\n'"$AGENT_LOOP_NUDGE"
-  reply=("$base" "$project" "$skills" "$mcp" "$relay" "$checkpoint" "$completion" "$goal" "$loop" "$datetime")
+  document_context_prompt_block; documents="$REPLY"
+  reply=("$base" "$project" "$skills" "$mcp" "$relay" "$checkpoint" "$completion" "$goal" "$loop" "$documents" "$datetime")
 }
 
 agent_resolve_system_prompt() {
@@ -550,7 +553,7 @@ _agent_context_bill() {
   local -i index=0 reasoning_bytes=0 message_bytes=0 removed=0
 
   agent_system_prompt_parts
-  base="$reply[1]$reply[10]"; instructions="$reply[2]$reply[7]"; skills=$reply[3]
+  base="$reply[1]$reply[10]$reply[11]"; instructions="$reply[2]$reply[7]"; skills=$reply[3]
   mcp=$reply[4]; relay=$reply[5]; compacted=$reply[6]; goal=$reply[8]; loop=$reply[9]
   if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
     agent_route_schema_json; tools="$REPLY"
