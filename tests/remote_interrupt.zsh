@@ -51,6 +51,7 @@ cancel_request() {
   _remote_server_dispatch_request ''
 }
 check state_init
+check state_save_session --allow-empty
 REMOTE_SESSION_ID=$CURRENT_SESSION_ID
 # Older abandoned input must not be recovered implicitly by Escape.
 check input_queue_open "$CURRENT_SESSION_ID" abandoned

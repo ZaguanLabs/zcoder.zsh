@@ -28,14 +28,8 @@ assert_success "local entrypoint fixture starts a native Ollama listener" $?
 TERM=xterm-256color zpty -b local-application integration_application
 integration_wait "$integration_base.started" 1
 assert_success "the actual local entrypoint gives curses ownership before context discovery" $?
-# Reproduce a local session linked to a shared remote history, as supported
-# by session discovery. Enter must still reach the model and transcript.
 typeset -a integration_linked_sessions=("$integration_base.home"/sessions/*.session(N/))
-if (( ${#integration_linked_sessions} == 1 )); then
-  zf_mv "$integration_linked_sessions[1]" "$integration_base.shared-session"
-  zf_ln -s "$integration_base.shared-session" "$integration_linked_sessions[1]"
-fi
-assert_success "the local entrypoint session uses a shared history link" "$([[ -h $integration_linked_sessions[1] ]] && print 0 || print 1)"
+assert_eq 0 "${#integration_linked_sessions}" 'the local entrypoint leaves its empty startup conversation unsaved'
 zpty -w -n local-application $'preserved draft\e'
 integration_wait "$integration_base.cancel_eof" 5
 assert_success "Escape closes the startup context request in the actual application" $?
@@ -54,6 +48,14 @@ assert_success "typing slash in the actual entrypoint displays command suggestio
 zpty -w -n local-application $'co\eOB\eOA\t\r'
 integration_wait output 'Context usage'
 assert_success "the context inspector opens after the recovered turn" $?
+# Once the first real turn has finished, expose its saved history through a
+# shared link. Copying, shutdown saving and resume must keep using that owner.
+integration_linked_sessions=("$integration_base.home"/sessions/*.session(N/))
+if (( ${#integration_linked_sessions} == 1 )); then
+  zf_mv "$integration_linked_sessions[1]" "$integration_base.shared-session"
+  zf_ln -s "$integration_base.shared-session" "$integration_linked_sessions[1]"
+fi
+assert_success "the local entrypoint session uses a shared history link" "$([[ -h $integration_linked_sessions[1] ]] && print 0 || print 1)"
 zpty -w -n local-application $'\e'
 zselect -t 20
 integration_output=''

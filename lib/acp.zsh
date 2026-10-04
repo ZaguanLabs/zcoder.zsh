@@ -250,7 +250,7 @@ _acp_new_session() {
   STATE_ENABLED=0
   state_new_session || { _acp_error "$id_raw" -32603 "could not create session"; return 1; }
   STATE_ENABLED=1
-  state_save_session || { STATE_ENABLED=0; _acp_error "$id_raw" -32603 "could not persist session"; return 1; }
+  state_save_session --allow-empty || { STATE_ENABLED=0; _acp_error "$id_raw" -32603 "could not persist session"; return 1; }
   STATE_ENABLED=0
   ACP_SESSION_CWD[$CURRENT_SESSION_ID]="$cwd"
   ACP_SESSION_MCP[$CURRENT_SESSION_ID]="$mcp_servers"

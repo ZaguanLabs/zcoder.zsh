@@ -180,6 +180,11 @@ _agent_run_turn() {
   if (( ${UI_ACTIVE:-0} )); then
     document_context_snapshot; AGENT_OPEN_DOCUMENTS="$REPLY"
   fi
+  # Reserve the inbox only once an actual turn arrives for an unsaved draft.
+  if (( ${STATE_ENABLED:-0} && $+functions[state_save_session] )) &&
+     [[ -n "$CURRENT_SESSION_ID" && -n "$1" && ! -d "$ZCODER_SESSIONS_DIR/${CURRENT_SESSION_ID}.session" ]]; then
+    state_save_session --allow-empty || { agent_emit error 'Could not save the session before starting the turn.'; return 1; }
+  fi
   # Local sessions and both headless brokers use the same persisted inbox.
   # Fixtures/one-shot callers without a saved session retain their old path.
   if (( ! $+functions[input_queue_open] || ! ${STATE_ENABLED:-0} )) || [[ ! -d "$ZCODER_SESSIONS_DIR/${CURRENT_SESSION_ID}.session" ]]; then

@@ -25,7 +25,7 @@ input_queue_tests() {
   {
     transcript_reset
     agent_reset
-    state_save_session
+    state_save_session --allow-empty
     # Shared remote histories are exposed locally as session-directory links.
     local shared_session="$TEST_TMP/shared-input-session"
     zf_mv "$ZCODER_SESSIONS_DIR/$CURRENT_SESSION_ID.session" "$shared_session"
@@ -141,6 +141,8 @@ input_queue_tests() {
       if (( cancel_tool )); then TOOL_CANCELLED=1; INPUT_QUEUE_INTERRUPT=1; fi
     }
     state_new_session
+    [[ ! -d "$ZCODER_SESSIONS_DIR/$CURRENT_SESSION_ID.session" ]]
+    assert_success 'a fresh local draft has no saved inbox before its first prompt' $?
     agent_user_turn 'Initial task'
     assert_success 'queued steering and follow-ups complete through the real agent loop' $?
     assert_eq 3 "$requests" 'steering joins the next request and the follow-up gets a subsequent turn'
@@ -151,7 +153,7 @@ input_queue_tests() {
     assert_not_contains "${payloads[3]}" input_id 'live model requests exclude queue metadata'
 
     # Admission errors must be visible before any user history/model work.
-    state_new_session
+    state_new_session --allow-empty
     local rejected_queue="$ZCODER_SESSIONS_DIR/$CURRENT_SESSION_ID.session/input_queue"
     zf_ln -s "$shared_session/input_queue" "$rejected_queue"
     before=$requests; emitted=()

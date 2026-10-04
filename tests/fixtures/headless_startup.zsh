@@ -25,6 +25,7 @@ headless_probe() {
 
   ZCODER_SESSIONS_DIR="$REMOTE_RUNTIME_DIR/sessions"
   state_init || return 19
+  state_save_session --allow-empty || return 19
   session_id="$CURRENT_SESSION_ID"
   REMOTE_TURN_ID="${EPOCHSECONDS}_${RANDOM}"
   ZCODER_COMMAND_POLICY=ask

@@ -105,7 +105,9 @@ Interactive jobs are stored under `${ZCODER_HOME}/sessions`, normally
 `${XDG_CONFIG_HOME:-$HOME/.config}/zcoder/sessions`. Each interactive launch
 starts a fresh job. Earlier jobs matching the workspace and profile remain in
 the sidebar and can be resumed explicitly. Each launch creates a new session
-ID, including when the previous chat was empty.
+ID, including when the previous chat was empty. An untouched local chat stays
+in memory and is not saved. Empty sessions from earlier versions or headless
+protocol bookkeeping do not appear in the conversation list.
 
 Use `./zcoder.zsh --resume SESSION_ID` to reopen a specific chat in the current
 workspace and profile. Supply `--workspace` and `--profile` when needed. An

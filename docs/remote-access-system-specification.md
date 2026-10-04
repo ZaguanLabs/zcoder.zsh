@@ -1999,7 +1999,8 @@ An implementation is functionally complete when all of these scenarios work.
 3. Server persists selection.
 4. Client loads every visible event to `none`.
 5. A prompt continues that server-side model/tool history.
-6. A new session request resets agent state and creates a durable empty job.
+6. A new session request resets agent state and creates a durable empty job
+   identity for workers. It appears in conversation lists after it has content.
 
 ### Scenario F: reading a document while work runs
 

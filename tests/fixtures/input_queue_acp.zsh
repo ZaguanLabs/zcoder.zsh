@@ -27,6 +27,7 @@ agent_ollama_chat() {
   HTTP_BODY='{"message":{"content":"Complete"},"done":true}'
 }
 state_init || exit 1
+state_save_session --allow-empty || exit 1
 ACP_SESSION_CWD[$CURRENT_SESSION_ID]="$ZCODER_WORKSPACE"
 ACP_SESSION_MCP[$CURRENT_SESSION_ID]='[]'
 mapfile[$fixture_base.session]="$CURRENT_SESSION_ID"

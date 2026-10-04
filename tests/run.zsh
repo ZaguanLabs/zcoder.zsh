@@ -257,7 +257,7 @@ acp_worker_probe="$(
     STATE_ENABLED=0
     state_new_session || exit 1
     STATE_ENABLED=1
-    state_save_session || exit 1
+    state_save_session --allow-empty || exit 1
     STATE_ENABLED=0
     acp_worker_session="$CURRENT_SESSION_ID"
     agent_user_turn() {
@@ -1104,7 +1104,8 @@ ZCODER_PROFILE=coding
 STATE_ENABLED=0
 remote_newer_id="2000000000_2"
 remote_current_id="1000000000_1"
-for remote_fixture_id in "$remote_newer_id" "$remote_current_id"; do
+remote_empty_id="3000000000_3"
+for remote_fixture_id in "$remote_empty_id" "$remote_newer_id" "$remote_current_id"; do
   remote_fixture_dir="$ZCODER_SESSIONS_DIR/${remote_fixture_id}.session"
   zf_mkdir -p "$remote_fixture_dir/ui_events"
   mapfile[$remote_fixture_dir/workspace]="${ZCODER_WORKSPACE:A}"
@@ -1114,6 +1115,7 @@ for remote_fixture_id in "$remote_newer_id" "$remote_current_id"; do
   mapfile[$remote_fixture_dir/updated_at]="${remote_fixture_id%%_*}"
   mapfile[$remote_fixture_dir/ui_event_count]="0"
 done
+mapfile[$ZCODER_SESSIONS_DIR/$remote_newer_id.session/agent_message_count]=1
 REMOTE_SESSION_ID="$remote_current_id"
 remote_fixture_dir="$ZCODER_SESSIONS_DIR/${remote_current_id}.session"
 mapfile[$remote_fixture_dir/ui_event_count]="1"
@@ -1129,7 +1131,7 @@ json_parse_flat_object "$REPLY"
 assert_success "remote session summaries remain flat valid JSON" $?
 assert_eq "$remote_newer_id" "${JSON_OBJECT[id]}" "remote session listing is ordered by recent activity"
 assert_eq "0" "${JSON_OBJECT[current]}" "remote session summaries distinguish inactive jobs"
-assert_eq "1" "${JSON_OBJECT[empty]}" "remote session summaries identify untouched jobs"
+assert_eq "0" "${JSON_OBJECT[empty]}" "remote session summaries include model history without visible events"
 assert_eq "Remote ${remote_newer_id}" "${JSON_OBJECT[title]}" "remote session summaries preserve titles"
 _remote_server_session_summary 1
 assert_success "remote session listing advances by cursor" $?
@@ -1140,6 +1142,7 @@ assert_eq "0" "${JSON_OBJECT[empty]}" "remote session summaries identify jobs wi
 _remote_server_session_summary 2
 assert_failure "remote session listing reports an empty tail" $?
 assert_eq '{"event":"none"}' "$REPLY" "empty remote session lists return a stable envelope"
+assert_not_contains "${(j:,:)SESSION_IDS}" "$remote_empty_id" 'remote listing skips a newer untouched job without consuming a cursor'
 
 _remote_server_session_event "$remote_current_id" 0
 assert_success "remote transcript loading returns a persisted event" $?
@@ -1705,9 +1708,13 @@ ZCODER_MODEL_OVERRIDE=0
 state_init
 assert_eq "1" "$STATE_ENABLED" "session storage initializes in the standard config root"
 saved_session_id="$CURRENT_SESSION_ID"
-assert_eq "$saved_session_id" "${SESSION_IDS[1]:-}" "first startup publishes the current session in the sidebar"
-assert_eq "New Job" "${SESSION_TITLES[1]:-}" "first startup publishes the current session title"
-assert_eq "$ZCODER_MODEL" "${SESSION_MODELS[1]:-}" "first startup publishes the current session model"
+assert_eq 0 "${#SESSION_IDS}" 'first startup keeps the empty conversation out of the sidebar'
+[[ ! -e "$ZCODER_SESSIONS_DIR/$saved_session_id.session" ]]
+assert_success 'first startup does not save an empty conversation' $?
+state_save_and_refresh
+assert_success 'saving an untouched conversation succeeds without writing it' $?
+[[ ! -e "$ZCODER_SESSIONS_DIR/$saved_session_id.session" ]]
+assert_success 'shutdown-style saves do not create empty conversations' $?
 _state_valid_id "$saved_session_id"
 assert_success "new sessions receive traversal-safe identifiers" $?
 state_note_user $'Repair the deployment\nwithout losing context'
@@ -1745,11 +1752,13 @@ launch_session_id="$CURRENT_SESSION_ID"
 [[ "$launch_session_id" != "$saved_session_id" ]]
 assert_success "interactive startup creates a fresh session instead of resuming the latest one" $?
 assert_eq "0" "${#AGENT_MESSAGES}" "fresh startup sessions begin without prior model history"
-assert_contains "${(j:,:)SESSION_IDS}" "$launch_session_id" "fresh startup publishes the new session alongside existing sessions"
+assert_not_contains "${(j:,:)SESSION_IDS}" "$launch_session_id" 'fresh startup keeps its empty draft out of saved conversations'
 assert_contains "${(j:,:)SESSION_IDS}" "$saved_session_id" "fresh startup keeps older sessions available for selection"
 state_init
 [[ "$launch_session_id" != "$CURRENT_SESSION_ID" ]]
 assert_success "interactive startup creates a new ID even after an untouched blank job" $?
+[[ ! -e "$ZCODER_SESSIONS_DIR/$launch_session_id.session" ]]
+assert_success 'starting another conversation does not save the abandoned empty draft' $?
 state_init resume "$saved_session_id"
 assert_success 'explicit startup resume restores the requested session' $?
 assert_eq "$saved_session_id" "$CURRENT_SESSION_ID" 'explicit resume preserves session identity'
@@ -1761,7 +1770,15 @@ state_init storage
 
 foreign_profile_id="9999999999_101"
 foreign_workspace_id="9999999999_102"
-zf_mkdir -p "$ZCODER_SESSIONS_DIR/$foreign_profile_id.session" "$ZCODER_SESSIONS_DIR/$foreign_workspace_id.session"
+legacy_empty_id="9999999999_103"
+zf_mkdir -p "$ZCODER_SESSIONS_DIR/$foreign_profile_id.session" "$ZCODER_SESSIONS_DIR/$foreign_workspace_id.session" "$ZCODER_SESSIONS_DIR/$legacy_empty_id.session"
+mapfile[$ZCODER_SESSIONS_DIR/$foreign_profile_id.session/agent_message_count]=1
+mapfile[$ZCODER_SESSIONS_DIR/$foreign_workspace_id.session/agent_message_count]=1
+mapfile[$ZCODER_SESSIONS_DIR/$legacy_empty_id.session/workspace]="${ZCODER_WORKSPACE:A}"
+mapfile[$ZCODER_SESSIONS_DIR/$legacy_empty_id.session/profile]="$ZCODER_PROFILE"
+mapfile[$ZCODER_SESSIONS_DIR/$legacy_empty_id.session/title]='New Session'
+mapfile[$ZCODER_SESSIONS_DIR/$legacy_empty_id.session/agent_message_count]=0
+mapfile[$ZCODER_SESSIONS_DIR/$legacy_empty_id.session/ui_event_count]=0
 mapfile[$ZCODER_SESSIONS_DIR/$foreign_profile_id.session/workspace]="${ZCODER_WORKSPACE:A}"
 mapfile[$ZCODER_SESSIONS_DIR/$foreign_profile_id.session/profile]="sysadmin"
 mapfile[$ZCODER_SESSIONS_DIR/$foreign_profile_id.session/updated_at]="9999999999"
@@ -1777,6 +1794,8 @@ state_refresh_sessions_list
 session_ids_joined="${(j:,:)SESSION_IDS}"
 assert_not_contains "$session_ids_joined" "$foreign_profile_id" "session list isolates prompt profiles"
 assert_not_contains "$session_ids_joined" "$foreign_workspace_id" "session list isolates canonical workspaces"
+assert_not_contains "$session_ids_joined" "$legacy_empty_id" 'previously saved empty conversations are hidden'
+assert_not_contains "${(j:,:)SESSION_TITLES}" 'New Session' 'empty placeholder titles do not appear in the sidebar'
 
 CURRENT_SESSION_ID=""
 AGENT_MESSAGES=()
@@ -1822,7 +1841,9 @@ previous_session_id="$CURRENT_SESSION_ID"
 ZCODER_MODEL_OVERRIDE=0
 state_new_session
 [[ "$CURRENT_SESSION_ID" != "$previous_session_id" ]]
-assert_success "new chat creates a separate saved session" $?
+assert_success "new chat creates a separate session identity" $?
+[[ ! -e "$ZCODER_SESSIONS_DIR/$CURRENT_SESSION_ID.session" ]]
+assert_success 'new chat stays unsaved while empty' $?
 assert_eq "0" "${#AGENT_MESSAGES}" "new sessions clear model history"
 assert_eq "0" "${#UI_ROLES}" "new sessions clear the visible transcript"
 assert_eq "none" "$GOAL_STATUS" "new sessions clear persistent goal state"
@@ -1835,6 +1856,8 @@ _state_valid_id "$REMOTE_SESSION_ID"
 assert_success "new remote sessions receive traversal-safe identifiers" $?
 [[ -d "$ZCODER_SESSIONS_DIR/${REMOTE_SESSION_ID}.session" ]]
 assert_success "new remote sessions are persisted immediately" $?
+state_refresh_sessions_list
+assert_not_contains "${(j:,:)SESSION_IDS}" "$REMOTE_SESSION_ID" 'empty remote protocol identities stay out of conversation lists'
 assert_eq "$REMOTE_SESSION_ID" "${mapfile[$REMOTE_RUNTIME_DIR/selected_session]}" "new remote sessions become the selected server job"
 assert_eq "0" "${#UI_ROLES}" "new remote sessions begin with an empty visible transcript"
 REMOTE_RUNTIME_DIR="$saved_remote_runtime_dir"

@@ -134,14 +134,14 @@ for mode in default custom; do
   request POST /v1/session/new '{}' || fail 'new remote session failed'
   json_parse_flat_object "$HTTP_BODY"; new_id=${JSON_OBJECT[id]}
   state_refresh_sessions_list
-  (( ${SESSION_IDS[(Ie)$new_id]} && ${#SESSION_IDS} == 9 )) || fail 'API-created session missing from local list'
+  (( ! ${SESSION_IDS[(Ie)$new_id]} && ${#SESSION_IDS} == 8 )) || fail 'empty API-created session leaked into conversation list'
   [[ -d $store/$new_id.session && ! -h $store/$new_id.session ]] || fail 'new session is not stored directly in shared directory'
   stop_server
   start_server
   request GET '/v1/sessions?after=0' || fail 'restart lost shared sessions'
   [[ ${mapfile[$REMOTE_RUNTIME_DIR/selected_session]} == "$new_id" ]] || fail 'restart lost selected session'
   state_refresh_sessions_list
-  (( ${#SESSION_IDS} == 9 )) || fail 'restart duplicated a legacy session'
+  (( ${#SESSION_IDS} == 8 )) || fail 'restart duplicated a legacy session or listed an empty one'
   stop_server
   # Existing legacy writers and the shared name use the same files and lock.
   mapfile[$legacy_dir/generations/$generation/title]='Updated legacy title'

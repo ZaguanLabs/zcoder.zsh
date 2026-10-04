@@ -45,8 +45,10 @@ state_refresh_sessions_list() {
   for session_dir in "$ZCODER_SESSIONS_DIR"/*.session(N-/); do
     id="${session_dir:t:r}"
     _state_valid_id "$id" || continue
-    state_snapshot_values "$session_dir" workspace profile updated_at title model || continue
+    state_snapshot_values "$session_dir" workspace profile updated_at title model agent_message_count ui_event_count context_user_count || continue
     _state_scope_matches "$reply[1]" "$reply[2]" || continue
+    # Protocol identities and older untouched sessions are not conversations.
+    [[ "$reply[6]" == <1-> || "$reply[7]" == <1-> || "$reply[8]" == <1-> ]] || continue
     [[ "$reply[3]" == <1-> ]] || reply[3]="${id%%_*}"
     records+=("$reply[3]:$id")
     titles[$id]="${reply[4]:-Untitled}"; models[$id]="${reply[5]:-unknown}"
@@ -242,6 +244,14 @@ state_save_session() {
   (( STATE_ENABLED && ! STATE_LOADING )) || return 0
   [[ -n "$CURRENT_SESSION_ID" ]] || return 0
   _state_valid_id "$CURRENT_SESSION_ID" || return 1
+  STATE_ERROR=''
+  # Headless brokers explicitly reserve a durable identity for their workers.
+  # Routine saves, including shutdown, must not persist an untouched chat.
+  if [[ "${1:-}" != --allow-empty ]] &&
+     (( ${#AGENT_MESSAGES} == 0 && ${#UI_ROLES} == 0 && ${#AGENT_USER_MESSAGES} == 0 )) &&
+     [[ -z "${GOAL_ID:-}" ]]; then
+    return 0
+  fi
   local base="$ZCODER_SESSIONS_DIR/$CURRENT_SESSION_ID.session" previous='' generation='' session_dir=''
   local agent_dir='' ui_dir='' users_dir='' skills_dir='' seq='' lock_fd='' marker=''
   local old_umask="$(umask)"
@@ -409,7 +419,7 @@ state_new_session() {
   SESSION_TITLE="New Job"
   agent_reset
   transcript_reset
-  state_save_session || return 1
+  state_save_session "$@" || return 1
 }
 
 state_load_session() {
@@ -577,8 +587,7 @@ state_init() {
     }
   else
     state_new_session || return 1
-    # Startup publishes the new session to the sidebar; API creation can skip
-    # this scan because session-list requests refresh their own cache.
+    # Keep saved conversations available without publishing the empty draft.
     state_refresh_sessions_list
   fi
 }

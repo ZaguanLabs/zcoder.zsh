@@ -370,7 +370,7 @@ _remote_server_new_session() {
   UI_TIMES=()
   UI_REASONING_OPEN=()
   STATE_ENABLED=1
-  state_new_session || create_status=$?
+  state_new_session --allow-empty || create_status=$?
   if (( create_status == 0 )); then
     REMOTE_SESSION_ID="$CURRENT_SESSION_ID"
     mapfile[$REMOTE_RUNTIME_DIR/selected_session]="$REMOTE_SESSION_ID" || create_status=$?

@@ -58,9 +58,10 @@ done
 state_new_session
 fixture_phase=cancel
 agent_user_turn 'Cancelled request'
-mapfile[$fixture_base.cancelled]="$?:$INPUT_BUF"
+typeset -i fixture_cancel_status=$?
 input_queue_request list "$CURRENT_SESSION_ID" '' '' '' ''
 mapfile[$fixture_base.cancel_pending]="$REPLY"
+mapfile[$fixture_base.cancelled]="$fixture_cancel_status:$INPUT_BUF"
 state_new_session
 fixture_phase=stop
 agent_user_turn 'Stop with no queue'
