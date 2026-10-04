@@ -5,12 +5,13 @@ typeset -g fixture_root="$1" fixture_base="$2"
 source "$fixture_root/lib/curses.zsh"
 ZCODER_CURSES=${3:-stock} zcoder_curses_load "$fixture_root" || exit 1
 zmodload zsh/terminfo zsh/datetime zsh/mapfile || exit 1
-for fixture_lib in util json transcript input terminal ui overlays commands; do
+for fixture_lib in util json transcript input terminal ui overlays commands state; do
   source "$fixture_root/lib/${fixture_lib}.zsh"
 done
 typeset -g ZCODER_NAME=zcoder ZCODER_VERSION=test ZCODER_MODEL=fixture
 typeset -g ZCODER_WORKSPACE="$fixture_root" OLLAMA_HOST=fixture ZCODER_PROFILE=coding REMOTE_MODE=local
 typeset -g ZCODER_SYNC_OUTPUT=auto
+typeset -g ZCODER_TERMINAL_TITLE=true
 command stty rows 24 cols 80 < /dev/tty || exit 1
 typeset fixture_tty_modes=$(command stty -g < /dev/tty)
 trap 'ui_end' EXIT
@@ -44,6 +45,7 @@ ui_activity_input() {
   [[ $fixture_ch == $'\x03' ]] && mapfile[${fixture_base}.control]="cleared:${#INPUT_BUF}:$UI_FOCUS:$fixture_key:$INPUT_TERM_STATE"
   return "$result"
 }
+state_note_user 'Fix terminal titles'
 ui_activity_begin
 while (( ! fixture_activity_done )); do
   ui_poll_activity || (( fixture_activity_done )) || exit 1

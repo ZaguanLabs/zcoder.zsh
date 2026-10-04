@@ -285,6 +285,13 @@ bracketed paste, and current terminal geometry. With a recent zdraw build it als
 shows capability evidence and live window, pad and prepared-row counts. These
 queries are passive: opening the inspector enables no additional protocols.
 
+On compatible terminals, the window or tab title follows the current session:
+`<session title> | <project name>`. A new session shows only the project name,
+taken from the workspace directory. This also follows remote workspace and
+session switches. The previous title is restored on exit or suspension where
+the terminal supports the [xterm title stack](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html).
+Set `ZCODER_TERMINAL_TITLE=false` to leave the terminal title alone.
+
 The default `ZCODER_SYNC_OUTPUT=auto` queries mode 2026 once on each UI entry.
 Recent zdraw builds own the query through the normal curses event queue. A reset
 reply enables native synchronized presentation; an already-set mode is left

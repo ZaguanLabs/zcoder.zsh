@@ -20,6 +20,8 @@ typeset -ga TERMINAL_PASTE_CHUNKS=()
 # Paste payload is separate from character input: dialogs must never see pasted
 # approval keys. It is valid only alongside the current PASTE event.
 typeset -g TERMINAL_EVENT_TEXT=''
+typeset -gi TERMINAL_TITLE_ACTIVE=0
+typeset -g TERMINAL_TITLE_LAST=''
 
 # Discover once per UI entry; input timeouts must never probe another reader.
 terminal_detect_input() {
@@ -47,6 +49,51 @@ _terminal_write() {
   print -rn -u "$TERMINAL_FD" -- "$1" 2>/dev/null
 }
 
+# Keep title ownership with the interactive terminal, never session workers.
+# XTWINOPS saves/restores the previous title without querying terminal input.
+_terminal_title_start() {
+  emulate -L zsh
+  (( TERMINAL_TITLE_ACTIVE )) && return 0
+  [[ ${ZCODER_TERMINAL_TITLE:-true} == true && -n $TERMINAL_FD && -t $TERMINAL_FD ]] || return 0
+  case ${TERM:-dumb} in
+    xterm*|screen*|tmux*|rxvt*|alacritty*|foot*|kitty*|wezterm*|ghostty*|st|st-*) ;;
+    *) return 0 ;;
+  esac
+  _terminal_write $'\e[22;2t' || return 0
+  TERMINAL_TITLE_ACTIVE=1
+  TERMINAL_TITLE_LAST=''
+  _terminal_title_update
+}
+
+_terminal_title_update() {
+  emulate -L zsh
+  (( TERMINAL_TITLE_ACTIVE )) || return 0
+  local project=${ZCODER_WORKSPACE:-$PWD} title=${SESSION_TITLE:-}
+  project=${project%/}
+  project=${project:t}
+  project=${project:-/}
+  [[ $title == 'New Job' ]] && title=''
+  # Strip C0/C1 controls (including both OSC terminators) before interpolation.
+  local controls=$'[\x00-\x1f\x7f-\u009f]'
+  project=${project//${~controls}/}
+  title=${title//${~controls}/}
+  title=${title[1,200]}
+  project=${project[1,100]}
+  [[ -n $title ]] && title+=' | '
+  title+=$project
+  [[ $title == $TERMINAL_TITLE_LAST ]] && return 0
+  _terminal_write $'\e]2;'"$title"$'\a' || return 0
+  TERMINAL_TITLE_LAST=$title
+}
+
+_terminal_title_end() {
+  emulate -L zsh
+  (( TERMINAL_TITLE_ACTIVE )) && _terminal_write $'\e[23;2t'
+  TERMINAL_TITLE_ACTIVE=0
+  TERMINAL_TITLE_LAST=''
+  return 0
+}
+
 terminal_start() {
   emulate -L zsh
   terminal_end
@@ -55,6 +102,7 @@ terminal_start() {
   TERMINAL_SYNC_STATE=unavailable
   zmodload zsh/system || { TERMINAL_EVENT_POLL=0; return 0; }
   sysopen -w -o cloexec -u TERMINAL_FD /dev/tty 2>/dev/null || { TERMINAL_EVENT_POLL=0; return 0; }
+  _terminal_title_start
   if (( TERMINAL_CAN_PASTE )) && zcoder_curses paste on 2>/dev/null; then
     TERMINAL_NATIVE_PASTE=1
   else
@@ -142,6 +190,7 @@ terminal_end() {
   if [[ -n "$TERMINAL_FD" ]]; then
     (( TERMINAL_FRAME_ACTIVE )) && _terminal_write $'\e[?2026l'
     _terminal_write $'\e[?2004l'
+    _terminal_title_end
     exec {TERMINAL_FD}>&-
   fi
   TERMINAL_FD=''; TERMINAL_FRAME_ACTIVE=0; TERMINAL_SYNC_ENABLED=0
@@ -169,6 +218,7 @@ terminal_suspend() {
     TERMINAL_FRAME_ACTIVE=0
   fi
   zcoder_curses suspend 2>/dev/null || return $?
+  _terminal_title_end
   [[ $TERMINAL_KEYBOARD_STATE == pending ]] && TERMINAL_KEYBOARD_STATE=cancelled
   if (( TERMINAL_NATIVE_QUERY )) && [[ $TERMINAL_SYNC_STATE == pending ]]; then
     TERMINAL_SYNC_STATE=cancelled
@@ -184,6 +234,7 @@ terminal_suspend() {
 terminal_resume() {
   emulate -L zsh
   _terminal_present resume 2>/dev/null || return $?
+  _terminal_title_start
   # Native resume pushes its default flags again after the suspend-time pop.
   if (( TERMINAL_NATIVE_KEYBOARD )); then
     _terminal_keyboard_configure || return $?
@@ -201,6 +252,7 @@ terminal_refresh() { _terminal_present refresh "$@"; }
 _terminal_present() {
   emulate -L zsh
   local -i refresh_result=0
+  _terminal_title_update
   if (( TERMINAL_NATIVE_SYNC )); then
     if [[ $1 == refresh ]]; then
       shift

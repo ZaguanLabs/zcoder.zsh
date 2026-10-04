@@ -23,6 +23,7 @@ Run `./zcoder.zsh --help` for the complete CLI reference.
 | `ZCODER_MOUSE_SELECTION` | `auto` | Enable chat-only dragging with compatible native zdraw; `false` disables it |
 | `ZCODER_CLIPBOARD` | `osc52` | Send explicitly copied selections to the terminal clipboard; `view` opens the selection as plain text instead |
 | `ZCODER_SYNC_OUTPUT` | `auto` | Query synchronized-output support; `false` disables it, `true` forces it |
+| `ZCODER_TERMINAL_TITLE` | `true` | Show the session title and project name in the terminal title; `false` disables it |
 | `ZCODER_STREAM` | `true` | Stream eligible local interactive responses; `false` retains buffered responses |
 | `ZCODER_WARMUP` | `true` | Warm the selected model and stable prompt context before interactive work |
 | `ZCODER_TOOL_EXPOSURE` | `full` | `full` exposes all tools immediately; experimental `staged` routes before exposing tools |

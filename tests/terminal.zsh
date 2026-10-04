@@ -1,4 +1,41 @@
 # Protocol replies must never become editor input or an approval keystroke.
+# Title formatting stays independent of curses and session storage. Capture
+# the owned descriptor to verify that user text cannot terminate the OSC.
+() {
+  local TERMINAL_FD='' TERMINAL_TITLE_LAST='' SESSION_TITLE='New Job'
+  local ZCODER_WORKSPACE='/work/project name/'
+  local -i TERMINAL_TITLE_ACTIVE=1
+  exec {TERMINAL_FD}> "$TEST_TMP/terminal-title"
+  _terminal_title_update
+  assert_eq $'\e]2;project name\a' "${mapfile[$TEST_TMP/terminal-title]}" 'new sessions show only the project name'
+  _terminal_title_update
+  assert_eq $'\e]2;project name\a' "${mapfile[$TEST_TMP/terminal-title]}" 'unchanged titles are not emitted again on repaint'
+  SESSION_TITLE=$'Fix\x00\a\e\n\r\t\x7f\u0085\u009c café 界'
+  ZCODER_WORKSPACE=$'/remote/other\a\e\u009c project'
+  _terminal_title_update
+  assert_eq 'Fix café 界 | other project' "$TERMINAL_TITLE_LAST" 'titles remove C0 and C1 controls while preserving Unicode and spaces'
+  assert_contains "${mapfile[$TEST_TMP/terminal-title]}" $'\e]2;Fix café 界 | other project\a' 'session and workspace switches update the terminal title'
+  SESSION_TITLE=''; ZCODER_WORKSPACE=/
+  _terminal_title_update
+  assert_eq / "$TERMINAL_TITLE_LAST" 'an empty session title and root workspace have a useful fallback'
+  SESSION_TITLE='$(touch NEVER_RUN) %n `literal`'
+  _terminal_title_update
+  assert_eq '$(touch NEVER_RUN) %n `literal` | /' "$TERMINAL_TITLE_LAST" 'title text is never shell or prompt code'
+  SESSION_TITLE=${(pl:400::x:)}; ZCODER_WORKSPACE=/work/${(pl:200::y:)}
+  _terminal_title_update
+  assert_eq 303 "${#TERMINAL_TITLE_LAST}" 'session and project title lengths are bounded separately'
+  _terminal_title_end
+  local saved_output=${mapfile[$TEST_TMP/terminal-title]}
+  _terminal_title_end
+  _terminal_title_update
+  assert_eq "$saved_output" "${mapfile[$TEST_TMP/terminal-title]}" 'cleanup restores the title once and stops later updates'
+  assert_contains "$saved_output" $'\e[23;2t' 'cleanup pops the saved window title'
+  local TERM=xterm-256color ZCODER_TERMINAL_TITLE=true
+  _terminal_title_start
+  assert_eq 0 "$TERMINAL_TITLE_ACTIVE" 'title startup refuses a non-terminal descriptor'
+  exec {TERMINAL_FD}>&-
+}
+
 terminal_test_feed() {
   local terminal_test_byte=''
   for terminal_test_byte in "${(@s::)1}"; do terminal_filter_input "$terminal_test_byte" '' ''; done
@@ -214,6 +251,7 @@ for terminal_pty_mode in "${terminal_pty_modes[@]}"; do
   [[ $terminal_pty_mode == auto ]] && terminal_expected_input=1
   assert_eq "$terminal_expected_input" "${mapfile[$terminal_pty_base.input]:-}" "$terminal_pty_mode selects its supported input presentation mode"
   assert_contains "$terminal_pty_output" $'\e[?2026$p' "auto mode emits the capability query"
+  assert_contains "$terminal_pty_output" $'\e[22;2t\e]2;'"${PROJECT_DIR:t}"$'\a' 'new sessions save the previous title and display only the project in a real terminal'
   assert_not_contains "$terminal_pty_output" $'\e[?2026h' "unknown support does not start synchronized frames"
   zpty -w -n terminal-ui $'\e[?2026;2$y'
   terminal_pty_wait "$terminal_pty_base.approval" '0:supported'
@@ -256,6 +294,7 @@ for terminal_pty_mode in "${terminal_pty_modes[@]}"; do
   zpty -w -n terminal-ui $'draft\e[200~line1\nline2界e\u0301\e[201~'
   terminal_pty_wait "$terminal_pty_base.draft" $'draftline1\nline2界e\u0301'
   assert_success "real curses preserves Unicode multiline paste after capability detection" $?
+  assert_contains "$terminal_pty_output" $'\e]2;Fix terminal titles | '"${PROJECT_DIR:t}"$'\a' 'a session title appears on the next real UI refresh'
   zpty -w -n terminal-ui $'\eOD\eOC!'
   terminal_pty_wait "$terminal_pty_base.draft" $'draftline1\nline2界e\u0301!'
   assert_success "decoded arrow keys remain navigation during activity" $?
@@ -328,6 +367,7 @@ for terminal_pty_mode in "${terminal_pty_modes[@]}"; do
   assert_eq 'disabled (invalid setting):0' "${mapfile[$terminal_pty_base.invalid]:-}" "invalid configuration fails closed"
   assert_eq 'no reply:0' "${mapfile[$terminal_pty_base.auto]:-}" "a silent terminal retains normal rendering"
   assert_contains "$terminal_pty_output" $'\e[?2004l' "UI exit restores bracketed paste mode"
+  assert_contains "$terminal_pty_output" $'\e[23;2t' 'UI exit restores the previous window title'
   if [[ ${mapfile[$terminal_pty_base.can_keyboard]:-0} == 1 ]]; then
     assert_contains "$terminal_pty_output" $'\e[<u' 'UI exit pops enhanced keyboard flags'
   fi
