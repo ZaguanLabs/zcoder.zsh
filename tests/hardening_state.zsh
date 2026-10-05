@@ -101,6 +101,8 @@ hardening_state_tests() {
       state_save_session
     ) 2>/dev/null
     assert_failure 'SIGKILL immediately after publication interrupts the writer' $?
+    [[ ! -e "$ZCODER_SESSIONS_DIR/.sessions.index" ]]
+    assert_success 'interrupted publication leaves an invalidated index' $?
     STATE_ENABLED=0
     state_load_session "$CURRENT_SESSION_ID"
     assert_success 'a reader accepts the complete commit published before SIGKILL' $?
@@ -168,3 +170,99 @@ hardening_conversation_tests() {
 }
 hardening_conversation_tests
 unfunction hardening_conversation_tests
+
+# Index behavior is tested independently of curses, HTTP and Ollama.
+state_index_tests() {
+  local ZCODER_SESSIONS_DIR="$TEST_TMP/index-sessions" CURRENT_SESSION_ID=9000000002_1
+  local ZCODER_WORKSPACE="$TEST_TMP" ZCODER_PROFILE=coding ZCODER_MODEL='model with spaces'
+  local SESSION_TITLE=$'quoted \"title\"\n$(touch should-never-run) `literal` \\ end'
+  local STATE_OBSERVED_BASE='' STATE_OBSERVED_SNAPSHOT='' STATE_SAVED_SNAPSHOT=''
+  local STATE_SAVED_SESSION_ID='' STATE_ERROR=''
+  local -i STATE_ENABLED=1 STATE_LOADING=0 AGENT_COMPACTION_COUNT=0 UI_PERSIST_DIRTY_FROM=0
+  local -a AGENT_MESSAGES=(message) AGENT_USER_MESSAGES=(request) SKILL_ACTIVE_NAMES=()
+  local -a UI_ROLES=() UI_CONTENTS=() UI_THINKINGS=() UI_TIMES=() UI_REASONING_OPEN=() UI_IDS=()
+  local -a SESSION_IDS=() SESSION_TITLES=() SESSION_MODELS=()
+  local -A index_entries=()
+  local saved_snapshot="${functions[state_with_snapshot]}" snapshot='' base="$ZCODER_SESSIONS_DIR/$CURRENT_SESSION_ID.session"
+  local key=''
+  local -i snapshot_reads=0
+  local -a reply=()
+  {
+    state_save_session
+    assert_success 'save publishes the first persistent index' $?
+    _state_index_read
+    assert_success 'published index validates against committed generations' $?
+    functions[_index_real_snapshot]="$saved_snapshot"
+    state_with_snapshot() { (( snapshot_reads++ )); _index_real_snapshot "$@"; }
+    state_refresh_sessions_list
+    assert_eq 0 "$snapshot_reads" 'valid indexed listings do not acquire session snapshots'
+    assert_eq "$SESSION_TITLE" "$SESSION_TITLES[1]" 'index quoting preserves multiline shell-like titles as data'
+    assert_eq "$ZCODER_MODEL" "$SESSION_MODELS[1]" 'index preserves model names with spaces'
+
+    mapfile[$ZCODER_SESSIONS_DIR/.sessions.index]='corrupt'
+    state_refresh_sessions_list
+    assert_eq "$CURRENT_SESSION_ID" "$SESSION_IDS[1]" 'corrupt index recovers the saved conversation'
+    _state_index_read
+    assert_success 'corrupt index is replaced by a valid rebuilt index' $?
+
+    local saved_index_writer="${functions[_state_index_write]}"
+    _state_index_write() { return 1; }
+    state_save_session
+    assert_success 'optional index write failure does not fail a committed save' $?
+    [[ ! -e "$ZCODER_SESSIONS_DIR/.sessions.index" ]]
+    assert_success 'index write failure leaves a cache miss instead of old metadata' $?
+    functions[_state_index_write]="$saved_index_writer"
+    state_refresh_sessions_list
+    _state_index_read
+    assert_success 'listing repairs an index lost during a successful save' $?
+
+    (
+      trap - EXIT INT TERM HUP
+      zf_mv() {
+        builtin zf_mv "$@" || return $?
+        [[ "${@[-1]}" == "$base/current" ]] && kill -KILL "$sysparams[pid]"
+        return 0
+      }
+      SESSION_TITLE=interrupted
+      state_save_session
+    ) 2>/dev/null
+    assert_failure 'writer can be interrupted between session and index publication' $?
+    _state_index_read
+    assert_failure 'interrupted writer cannot leave a usable stale index' $?
+    state_refresh_sessions_list
+    assert_eq interrupted "$SESSION_TITLES[1]" 'listing rebuilds metadata from the interrupted writer commit'
+
+    state_snapshot_dir "$base"; snapshot="$REPLY"
+    zf_mkdir -p "$base/generations/9000000003_1_0"
+    for key in workspace profile updated_at title model agent_message_count ui_event_count context_user_count; do
+      mapfile[$base/generations/9000000003_1_0/$key]="${mapfile[$snapshot/$key]}"
+    done
+    mapfile[$base/generations/9000000003_1_0/title]=imported
+    mapfile[$base/current]=9000000003_1_0
+    state_refresh_sessions_list
+    assert_eq imported "$SESSION_TITLES[1]" 'generation change outside this writer invalidates stale metadata'
+
+    # Different session locks alone cannot serialize whole-index replacement.
+    ( CURRENT_SESSION_ID=9000000002_2; SESSION_TITLE=second; state_save_session ) &
+    local first_pid=$!
+    ( CURRENT_SESSION_ID=9000000002_3; SESSION_TITLE=third; state_save_session ) &
+    local second_pid=$!
+    wait "$first_pid"; assert_success 'first concurrent session save succeeds' $?
+    wait "$second_pid"; assert_success 'second concurrent session save succeeds' $?
+    _state_index_read
+    assert_success 'concurrent writers leave a complete valid index' $?
+    assert_eq 3 "${#index_entries}" 'concurrent saves preserve both new index entries'
+
+    zf_rm -rf -- "$ZCODER_SESSIONS_DIR/9000000002_2.session"
+    state_refresh_sessions_list
+    assert_eq 2 "${#SESSION_IDS}" 'directory deletion invalidates the index membership'
+    zf_rm -f -- "$ZCODER_SESSIONS_DIR/.sessions.index"
+    state_refresh_sessions_list
+    assert_eq 2 "${#SESSION_IDS}" 'missing index is rebuilt without losing sessions'
+  } always {
+    functions[state_with_snapshot]="$saved_snapshot"
+    unfunction _index_real_snapshot 2>/dev/null
+  }
+}
+state_index_tests
+unfunction state_index_tests

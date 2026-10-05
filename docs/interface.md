@@ -139,6 +139,12 @@ Sessions are isolated by canonical workspace and prompt profile. A coding
 conversation is never offered as a sysadmin session. The session directory is
 private to the current user.
 
+Session lists use a derived `.sessions.index` in the sessions directory. Saves
+update it atomically; readers check session membership and generation markers
+before using it. A missing, malformed, or stale index is rebuilt on listing.
+Legacy histories without generation markers use the directory scan. The index
+can be deleted safely: committed session generations remain the source of truth.
+
 Press Alt+1 to focus **[1] Sessions**, use Up or Down to choose a job, and press
 Alt+2 or Enter to return to **[2] Prompt**. The focused panel has a bright border
 and a bold title; the Prompt instructions use the normal panel background.

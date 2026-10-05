@@ -35,24 +35,124 @@ _state_scope_matches() {
   [[ -n "$1" && -n "$2" && "${1:A}" == "${ZCODER_WORKSPACE:A}" && "$2" == "$ZCODER_PROFILE" ]]
 }
 
+# Derived index: one canonically shell-quoted record per session, never sourced.
+# The global lock is always acquired before a session lock. Invalidate before
+# current is published: a killed writer leaves a cache miss, never a stale hit.
+_state_index_lock() {
+  local create_fd=''
+  sysopen -w -m 0600 -o creat,nofollow,cloexec -u create_fd "$ZCODER_SESSIONS_DIR/.sessions.lock" || return 1
+  exec {create_fd}>&-
+  zsystem flock -t 5 -f index_lock "$ZCODER_SESSIONS_DIR/.sessions.lock"
+}
+
+_state_index_read() {
+  local file="$ZCODER_SESSIONS_DIR/.sessions.index" text='' row='' id='' base=''
+  local -a lines=() fields=() directories=()
+  index_entries=()
+  [[ -f "$file" && ! -h "$file" ]] || return 1
+  text="${mapfile[$file]}"
+  lines=("${(@f)text}")
+  [[ "$lines[1]" == zcoder-sessions-v1 ]] || return 1
+  for row in "${lines[@]:1}"; do
+    fields=("${(@Q)${(z)row}}")
+    (( ${#fields} == 10 )) || return 1
+    [[ "${(j: :)${(@q)fields}}" == "$row" ]] || return 1
+    id="$fields[1]"
+    _state_valid_id "$id" || return 1
+    [[ -z "${index_entries[$id]:-}" ]] || return 1
+    [[ "$fields[2]" == <1->'_'<1->'_'<0-> ]] || return 1
+    base="$ZCODER_SESSIONS_DIR/$id.session"
+    [[ -f "$base/current" && ! -h "$base/current" &&
+       "${mapfile[$base/current]}" == "$fields[2]" &&
+       -d "$base/generations/$fields[2]" && ! -h "$base/generations/$fields[2]" ]] || return 1
+    index_entries[$id]="$row"
+  done
+  # Detect imports/deletions, including legacy directory symlinks. Legacy
+  # metadata has no immutable generation token and uses the scan fallback.
+  for base in "$ZCODER_SESSIONS_DIR"/*.session(N-/); do
+    id="${base:t:r}"
+    _state_valid_id "$id" || continue
+    directories+=("$id")
+    [[ -n "${index_entries[$id]:-}" ]] || return 1
+  done
+  (( ${#directories} == ${#index_entries} ))
+}
+
+_state_index_snapshot() {
+  local -a fields=("$id" "${session_dir:t}")
+  local key=''
+  [[ "${session_dir:h:t}" == generations ]] || return 1
+  for key in workspace profile updated_at title model agent_message_count ui_event_count context_user_count; do
+    fields+=("${mapfile[$session_dir/$key]:-}")
+  done
+  REPLY="${(j: :)${(@q)fields}}"
+}
+
+_state_index_scan() {
+  local base='' id=''
+  index_entries=()
+  for base in "$ZCODER_SESSIONS_DIR"/*.session(N-/); do
+    id="${base:t:r}"
+    _state_valid_id "$id" || continue
+    state_with_snapshot "$base" _state_index_snapshot || return 1
+    index_entries[$id]="$REPLY"
+  done
+}
+
+_state_index_write() {
+  local marker="$ZCODER_SESSIONS_DIR/.sessions.index.$sysparams[pid].$RANDOM"
+  local text=zcoder-sessions-v1 row=''
+  for row in "${(@v)index_entries}"; do text+=$'\n'"$row"; done
+  {
+    zcoder_write_text_file "$marker" "$text" || return 1
+    [[ ! -d "$ZCODER_SESSIONS_DIR/.sessions.index" && ! -h "$ZCODER_SESSIONS_DIR/.sessions.index" ]] || return 1
+    zf_mv -f -- "$marker" "$ZCODER_SESSIONS_DIR/.sessions.index"
+  } always { zf_rm -f -- "$marker" 2>/dev/null; }
+}
+
+_state_index_get() {
+  _state_index_read && return 0
+  local index_lock=''
+  _state_index_lock || return 1
+  {
+    _state_index_read && return 0
+    _state_index_scan || return 1
+    _state_index_write || true
+    return 0
+  } always { zsystem flock -u "$index_lock"; }
+}
+
 state_refresh_sessions_list() {
   SESSION_IDS=(); SESSION_TITLES=(); SESSION_MODELS=()
   (( STATE_ENABLED )) || return 0
   local session_dir='' id='' record=''
   local -a records=() reply=()
-  local -A titles=() models=()
-  # Legacy remote histories can be shared through directory symlinks.
-  for session_dir in "$ZCODER_SESSIONS_DIR"/*.session(N-/); do
-    id="${session_dir:t:r}"
-    _state_valid_id "$id" || continue
-    state_snapshot_values "$session_dir" workspace profile updated_at title model agent_message_count ui_event_count context_user_count || continue
-    _state_scope_matches "$reply[1]" "$reply[2]" || continue
-    # Protocol identities and older untouched sessions are not conversations.
-    [[ "$reply[6]" == <1-> || "$reply[7]" == <1-> || "$reply[8]" == <1-> ]] || continue
-    [[ "$reply[3]" == <1-> ]] || reply[3]="${id%%_*}"
-    records+=("$reply[3]:$id")
-    titles[$id]="${reply[4]:-Untitled}"; models[$id]="${reply[5]:-unknown}"
-  done
+  local -A titles=() models=() index_entries=()
+  local -a fields=()
+  if _state_index_get; then
+    for record in "${(@v)index_entries}"; do
+      fields=("${(@Q)${(z)record}}")
+      _state_scope_matches "$fields[3]" "$fields[4]" || continue
+      [[ "$fields[8]" == <1-> || "$fields[9]" == <1-> || "$fields[10]" == <1-> ]] || continue
+      id="$fields[1]"
+      [[ "$fields[5]" == <1-> ]] || fields[5]="${id%%_*}"
+      records+=("$fields[5]:$id")
+      titles[$id]="${fields[6]:-Untitled}"; models[$id]="${fields[7]:-unknown}"
+    done
+  else
+    # Legacy remote histories can be shared through directory symlinks.
+    for session_dir in "$ZCODER_SESSIONS_DIR"/*.session(N-/); do
+      id="${session_dir:t:r}"
+      _state_valid_id "$id" || continue
+      state_snapshot_values "$session_dir" workspace profile updated_at title model agent_message_count ui_event_count context_user_count || continue
+      _state_scope_matches "$reply[1]" "$reply[2]" || continue
+      # Protocol identities and older untouched sessions are not conversations.
+      [[ "$reply[6]" == <1-> || "$reply[7]" == <1-> || "$reply[8]" == <1-> ]] || continue
+      [[ "$reply[3]" == <1-> ]] || reply[3]="${id%%_*}"
+      records+=("$reply[3]:$id")
+      titles[$id]="${reply[4]:-Untitled}"; models[$id]="${reply[5]:-unknown}"
+    done
+  fi
   for record in "${(@O)records}"; do
     id="${record#*:}"
     SESSION_IDS+=("$id"); SESSION_TITLES+=("${titles[$id]}"); SESSION_MODELS+=("${models[$id]}")
@@ -254,12 +354,26 @@ state_save_session() {
   fi
   local base="$ZCODER_SESSIONS_DIR/$CURRENT_SESSION_ID.session" previous='' generation='' session_dir=''
   local agent_dir='' ui_dir='' users_dir='' skills_dir='' seq='' lock_fd='' marker=''
+  local index_lock=''
+  local -A index_entries=()
+  local -i index_complete=0
   local old_umask="$(umask)"
   local -i i agent_start=1 ui_start=1 users_start=1 skills_start=1 committed=0
   local -a reply=() agent_refs=() ui_refs=() user_refs=() skill_refs=()
   STATE_ERROR=''
   umask 077
   {
+    zf_mkdir -p "$ZCODER_SESSIONS_DIR" || return 1
+    _state_index_lock || { STATE_ERROR='session index is busy'; return 1; }
+    if _state_index_read; then
+      index_complete=1
+    else
+      # Rebuild only on listing. Saving/quitting must never wait for an
+      # unrelated session's read lock just to repair optional metadata.
+      local -a existing_sessions=("$ZCODER_SESSIONS_DIR"/*.session(N-/))
+      index_entries=()
+      (( ${#existing_sessions} == 0 )) && index_complete=1
+    fi
     zf_mkdir -p "$base/generations" || return 1
     sysopen -w -m 0600 -o creat,nofollow,cloexec -u lock_fd "$base/save.lock" || return 1
     exec {lock_fd}>&-
@@ -299,8 +413,16 @@ state_save_session() {
     marker="$base/.current.$sysparams[pid].$RANDOM"
     _state_write "$marker" "$generation" || return 1
     [[ ! -d "$base/current" && ! -h "$base/current" ]] || return 1
+    # Removal must succeed before publication, even if cache rebuilding fails.
+    [[ ! -d "$ZCODER_SESSIONS_DIR/.sessions.index" ]] || return 1
+    zf_rm -f -- "$ZCODER_SESSIONS_DIR/.sessions.index" || return 1
     zf_mv -f -- "$marker" "$base/current" || return 1
     committed=1
+    if (( index_complete )); then
+      local id="$CURRENT_SESSION_ID"
+      _state_index_snapshot && index_entries[$id]="$REPLY"
+      _state_index_write || zcoder_debug session_index_failed "session=$CURRENT_SESSION_ID"
+    fi
     local -a manifests=("$base/generations/"*/previous(N))
     if (( ${#manifests} > 32 )); then
       _state_collect_generations "$base/generations" "$generation" "${previous:t}" ||
@@ -326,6 +448,7 @@ state_save_session() {
       print -ru2 -- "Session save failed: $STATE_ERROR"
     fi
     [[ -n "$lock_fd" ]] && zsystem flock -u "$lock_fd" 2>/dev/null
+    [[ -n "$index_lock" ]] && zsystem flock -u "$index_lock" 2>/dev/null
     umask "$old_umask"
   }
 }
