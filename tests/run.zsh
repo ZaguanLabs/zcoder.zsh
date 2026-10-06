@@ -1958,7 +1958,7 @@ warmup_payload="$REPLY"
 assert_contains "$warmup_payload" "Project instructions are mandatory requirements for the entire task" "warm-up payload includes the resolved coding system prompt"
 assert_contains "$warmup_payload" "Initialization check only" "warm-up payload asks for an isolated readiness response"
 assert_contains "$warmup_payload" 'respond with exactly Ready and nothing else' "warm-up request specifies the silent readiness sentinel"
-assert_contains "$warmup_payload" '"think":false' "warm-up disables model reasoning"
+assert_contains "$warmup_payload" '"think":'"$ZCODER_THINK" "warm-up retains the configured thinking mode"
 assert_contains "$warmup_payload" '"num_predict":8' "warm-up bounds readiness generation"
 assert_not_contains "$warmup_payload" "WARMUP HISTORY SENTINEL" "warm-up excludes saved conversation history"
 assert_eq "WARMUP USER SENTINEL" "${AGENT_USER_MESSAGES[1]}" "building warm-up leaves the user-message ledger unchanged"
@@ -1968,6 +1968,52 @@ assert_contains "$REPLY" '"enum":["respond","workspace","external"]' "staged war
 assert_not_contains "$REPLY" '"tools":' "staged warm-up does not preload hidden work schemas"
 assert_contains "$REPLY" "routing layer with no executable tools" "staged warm-up caches the routing prompt"
 ZCODER_TOOL_EXPOSURE=full
+
+test_warmup_payload_parity() {
+  local saved_datetime="${functions[agent_datetime_prompt_block]}"
+  local ZCODER_TOOL_EXPOSURE ZCODER_THINK ZCODER_MAX_OUTPUT_TOKENS=512
+  local AGENT_TOOL_PHASE=external AGENT_CONTEXT_TOOLS='saved catalog'
+  local -a AGENT_MESSAGES=()
+  local warmup_payload='' real_payload='' readiness='' cap=''
+  {
+    # Only the clock is fixed: exercise real prompt and schema assembly.
+    agent_datetime_prompt_block() { REPLY=$'\n\nCurrent date and time: 2026-10-06T12:00:00+0000 (UTC)'; }
+    for ZCODER_TOOL_EXPOSURE in full staged; do
+      for ZCODER_THINK in true false; do
+        AGENT_TOOL_PHASE=external
+        AGENT_CONTEXT_TOOLS='saved catalog'
+        AGENT_MESSAGES=('{"role":"user","content":"saved conversation"}')
+        agent_build_warmup_payload
+        assert_success "$ZCODER_TOOL_EXPOSURE/$ZCODER_THINK warm-up builds successfully" $?
+        warmup_payload="$REPLY"
+        assert_eq external "$AGENT_TOOL_PHASE" 'warm-up preserves the active tool phase'
+        assert_eq 512 "$ZCODER_MAX_OUTPUT_TOKENS" 'warm-up preserves the real output budget'
+        assert_eq 'saved catalog' "$AGENT_CONTEXT_TOOLS" 'warm-up preserves the accounting catalog'
+        assert_eq '{"role":"user","content":"saved conversation"}' "${AGENT_MESSAGES[1]}" 'warm-up preserves saved model history'
+        if [[ "$ZCODER_TOOL_EXPOSURE" == staged ]]; then
+          AGENT_TOOL_PHASE=routing
+          cap=64
+          readiness='Initialization check only. Return the routing object with mode respond, response Ready, and an empty reason.'
+        else
+          AGENT_TOOL_PHASE=full
+          cap=8
+          readiness='Initialization check only. Do not call tools. After reading all instructions and context, respond with exactly Ready and nothing else.'
+        fi
+        AGENT_MESSAGES=('{"role":"user","content":"Actual first question"}')
+        agent_build_payload false
+        assert_success "$ZCODER_TOOL_EXPOSURE/$ZCODER_THINK first request builds successfully" $?
+        real_payload="$REPLY"
+        warmup_payload="${warmup_payload//"$readiness"/Actual first question}"
+        warmup_payload="${warmup_payload/\"num_predict\":$cap/\"num_predict\":512}"
+        assert_eq "$real_payload" "$warmup_payload" "$ZCODER_TOOL_EXPOSURE/$ZCODER_THINK warm-up differs only in user content and generation cap"
+      done
+    done
+  } always {
+    functions[agent_datetime_prompt_block]="$saved_datetime"
+  }
+}
+test_warmup_payload_parity
+unfunction test_warmup_payload_parity
 
 saved_warmup_payload_builder="${functions[agent_build_warmup_payload]}"
 saved_warmup_status_setter="${functions[agent_set_status]}"

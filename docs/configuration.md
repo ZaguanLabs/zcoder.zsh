@@ -92,12 +92,20 @@ continues. `/agents` reports the current state and `/list-agents` lists peers.
 
 ## Model warm-up
 
-The local TUI starts with a `[ Warming Up ]` badge and sends a disposable,
-non-thinking Ollama request containing the resolved system prompt, project
+The local TUI starts with a `[ Warming Up ]` badge and sends a disposable
+Ollama request containing the resolved system prompt, project
 instructions, Skill context, MCP routing, and tool schemas. Its response is
 captured silently and never enters the transcript, model history, compaction
 ledger, or saved session. A successful response changes the badge to
 `[ Ready ]`.
+
+Warm-up uses the same payload builder as real turns, preserving the model,
+system instructions, tool order, thinking mode, and context settings for
+Ollama's reusable prompt prefix. The current timestamp stays at the end of the
+system prompt. Only the disposable user message, non-streaming transport, and
+small output limit differ: eight tokens for full tool exposure or 64 for staged
+routing. Staged routing disables thinking for both warm-up and real requests.
+Warm-up excludes saved conversation history and never executes returned tools.
 
 The prompt editor remains usable during warm-up. Submitting real work before it
 finishes cancels the disposable request and immediately starts the real turn.

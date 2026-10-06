@@ -620,30 +620,23 @@ _agent_context_bill() {
 # Ollama an opportunity to cache the stable system/tool prefix. The synthetic
 # exchange is never added to AGENT_MESSAGES or persistent session state.
 agent_build_warmup_payload() {
-  local model_json="" system_json="" user_json="" tools="" options="" prompt="" format=""
+  local user_json="" AGENT_CONTEXT_TOOLS=""
+  local -a AGENT_MESSAGES=()
   local AGENT_TOOL_PHASE="full"
+  local ZCODER_MAX_OUTPUT_TOKENS=8
   [[ "$ZCODER_TOOL_EXPOSURE" == staged ]] && AGENT_TOOL_PHASE="routing"
   agent_context_configure || return $?
-  agent_tools_schema_json || return $?
-  tools="$REPLY"
-  agent_resolve_system_prompt
-  prompt="$REPLY"
-  zjson_quote "$ZCODER_MODEL"; model_json="$REPLY"
-  zjson_quote "$prompt"; system_json="$REPLY"
   if [[ "$AGENT_TOOL_PHASE" == routing ]]; then
+    ZCODER_MAX_OUTPUT_TOKENS=64
     zjson_quote "Initialization check only. Return the routing object with mode respond, response Ready, and an empty reason."; user_json="$REPLY"
   else
     zjson_quote "Initialization check only. Do not call tools. After reading all instructions and context, respond with exactly Ready and nothing else."; user_json="$REPLY"
   fi
-  agent_context_options_json
-  options="$REPLY"
-  if [[ "$AGENT_TOOL_PHASE" == routing ]]; then
-    agent_route_schema_json
-    format="$REPLY"
-    REPLY="{\"model\":${model_json},\"messages\":[{\"role\":\"system\",\"content\":${system_json}},{\"role\":\"user\",\"content\":${user_json}}],\"format\":${format},\"stream\":false,\"think\":false,\"options\":{${options}\"num_predict\":64,\"temperature\":0}}"
-    return 0
-  fi
-  REPLY="{\"model\":${model_json},\"messages\":[{\"role\":\"system\",\"content\":${system_json}},{\"role\":\"user\",\"content\":${user_json}}],\"tools\":${tools},\"stream\":false,\"think\":false,\"options\":{${options}\"num_predict\":8,\"temperature\":0}}"
+  AGENT_MESSAGES=("{\"role\":\"user\",\"content\":${user_json}}")
+  # Dynamic locals isolate the disposable exchange and generation cap while
+  # sharing the real request's prompt, tools, thinking mode and load options.
+  # Thinking can alter the rendered template, so do not override it here.
+  agent_build_payload false
 }
 
 agent_warmup_enabled() {
