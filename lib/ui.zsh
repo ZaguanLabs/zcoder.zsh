@@ -1366,7 +1366,9 @@ ui_editor_input() {
 
 ui_activity_begin() {
   (( UI_ACTIVITY_DEPTH++ ))
-  [[ "$UI_FOCUS" == sidebar ]] && UI_FOCUS=input
+  if [[ "$UI_FOCUS" == sidebar ]] && (( ! ${UI_PRESERVE_SESSION_FOCUS:-0} )); then
+    UI_FOCUS=input
+  fi
   ui_refresh_all
 }
 

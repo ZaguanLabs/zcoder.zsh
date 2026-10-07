@@ -9,6 +9,20 @@ zcoder_refresh_sessions() {
   (( $+functions[relay_refresh_manifest] )) && relay_refresh_manifest || true
 }
 
+zcoder_select_sidebar_session() {
+  # Session loading and warm-up may wait for remote/context discovery. Keep
+  # their activity polling in Sessions unless the user explicitly moves focus.
+  local -i UI_PRESERVE_SESSION_FOCUS=1
+  if [[ "$REMOTE_MODE" == client ]]; then
+    remote_client_select_session "$1" || ui_append_message error "Could not load remote session: $REMOTE_ERROR"
+  else
+    state_load_session "$1"
+    agent_warmup_start || true
+  fi
+  ui_set_status "Ready"
+  ui_refresh_all
+}
+
 main_tui() {
   local ch="" key="" mouse="" text="" previous_model="" relay_context="" relay_display=""
   local -i current_index=1 i=1 relay_claim_status=1
@@ -150,25 +164,11 @@ main_tui() {
       (( current_index > 0 )) || current_index=1
       if [[ "$key" == UP || "$ch" == k ]]; then
         if (( current_index > 1 )); then
-          if [[ "$REMOTE_MODE" == client ]]; then
-            remote_client_select_session "${SESSION_IDS[current_index-1]}" || ui_append_message error "Could not load remote session: $REMOTE_ERROR"
-          else
-            state_load_session "${SESSION_IDS[current_index-1]}"
-            agent_warmup_start || true
-          fi
-          ui_set_status "Ready"
-          ui_refresh_all
+          zcoder_select_sidebar_session "${SESSION_IDS[current_index-1]}"
         fi
       elif [[ "$key" == DOWN || "$ch" == j ]]; then
         if (( current_index < ${#SESSION_IDS} )); then
-          if [[ "$REMOTE_MODE" == client ]]; then
-            remote_client_select_session "${SESSION_IDS[current_index+1]}" || ui_append_message error "Could not load remote session: $REMOTE_ERROR"
-          else
-            state_load_session "${SESSION_IDS[current_index+1]}"
-            agent_warmup_start || true
-          fi
-          ui_set_status "Ready"
-          ui_refresh_all
+          zcoder_select_sidebar_session "${SESSION_IDS[current_index+1]}"
         fi
       elif [[ "$ch" == $'\n' || "$ch" == $'\r' || "$key" == ENTER || "$key" == PADENTER ]]; then
         UI_FOCUS="input"

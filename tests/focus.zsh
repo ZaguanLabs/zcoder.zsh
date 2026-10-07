@@ -46,13 +46,32 @@
   input_reset
 }
 
+# Selection waits preserve focus without undoing deliberate focus changes.
+() {
+  local UI_FOCUS=sidebar INPUT_TERM_STATE=normal INPUT_ESCAPE_BUF=''
+  local -i UI_ACTIVE=1 UI_MODAL_ACTIVE=0 UI_ACTIVITY_DEPTH=0
+  local -i UI_PRESERVE_SESSION_FOCUS=1 SCREEN_W=120 SIDE_W=25
+  ui_activity_begin
+  assert_eq sidebar "$UI_FOCUS" 'session selection activity keeps focus in Sessions'
+  ui_activity_begin
+  ui_activity_end
+  assert_eq sidebar "$UI_FOCUS" 'nested selection requests do not move focus'
+  ui_activity_input $'\e' ''; ui_activity_input 2 ''
+  ui_activity_end
+  assert_eq input "$UI_FOCUS" 'Alt+2 during selection is preserved after activity ends'
+  UI_PRESERVE_SESSION_FOCUS=0; UI_FOCUS=sidebar
+  ui_activity_begin
+  assert_eq input "$UI_FOCUS" 'ordinary agent activity still moves focus to the prompt'
+  ui_activity_end
+}
+
 test_integration focus || return 0
 
 # Exercise the actual idle application loop in a PTY on both backend choices.
 () {
   local backend base chunk output='' tty_path
   focus_wait() {
-    local expected=$1
+    local expected=$1 selection=${2:-}
     local -F deadline=$(( EPOCHREALTIME + 8 ))
     while (( EPOCHREALTIME < deadline )); do
       while zpty -r focus-ui chunk 2>/dev/null; do
@@ -60,7 +79,10 @@ test_integration focus || return 0
         output+=$chunk
         (( EPOCHREALTIME < deadline )) || break
       done
-      [[ ${mapfile[$base.state]:-} == "$expected" ]] && return 0
+      if [[ ${mapfile[$base.state]:-} == "$expected" &&
+            ( -z $selection || ${mapfile[$base.selection]:-} == "$selection" ) ]]; then
+        return 0
+      fi
       zselect -t 1
     done
     print -r -- "Focus state: ${mapfile[$base.state]:-}; output: ${(V)output[-500,-1]}"
@@ -82,6 +104,20 @@ test_integration focus || return 0
     zpty -w -n focus-ui $'\e1'
     focus_wait 'sidebar:25:1:12'
     assert_success "$backend: Alt+1 focuses Sessions and preserves draft and caret" $?
+    zpty -w -n focus-ui $'\eOB'
+    focus_wait 'sidebar:25:1:12' 2
+    assert_success "$backend: Down loads a conversation without leaving Sessions during warm-up" $?
+    zpty -w -n focus-ui $'\eOB'
+    focus_wait 'sidebar:25:1:12' 3
+    assert_success "$backend: a second Down reaches the next conversation without refocusing" $?
+    zpty -w -n focus-ui $'\eOA'
+    focus_wait 'sidebar:25:1:12' 2
+    assert_success "$backend: Up also preserves Sessions focus after loading" $?
+    zpty -w -n focus-ui $'\e2'
+    focus_wait 'input:25:1:12' 2
+    assert_success "$backend: Alt+2 explicitly returns to the preserved draft after browsing" $?
+    zpty -w -n focus-ui $'\e1'
+    focus_wait 'sidebar:25:1:12' 2
     zpty -w -n focus-ui 2
     focus_wait 'input:25:1:12'
     assert_success "$backend: bare 2 returns to the draft" $?
