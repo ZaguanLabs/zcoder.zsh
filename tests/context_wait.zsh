@@ -56,6 +56,20 @@ mapfile[$context_base.release_modal]=1
 context_wait "$context_base.modal_result" '98304:0:generation body:generation error:assistant response:read_file'
 assert_success "background collection preserves generation transport and tool response state" $?
 assert_eq 1 "${mapfile[$context_base.parser_preserved]:-}" "background context parsing preserves the caller's tokenizer state"
+context_wait "$context_base.started" cloud_cancel
+assert_success 'cloud metadata lookup remains responsive in the terminal' $?
+zpty -w -n context-ui $'\e'
+context_wait "$context_base.cloud_cancelled" '130:262144:1:'
+assert_success 'Escape cancels cloud metadata lookup while retaining the 256K accounting fallback' $?
+context_wait "$context_base.eof_cloud_cancel" 5
+assert_success 'cloud cancellation closes the metadata TCP connection' $?
+assert_eq $'/api/show\n' "${mapfile[$context_base.requests_cloud_cancel]:-}" 'cloud discovery queries show directly without requiring residency'
+context_wait "$context_base.cloud_result" '1048576:cloud:0:'
+assert_success 'terminal cloud context discovery uses the reported limit without num_ctx' $?
+context_wait "$context_base.alias_result" '1048576:cloud:0:alias generation:alias error'
+assert_success 'asynchronous alias discovery transitions workers while preserving generation transport' $?
+assert_eq $'/api/ps\n/api/show\n' "${mapfile[$context_base.requests_alias]:-}" 'cloud alias discovery checks residency before reading metadata'
+assert_eq 1 "${mapfile[$context_base.alias_parser]:-}" 'the metadata worker transition preserves the tokenizer state'
 for context_phase in malformed timeout stale shutdown; do
   context_wait "$context_base.result_$context_phase" '98304:1:'
   assert_success "$context_phase context discovery keeps the last allocation and releases its worker" $?

@@ -266,6 +266,8 @@ ui_context_lines() {
   fi
   [[ "$ZCODER_CONTEXT_WINDOW" == auto ]] && window_note="Ollama allocation"
   (( ${AGENT_CONTEXT_DISCOVERY_PENDING:-0} )) && window_note="fallback estimate; allocation not reported"
+  [[ "${AGENT_CONTEXT_SOURCE:-}" == cloud ]] && window_note="Ollama cloud model limit"
+  [[ "${AGENT_CONTEXT_SOURCE:-}" == cloud_fallback ]] && window_note="cloud fallback; model limit not reported"
   (( ${AGENT_LAST_PROMPT_TOKENS:-0} > 0 )) && last_prompt="$AGENT_LAST_PROMPT_TOKENS tokens"
   agent_compaction_limit; limit=$REPLY
   UI_CONTEXT_LINES=("Estimated next prompt: ${estimate} tokens"

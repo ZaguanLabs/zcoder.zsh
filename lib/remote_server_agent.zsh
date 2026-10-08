@@ -143,21 +143,47 @@ _remote_server_model_poll() {
   request_status=$?
   response="$HTTP_BODY"
   REMOTE_MODEL_REQUEST_KIND=''
+  if (( request_status == 0 )) && [[ "$kind" == show_check || "$kind" == show_refresh ]]; then
+    if ! json_parse_model_context "$response" "$ZCODER_MODEL"; then
+      REMOTE_MODEL_STATUS=error
+      REMOTE_MODEL_ERROR="could not parse Ollama model metadata: ${ZJSON_ERROR:-invalid JSON}"
+      return 2
+    fi
+    if (( JSON_MODEL_IS_CLOUD )); then
+      if [[ "$ZCODER_CONTEXT_WINDOW" == auto ]]; then
+        agent_context_apply_cloud "$JSON_MODEL_IS_CLOUD" "$JSON_MODEL_CONTEXT"
+      else
+        AGENT_CONTEXT_WINDOW=$ZCODER_CONTEXT_WINDOW
+        AGENT_CONTEXT_SOURCE=configured
+        AGENT_CONTEXT_DISCOVERY_PENDING=0
+      fi
+      AGENT_CONTEXT_MODEL="$ZCODER_MODEL"
+      AGENT_CONTEXT_HOST="$OLLAMA_HOST"; AGENT_CONTEXT_SETTING="$ZCODER_CONTEXT_WINDOW"
+      REMOTE_MODEL_STATUS=ready; REMOTE_MODEL_ERROR=''
+      return 0
+    fi
+    if [[ "$kind" == show_check ]]; then
+      _remote_server_model_start_warmup || return 2
+      return 1
+    fi
+    REMOTE_MODEL_STATUS=error
+    REMOTE_MODEL_ERROR='configured model is not resident after warm-up'
+    return 2
+  fi
   if (( request_status == 0 )) && [[ "$kind" == check || "$kind" == refresh ]]; then
     if ! json_parse_running_model_context "$response" "$ZCODER_MODEL"; then
       error="could not parse Ollama running-model list: ${ZJSON_ERROR:-invalid JSON}"
     elif (( JSON_RUNNING_MODEL_CONTEXT > 0 )); then
       AGENT_CONTEXT_WINDOW=$JSON_RUNNING_MODEL_CONTEXT
+      AGENT_CONTEXT_SOURCE=allocation
       AGENT_CONTEXT_MODEL="$ZCODER_MODEL"
       AGENT_CONTEXT_DISCOVERY_PENDING=0
       REMOTE_MODEL_STATUS=ready
       REMOTE_MODEL_ERROR=''
       return 0
-    elif [[ "$kind" == check ]]; then
-      _remote_server_model_start_warmup || return 2
-      return 1
     else
-      error='configured model is not resident after warm-up'
+      _remote_server_model_start_metadata "$kind" || return 2
+      return 1
     fi
     REMOTE_MODEL_STATUS=error
     REMOTE_MODEL_ERROR="$error"
@@ -185,6 +211,10 @@ _remote_server_model_poll() {
 
 _remote_server_model_start_check() {
   local kind="${1:-check}" connection_fd="${2:-}"
+  if ollama_model_is_cloud "$ZCODER_MODEL" || [[ "$AGENT_CONTEXT_MODEL" == "$ZCODER_MODEL" && "$AGENT_CONTEXT_HOST" == "$OLLAMA_HOST" && "$AGENT_CONTEXT_SOURCE" == cloud* ]]; then
+    _remote_server_model_start_metadata "$kind" "$connection_fd"
+    return $?
+  fi
   if ! http_async_start GET /api/ps '' "$OLLAMA_HOST" "$REMOTE_LISTEN_FD" "$connection_fd" "${(@k)REMOTE_CONNECTION_PHASE}"; then
     REMOTE_MODEL_STATUS=error
     REMOTE_MODEL_ERROR="${HTTP_ERROR:-could not check Ollama model residency}"
@@ -195,6 +225,22 @@ _remote_server_model_start_check() {
   # Preserve the protocol-1 preparation state understood by older clients.
   REMOTE_MODEL_STATUS=warming
   REMOTE_MODEL_ERROR=''
+}
+
+# Cloud models do not appear in /api/ps. Inspect metadata before treating an
+# absent model as evicted; preserve inherited socket cleanup in the new worker.
+_remote_server_model_start_metadata() {
+  local kind="$1" connection_fd="${2:-}" payload=''
+  zjson_quote "$ZCODER_MODEL" || return 1
+  payload='{"model":'"$REPLY"'}'
+  if ! http_async_start POST /api/show "$payload" "$OLLAMA_HOST" "$REMOTE_LISTEN_FD" "$connection_fd" "${(@k)REMOTE_CONNECTION_PHASE}"; then
+    REMOTE_MODEL_STATUS=error
+    REMOTE_MODEL_ERROR="${HTTP_ERROR:-could not inspect Ollama model metadata}"
+    return 1
+  fi
+  REMOTE_MODEL_REQUEST_KIND="show_$kind"
+  REMOTE_MODEL_DEADLINE=$(( EPOCHREALTIME + REMOTE_SERVER_MODEL_CHECK_TIMEOUT ))
+  REMOTE_MODEL_STATUS=warming; REMOTE_MODEL_ERROR=''
 }
 
 _remote_server_model_start_warmup() {

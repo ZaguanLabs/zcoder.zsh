@@ -245,10 +245,10 @@ _tool_range_append() {
 
 tool_read_file_range() {
   local requested="$1" start="$2" end="$3" resolved_path="" output="" line="" fd=""
-  local chunk="" pending="" range_head="" range_tail="" marker=""
+  local chunk="" pending="" range_head="" range_tail=""
   local -a lines=()
   local -i total=0 read_status=0 complete=0 first=0 last=0 i=0
-  local -i range_chars=0 range_limit=${ZCODER_MAX_TOOL_OUTPUT:-32768} head=0 tail=0 omitted=0
+  local -i range_chars=0 range_limit=${ZCODER_MAX_TOOL_OUTPUT:-32768}
   [[ "$start" == <1-> && "$end" == <1-> && ${#start} -le 9 && ${#end} -le 9 ]] || {
     _tool_fail "start_line and end_line must be positive integers below 1000000000"; return 1
   }
@@ -301,25 +301,8 @@ tool_read_file_range() {
     exec {fd}<&-
   }
   (( start <= total )) || { _tool_fail "start_line $start is past end of file ($total lines)"; return 1; }
-  if (( range_chars <= range_limit )); then
-    output="$range_head"
-  else
-    omitted=$(( range_chars - range_limit ))
-    # Include the marker itself in the omitted count; repeat until its width
-    # stabilizes, including when the count crosses a decimal digit boundary.
-    while true; do
-      marker=$'\n'"[... ${omitted} characters omitted ...]"$'\n'
-      (( omitted == range_chars - range_limit + ${#marker} )) && break
-      omitted=$(( range_chars - range_limit + ${#marker} ))
-    done
-    if (( range_limit <= ${#marker} + 16 )); then
-      output="$range_head"
-    else
-      head=$(( (range_limit - ${#marker}) * 3 / 5 ))
-      tail=$(( range_limit - ${#marker} - head ))
-      output="${range_head[1,head]}${marker}${range_tail[-tail,-1]}"
-    fi
-  fi
+  zcoder_truncate_head_tail_parts "$range_head" "$range_tail" "$range_chars" "$range_limit"
+  output="$REPLY"
   _tool_succeed "$output"
 }
 

@@ -18,10 +18,12 @@ while ztcp -a "$listener"; do
   phase="${mapfile[$fixture_base.phase]}"
   print -r -- "$REMOTE_REQUEST_TARGET" >> "$fixture_base.requests_$phase"
   record='{"models":[{"name":"fixture","context_length":98304}]}'
+  [[ "$phase" == alias ]] && record='{"models":[]}'
+  [[ "$REMOTE_REQUEST_TARGET" == /api/show ]] && record='{"remote_model":"fixture","model_info":{"general.architecture":"fixture","fixture.context_length":1048576}}'
   if [[ "$REMOTE_REQUEST_TARGET" == /api/chat ]]; then
     record='{"message":{"content":"Ready"},"done":true}'
     _remote_http_send "$peer" 200 "$record"
-  elif [[ "$phase" == cancel || "$phase" == modal || "$phase" == timeout || "$phase" == stale || "$phase" == shutdown ]]; then
+  elif [[ "$phase" == cancel || "$phase" == cloud_cancel || "$phase" == modal || "$phase" == timeout || "$phase" == stale || "$phase" == shutdown ]]; then
     _http_byte_length "$record"
     zcoder_syswrite_all "$peer" $'HTTP/1.1 200 OK\r\nContent-Length: '"$REPLY"$'\r\n\r\n{'
     mapfile[$fixture_base.started]="$phase"

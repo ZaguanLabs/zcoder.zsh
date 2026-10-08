@@ -1,7 +1,8 @@
-# Conservative conversation compaction for local Ollama models.
+# Conversation compaction using local allocations or cloud model limits.
 
 typeset -g ZCODER_CONTEXT_WINDOW="${ZCODER_CONTEXT_WINDOW:-auto}"
 typeset -gi ZCODER_CONTEXT_FALLBACK="${ZCODER_CONTEXT_FALLBACK:-65536}"
+typeset -gi ZCODER_CLOUD_CONTEXT_FALLBACK="${ZCODER_CLOUD_CONTEXT_FALLBACK:-262144}"
 typeset -gi ZCODER_COMPACT_PERCENT="${ZCODER_COMPACT_PERCENT:-85}"
 typeset -gi ZCODER_COMPACT_MAX_TOKENS="${ZCODER_COMPACT_MAX_TOKENS:-2048}"
 typeset -gi ZCODER_COMPACT_KEEP_USER_TOKENS="${ZCODER_COMPACT_KEEP_USER_TOKENS:-4096}"
@@ -11,6 +12,7 @@ typeset -gi ZCODER_COMPACT_RETRY_LIMIT="${ZCODER_COMPACT_RETRY_LIMIT:-2}"
 typeset -gi AGENT_CONTEXT_WINDOW="$ZCODER_CONTEXT_FALLBACK"
 typeset -g AGENT_CONTEXT_MODEL=""
 typeset -g AGENT_CONTEXT_HOST='' AGENT_CONTEXT_SETTING=''
+typeset -g AGENT_CONTEXT_SOURCE=fallback AGENT_CONTEXT_REQUEST_STAGE=''
 typeset -g AGENT_CONTEXT_PID='' AGENT_CONTEXT_BASE=''
 typeset -g AGENT_CONTEXT_REQUEST_MODEL='' AGENT_CONTEXT_REQUEST_HOST=''
 typeset -gF AGENT_CONTEXT_DEADLINE=0.0
@@ -29,6 +31,7 @@ typeset -ga AGENT_USER_MESSAGES=()
 typeset -ga AGENT_PINNED_USER_MESSAGES=()
 
 (( ZCODER_CONTEXT_FALLBACK >= 32768 )) || ZCODER_CONTEXT_FALLBACK=65536
+(( ZCODER_CLOUD_CONTEXT_FALLBACK >= 32768 )) || ZCODER_CLOUD_CONTEXT_FALLBACK=262144
 (( ZCODER_COMPACT_PERCENT >= 25 && ZCODER_COMPACT_PERCENT <= 90 )) || ZCODER_COMPACT_PERCENT=85
 (( ZCODER_COMPACT_MAX_TOKENS >= 256 )) || ZCODER_COMPACT_MAX_TOKENS=2048
 (( ZCODER_COMPACT_KEEP_USER_TOKENS >= 256 )) || ZCODER_COMPACT_KEEP_USER_TOKENS=4096
@@ -64,6 +67,7 @@ agent_compaction_reset() {
   AGENT_CONTEXT_MODEL=""
   AGENT_CONTEXT_HOST=''; AGENT_CONTEXT_SETTING=''
   AGENT_CONTEXT_WINDOW="$ZCODER_CONTEXT_FALLBACK"
+  AGENT_CONTEXT_SOURCE=fallback
   AGENT_CONTEXT_DISCOVERY_PENDING=0
   AGENT_LAST_PROMPT_TOKENS=0
   AGENT_LAST_OUTPUT_TOKENS=0
@@ -86,6 +90,7 @@ agent_context_discovery_cancel() {
   [[ -n "$HTTP_ASYNC_PID" || -n "$HTTP_ASYNC_BASE" ]] && http_async_cancel 'context discovery stopped'
   AGENT_CONTEXT_PID=''; AGENT_CONTEXT_BASE=''
   AGENT_CONTEXT_REQUEST_MODEL=''; AGENT_CONTEXT_REQUEST_HOST=''
+  AGENT_CONTEXT_REQUEST_STAGE=''
   return 0
 }
 
@@ -96,11 +101,54 @@ agent_context_discovery_start() {
   local -i HTTP_STREAM_REQUEST=0 HTTP_READ_TIMEOUT=30
   AGENT_CONTEXT_REQUEST_MODEL="$ZCODER_MODEL"; AGENT_CONTEXT_REQUEST_HOST="$OLLAMA_HOST"
   AGENT_CONTEXT_DEADLINE=$(( EPOCHREALTIME + HTTP_READ_TIMEOUT ))
+  AGENT_CONTEXT_REQUEST_STAGE=ps
+  [[ "$AGENT_CONTEXT_SOURCE" == cloud* ]] && AGENT_CONTEXT_REQUEST_STAGE=show
   {
-    http_async_start GET /api/ps '' "$OLLAMA_HOST"
+    _agent_context_discovery_request
   } always {
     AGENT_CONTEXT_PID="$HTTP_ASYNC_PID"; AGENT_CONTEXT_BASE="$HTTP_ASYNC_BASE"
   }
+}
+
+# The caller owns worker locals and snapshots their updated handles in always.
+_agent_context_discovery_request() {
+  local payload=''
+  if [[ "$AGENT_CONTEXT_REQUEST_STAGE" == show ]]; then
+    zjson_quote "$AGENT_CONTEXT_REQUEST_MODEL" || return 1
+    payload='{"model":'"$REPLY"'}'
+    http_async_start POST /api/show "$payload" "$AGENT_CONTEXT_REQUEST_HOST"
+  else
+    http_async_start GET /api/ps '' "$AGENT_CONTEXT_REQUEST_HOST"
+  fi
+}
+
+# Apply cloud metadata only to accounting. Auto requests leave cloud context
+# selection to Ollama, even once the model's maximum has been discovered.
+agent_context_apply_cloud() {
+  emulate -L zsh
+  (( $1 )) || return 0
+  AGENT_CONTEXT_SOURCE=cloud_fallback
+  AGENT_CONTEXT_WINDOW=$ZCODER_CLOUD_CONTEXT_FALLBACK
+  AGENT_CONTEXT_DISCOVERY_PENDING=1
+  if (( $2 > 0 )); then
+    AGENT_CONTEXT_WINDOW=$2
+    AGENT_CONTEXT_SOURCE=cloud
+    AGENT_CONTEXT_DISCOVERY_PENDING=0
+  fi
+  return 0
+}
+
+agent_context_discover_sync() {
+  local -i HTTP_READ_TIMEOUT=30
+  if [[ "$AGENT_CONTEXT_SOURCE" != cloud* ]] && ollama_get_running_context "$ZCODER_MODEL" "$OLLAMA_HOST"; then
+    AGENT_CONTEXT_WINDOW=$OLLAMA_RUNNING_CONTEXT
+    AGENT_CONTEXT_SOURCE=allocation
+    AGENT_CONTEXT_DISCOVERY_PENDING=0
+  elif ollama_get_model_context "$ZCODER_MODEL" "$OLLAMA_HOST"; then
+    agent_context_apply_cloud "$OLLAMA_MODEL_IS_CLOUD" "$OLLAMA_MODEL_CONTEXT"
+  fi
+  HTTP_ERROR=''
+  return 0
 }
 
 agent_context_discovery_poll() {
@@ -115,13 +163,26 @@ _agent_context_discovery_poll() {
     return 0
   fi
   local HTTP_ASYNC_PID="$AGENT_CONTEXT_PID" HTTP_ASYNC_BASE="$AGENT_CONTEXT_BASE" HTTP_ASYNC_STREAM_FD=''
-  local HTTP_BODY='' HTTP_ERROR='' REPLY=''
-  local -i JSON_RUNNING_MODEL_CONTEXT=0
+  local HTTP_BODY='' HTTP_ERROR='' REPLY='' HTTP_ACTIVE_FD='' HTTP_ASYNC_EXTRA_HEADERS=''
+  local -i HTTP_STREAM_REQUEST=0 HTTP_READ_TIMEOUT=30
+  local -i JSON_RUNNING_MODEL_CONTEXT=0 JSON_MODEL_CONTEXT=0 JSON_MODEL_IS_CLOUD=0
   {
     if http_async_ready; then
-      if http_async_collect && json_parse_running_model_context "$HTTP_BODY" "$AGENT_CONTEXT_REQUEST_MODEL" && (( JSON_RUNNING_MODEL_CONTEXT > 0 )); then
-        AGENT_CONTEXT_WINDOW=$JSON_RUNNING_MODEL_CONTEXT
-        AGENT_CONTEXT_DISCOVERY_PENDING=0
+      if http_async_collect; then
+        if [[ "$AGENT_CONTEXT_REQUEST_STAGE" == show ]]; then
+          if json_parse_model_context "$HTTP_BODY" "$AGENT_CONTEXT_REQUEST_MODEL"; then
+            agent_context_apply_cloud "$JSON_MODEL_IS_CLOUD" "$JSON_MODEL_CONTEXT"
+          fi
+        elif json_parse_running_model_context "$HTTP_BODY" "$AGENT_CONTEXT_REQUEST_MODEL"; then
+          if (( JSON_RUNNING_MODEL_CONTEXT > 0 )); then
+            AGENT_CONTEXT_WINDOW=$JSON_RUNNING_MODEL_CONTEXT
+            AGENT_CONTEXT_SOURCE=allocation
+            AGENT_CONTEXT_DISCOVERY_PENDING=0
+          elif (( EPOCHREALTIME < AGENT_CONTEXT_DEADLINE )); then
+            AGENT_CONTEXT_REQUEST_STAGE=show
+            _agent_context_discovery_request || true
+          fi
+        fi
       fi
     elif (( EPOCHREALTIME >= AGENT_CONTEXT_DEADLINE )); then
       http_async_cancel 'context discovery timed out'
@@ -166,25 +227,22 @@ agent_context_configure() {
   AGENT_COMPACTION_REARM_TOKENS=0
   if [[ "$ZCODER_CONTEXT_WINDOW" == <32768-> ]]; then
     AGENT_CONTEXT_WINDOW="$ZCODER_CONTEXT_WINDOW"
+    AGENT_CONTEXT_SOURCE=configured
     return 0
   fi
 
   AGENT_CONTEXT_WINDOW="$ZCODER_CONTEXT_FALLBACK"
+  AGENT_CONTEXT_SOURCE=fallback
   AGENT_CONTEXT_DISCOVERY_PENDING=1
+  if ollama_model_is_cloud "$ZCODER_MODEL"; then
+    agent_context_apply_cloud 1 0
+  fi
   if (( ${UI_ACTIVE:-0} )); then
     agent_context_discovery_start || true
     agent_context_discovery_wait
     return $?
   fi
-  if ollama_get_running_context "$ZCODER_MODEL" "$OLLAMA_HOST"; then
-    AGENT_CONTEXT_WINDOW="$OLLAMA_RUNNING_CONTEXT"
-    AGENT_CONTEXT_DISCOVERY_PENDING=0
-  else
-    # A model absent from /api/ps has not been loaded yet. Refresh after the
-    # first response, when Ollama can report the allocation it actually made.
-    AGENT_CONTEXT_DISCOVERY_PENDING=1
-  fi
-  HTTP_ERROR=""
+  agent_context_discover_sync
 }
 
 # Select whole user messages rather than truncating their text. The first
@@ -372,11 +430,7 @@ agent_context_refresh_after_response() {
     agent_context_discovery_start || true
     return 0
   fi
-  if ollama_get_running_context "$ZCODER_MODEL" "$OLLAMA_HOST"; then
-    AGENT_CONTEXT_WINDOW="$OLLAMA_RUNNING_CONTEXT"
-    AGENT_CONTEXT_DISCOVERY_PENDING=0
-  fi
-  HTTP_ERROR=""
+  agent_context_discover_sync
 }
 
 agent_compaction_limit() {
@@ -429,10 +483,9 @@ agent_context_record_usage() {
 }
 
 agent_context_options_json() {
-  # In auto mode the fallback is only an internal accounting budget. Omitting
-  # num_ctx on the first request lets Ollama honor the model's Modelfile or the
-  # server default instead of silently replacing it with our fallback.
-  if [[ "$ZCODER_CONTEXT_WINDOW" == auto ]] && (( AGENT_CONTEXT_DISCOVERY_PENDING )); then
+  # Fallbacks and cloud maxima are internal accounting budgets. Leave Ollama's
+  # context selection intact unless using a known local allocation or override.
+  if [[ "$ZCODER_CONTEXT_WINDOW" == auto ]] && { (( AGENT_CONTEXT_DISCOVERY_PENDING )) || [[ "$AGENT_CONTEXT_SOURCE" == cloud* ]]; }; then
     REPLY=""
     return 0
   fi

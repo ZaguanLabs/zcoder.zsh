@@ -1,4 +1,7 @@
 # Native HTTP/1.1 client for a local or LAN Ollama server.
+# Request contract: status 0 succeeds, nonzero fails; HTTP_BODY may contain an
+# error response and HTTP_ERROR explains failure. Framing/lengths use bytes.
+# The active descriptor is owned and closed by the request, never its caller.
 
 typeset -g OLLAMA_HOST="${OLLAMA_HOST:-localhost:11434}"
 typeset -g HTTP_BODY=""
@@ -11,11 +14,14 @@ typeset -g HTTP_ASYNC_BASE=""
 typeset -g HTTP_ASYNC_STREAM_FD=""
 typeset -gi HTTP_READ_TIMEOUT="${ZCODER_HTTP_READ_TIMEOUT:-900}"
 typeset -gi OLLAMA_RUNNING_CONTEXT=0
+typeset -gi OLLAMA_MODEL_CONTEXT=0 OLLAMA_MODEL_IS_CLOUD=0
 typeset -ga OLLAMA_MODELS=()
 
 (( HTTP_READ_TIMEOUT > 0 )) || HTTP_READ_TIMEOUT=900
 
 ollama_normalize_host() {
+  emulate -L zsh
+  setopt extendedglob
   local endpoint="$1"
   HTTP_ERROR=""
   endpoint="${endpoint##[[:space:]]#}"
@@ -57,12 +63,14 @@ _http_split_host() {
 }
 
 _http_byte_length() {
-  setopt localoptions nomultibyte
+  emulate -L zsh
+  setopt nomultibyte
   REPLY=${#1}
 }
 
 _http_dechunk() {
-  setopt localoptions extendedglob nomultibyte
+  emulate -L zsh
+  setopt extendedglob nomultibyte
   local wire="$1" size_line="" hex="" data="" terminator="" trailer="" extra=""
   local -a chunks=()
   local -i size output_size=0 trailer_bytes=0 trailer_count=0
@@ -115,10 +123,12 @@ _http_close_active() {
 }
 
 http_request() {
-  setopt localoptions nomultibyte
+  emulate -L zsh
+  setopt extendedglob nomultibyte
   local method="$1" endpoint_path="$2" payload="${3:-}" endpoint="${4:-$OLLAMA_HOST}"
   local extra_headers="${5:-}" fd="" request="" chunk="" raw="" header="" body="" status_line=""
   local header_line="" header_key="" header_value="" content_length=""
+  local -a response_chunks=()
   local -i payload_bytes body_bytes read_status=5
   HTTP_BODY=""
   HTTP_ERROR=""
@@ -150,9 +160,13 @@ http_request() {
     sysread -i "$fd" -s 32768 -t "$HTTP_READ_TIMEOUT" chunk 2>/dev/null
     read_status=$?
     (( read_status == 0 )) || break
-    raw+="$chunk"
+    response_chunks+=("$chunk")
   done
   _http_close_active
+  # Assemble once; large responses should not copy the growing prefix on each
+  # socket read. Release the fragments before making header/body slices.
+  raw="${(j::)response_chunks}"
+  response_chunks=()
 
   if [[ "$raw" != *$'\r\n\r\n'* ]]; then
     if (( read_status == 4 )); then
@@ -388,4 +402,26 @@ ollama_get_running_context() {
   fi
   OLLAMA_RUNNING_CONTEXT="$JSON_RUNNING_MODEL_CONTEXT"
   (( OLLAMA_RUNNING_CONTEXT > 0 ))
+}
+
+ollama_model_is_cloud() {
+  emulate -L zsh
+  [[ "$1" == *:cloud || "$1" == *:*-cloud ]]
+}
+
+# Status 0 means valid metadata, including a missing context length. Outputs
+# distinguish cloud aliases from local models; local maxima are not allocations.
+ollama_get_model_context() {
+  emulate -L zsh
+  local model="$1" endpoint="${2:-$OLLAMA_HOST}" payload=''
+  OLLAMA_MODEL_CONTEXT=0; OLLAMA_MODEL_IS_CLOUD=0
+  zjson_quote "$model" || return 1
+  payload='{"model":'"$REPLY"'}'
+  http_request POST /api/show "$payload" "$endpoint" || return 1
+  if ! json_parse_model_context "$HTTP_BODY" "$model"; then
+    HTTP_ERROR="could not parse Ollama model metadata: ${ZJSON_ERROR:-invalid JSON}"
+    return 1
+  fi
+  OLLAMA_MODEL_CONTEXT=$JSON_MODEL_CONTEXT; OLLAMA_MODEL_IS_CLOUD=$JSON_MODEL_IS_CLOUD
+  return 0
 }

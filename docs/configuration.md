@@ -153,15 +153,13 @@ See [Safety and permissions](safety.md) for the full distinction.
 
 Context sizing defaults to `auto`:
 
-- If the model is already loaded, zcoder uses the allocation reported by Ollama's `/api/ps`.
-- If it is unloaded, a conservative 65,536-token value is used for initial internal accounting.
-- The first unloaded-model request omits `num_ctx`, allowing Ollama to honor the model's Modelfile or server default.
-- After the response, zcoder refreshes its accounting from `/api/ps`.
+- For local models, zcoder uses the loaded allocation reported by Ollama's `/api/ps`. Unloaded models use 65,536 tokens for initial accounting, then refresh after the response.
+- For cloud models, zcoder reads the model's context limit from `/api/show`. This also detects cloud aliases through their remote metadata. Cloud models without a reported limit use a 262,144-token accounting fallback, configurable with `ZCODER_CLOUD_CONTEXT_FALLBACK`.
+- Auto requests omit `num_ctx` for cloud models and unloaded local models, allowing Ollama to select the context. Cloud models use their maximum context by default ([Ollama documentation](https://docs.ollama.com/context-length)).
 
 Use `--context-window TOKENS` or `ZCODER_CONTEXT_WINDOW` to request an explicit
 allocation from the first turn. zcoder supports explicit allocations of 32,768
-tokens or more; 32K and 64K are its intended local operating sizes. Larger
-contexts consume more memory. `/context` shows the active allocation, estimate,
+tokens or more. Larger local contexts consume more memory. `/context` shows the active allocation or cloud model limit, estimate,
 compaction threshold, output ceiling, and a component-level estimated context
 bill.
 
@@ -207,6 +205,7 @@ Relevant settings:
 | --- | ---: |
 | `ZCODER_CONTEXT_WINDOW` | `auto` |
 | `ZCODER_CONTEXT_FALLBACK` | 65536 |
+| `ZCODER_CLOUD_CONTEXT_FALLBACK` | 262144 |
 | `ZCODER_COMPACT_PERCENT` | 85 |
 | `ZCODER_COMPACT_MAX_TOKENS` | 2048 |
 | `ZCODER_COMPACT_KEEP_USER_TOKENS` | 4096 |

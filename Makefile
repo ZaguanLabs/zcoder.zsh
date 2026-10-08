@@ -37,7 +37,7 @@ test-visual: check
 	ZCODER_REQUIRE_VISUALS=1 zsh -df tests/document.zsh
 
 benchmark: check
-	zsh tests/benchmark.zsh
+	zsh -df tests/benchmark.zsh
 
 model-eval: check
 	zsh tests/model_eval.zsh

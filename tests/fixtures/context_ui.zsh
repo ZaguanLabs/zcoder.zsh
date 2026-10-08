@@ -58,6 +58,30 @@ fixture_wait_context
 mapfile[$fixture_base.modal_result]="${AGENT_CONTEXT_WINDOW}:${AGENT_CONTEXT_DISCOVERY_PENDING}:${HTTP_BODY}:${HTTP_ERROR}:${JSON_RESPONSE_CONTENT}:${JSON_TOOL_NAMES[1]}"
 mapfile[$fixture_base.parser_preserved]="$([[ "$ZJSON_SOURCE:$ZJSON_POS:$ZJSON_TOKEN_TYPE:$ZJSON_TOKEN_VALUE" == "$expected_parser" ]] && print 1)"
 
+mapfile[$fixture_base.phase]=cloud_cancel
+ZCODER_MODEL=fixture:cloud
+agent_context_configure
+mapfile[$fixture_base.cloud_cancelled]="$?:${AGENT_CONTEXT_WINDOW}:${AGENT_CANCELLED}:${AGENT_CONTEXT_PID}"
+AGENT_CANCELLED=0
+mapfile[$fixture_base.phase]=cloud
+agent_context_configure
+agent_context_options_json
+mapfile[$fixture_base.cloud_result]="${AGENT_CONTEXT_WINDOW}:${AGENT_CONTEXT_SOURCE}:${AGENT_CONTEXT_DISCOVERY_PENDING}:${REPLY}"
+
+# Exercise the alias worker transition while a generation parser is in use.
+mapfile[$fixture_base.phase]=alias
+ZCODER_MODEL=alias; AGENT_CONTEXT_MODEL=alias; AGENT_CONTEXT_SOURCE=fallback
+AGENT_CONTEXT_DISCOVERY_PENDING=1
+agent_context_discovery_start
+HTTP_BODY='alias generation'; HTTP_ERROR='alias error'
+zjson_begin '{"sentinel":43}'
+expected_parser="$ZJSON_SOURCE:$ZJSON_POS:$ZJSON_TOKEN_TYPE:$ZJSON_TOKEN_VALUE"
+fixture_wait_context
+mapfile[$fixture_base.alias_result]="${AGENT_CONTEXT_WINDOW}:${AGENT_CONTEXT_SOURCE}:${AGENT_CONTEXT_DISCOVERY_PENDING}:${HTTP_BODY}:${HTTP_ERROR}"
+mapfile[$fixture_base.alias_parser]="$([[ "$ZJSON_SOURCE:$ZJSON_POS:$ZJSON_TOKEN_TYPE:$ZJSON_TOKEN_VALUE" == "$expected_parser" ]] && print 1)"
+ZCODER_MODEL=fixture; AGENT_CONTEXT_MODEL=fixture; AGENT_CONTEXT_SOURCE=allocation
+AGENT_CONTEXT_WINDOW=98304
+
 for phase in malformed timeout stale shutdown; do
   mapfile[$fixture_base.phase]="$phase"
   AGENT_CONTEXT_DISCOVERY_PENDING=1

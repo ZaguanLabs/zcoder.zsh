@@ -339,6 +339,7 @@ agent_add_context_message() {
 # Normalize those records at the transport boundary so resuming an existing
 # session cannot violate a strict Ollama chat template.
 agent_history_payload_json() {
+  emulate -L zsh
   local message=""
   local -a transport_messages=()
   local -i start=${1:-1}

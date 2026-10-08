@@ -20,6 +20,7 @@ typeset -ga JSON_TOOL_NAMES=()
 typeset -ga JSON_TOOL_ARGS=()
 typeset -ga JSON_MODEL_NAMES=()
 typeset -gi JSON_RUNNING_MODEL_CONTEXT=0
+typeset -gi JSON_MODEL_CONTEXT=0 JSON_MODEL_IS_CLOUD=0
 typeset -gA JSON_OBJECT=()
 typeset -gi JSON_MODEL_OBJECT_RECOVERED=0
 
@@ -31,8 +32,8 @@ json_recover_model_object() {
   emulate -L zsh
   setopt extendedglob nomultibyte
   local source="$1" candidate="" prefix="" suffix="" ch=""
-  local -a chars=()
-  local -i length=${#1} start=0 end=0 depth=0 in_string=0 escaped=0 i
+  local remaining="" span="" scan_pattern='[{}"\\]'
+  local -i length=${#1} start=0 end=0 depth=0 in_string=0 i=0 advance=0
   local original_error="" original_code=""
   local -i original_offset=0 original_line=0 original_column=0
   JSON_MODEL_OBJECT_RECOVERED=0
@@ -57,49 +58,52 @@ json_recover_model_object() {
     return 1
   fi
 
-  chars=( "${(@s::)source}" )
-  for (( i=1; i<=length; i++ )); do
-    ch="${chars[i]}"
-    if (( start == 0 )); then
-      if [[ "$ch" == '{' ]]; then
-        start=$i
-        depth=1
-      fi
-      continue
-    fi
+  # Skip ordinary text in native pattern operations. Only structural bytes
+  # enter the shell loop, rather than allocating/indexing one array per byte.
+  # The patterns are constants; source text never becomes a pattern or code.
+  prefix="${source%%\{*}"
+  start=$(( ${#prefix} + 1 )); i=$start
+  remaining="${source[start,-1]}"
+  while [[ -n "$remaining" ]]; do
+    span="${remaining%%${~scan_pattern}*}"
+    (( i += ${#span} ))
+    (( i <= length )) || break
+    remaining="${remaining[$(( ${#span} + 1 )),-1]}"
+    ch="${remaining[1]}"; advance=1
     if (( in_string )); then
-      if (( escaped )); then
-        escaped=0
-      elif [[ "$ch" == '\\' ]]; then
-        escaped=1
+      if [[ "$ch" == '\' ]]; then
+        # An escaped byte cannot close the string or alter object depth.
+        advance=2
       elif [[ "$ch" == '"' ]]; then
         in_string=0
+        scan_pattern='[{}"\\]'
       fi
-      continue
+    else
+      case "$ch" in
+        '"') in_string=1; scan_pattern='["\\]' ;;
+        '{') (( depth++ )) ;;
+        '}')
+          (( depth-- ))
+          if (( depth == 0 )); then
+            end=$i
+            break
+          fi
+          ;;
+      esac
     fi
-    case "$ch" in
-      '"') in_string=1 ;;
-      '{') (( depth++ )) ;;
-      '}')
-        (( depth-- ))
-        if (( depth == 0 )); then
-          end=$i
-          break
-        fi
-        ;;
-    esac
+    remaining="${remaining[advance+1,-1]}"
+    (( i += advance ))
   done
 
-  if (( start == 0 || end == 0 )); then
+  if (( start > length || end == 0 )); then
     ZJSON_ERROR="${original_error:-model output does not contain one complete JSON object}"
     ZJSON_ERROR_CODE="${original_code:-model_object_not_found}"
     ZJSON_ERROR_OFFSET=$original_offset; ZJSON_ERROR_LINE=$original_line
     ZJSON_ERROR_COLUMN=$original_column
     return 1
   fi
-  candidate="${(j::)chars[start,end]}"
-  prefix="${(j::)chars[1,start-1]}"
-  suffix="${(j::)chars[end+1,-1]}"
+  candidate="${source[start,end]}"
+  suffix="${source[end+1,-1]}"
   # Do not choose one object from an ambiguous multi-object response.
   if [[ "$prefix$suffix" == *[\{\}]* ]] || ! zjson_validate "$candidate"; then
     [[ -n "$ZJSON_ERROR" ]] || {
@@ -449,6 +453,36 @@ json_parse_running_model_context() {
   done
   zjson_next || return 1
   [[ "$ZJSON_TOKEN_TYPE" == eof ]] || { ZJSON_ERROR="trailing content after JSON object"; return 1; }
+}
+
+# Decode /api/show metadata. Publish only validated outputs; object decoder
+# scratch arrays are local so asynchronous discovery cannot overwrite callers.
+json_parse_model_context() {
+  emulate -L zsh
+  local source="$1" target="$2" info='' architecture='' key='' value=''
+  local -i cloud=0 context=0
+  local -A ZJSON_OBJECT=() ZJSON_OBJECT_TYPES=()
+  local -a ZJSON_OBJECT_KEYS=() ZJSON_OBJECT_DUPLICATE_KEYS=()
+  JSON_MODEL_CONTEXT=0; JSON_MODEL_IS_CLOUD=0
+  zjson_parse_object "$source" || return 1
+  [[ "$target" == *:cloud || "$target" == *:*-cloud ]] && cloud=1
+  for key in remote_model remote_host; do
+    [[ "${ZJSON_OBJECT_TYPES[$key]}" == string && -n "${ZJSON_OBJECT[$key]}" ]] && cloud=1
+  done
+  if [[ "${ZJSON_OBJECT_TYPES[model_info]}" == '{' ]]; then
+    info="${ZJSON_OBJECT[model_info]}"
+    zjson_parse_object "$info" || return 1
+    [[ "${ZJSON_OBJECT_TYPES[general.architecture]}" == string ]] && architecture="${ZJSON_OBJECT[general.architecture]}"
+    key="${architecture}.context_length"
+    value="${ZJSON_OBJECT[$key]}"
+    # Keep untrusted numbers out of arithmetic until their spelling and range
+    # are bounded. Select the text architecture, never a vision encoder limit.
+    if [[ -n "$architecture" && "${ZJSON_OBJECT_TYPES[$key]}" == number && "$value" == <1-> && ${#value} -le 10 ]]; then
+      (( value <= 2147483647 )) && context=$value
+    fi
+  fi
+  JSON_MODEL_CONTEXT=$context; JSON_MODEL_IS_CLOUD=$cloud
+  return 0
 }
 
 # Tool schemas in this project use flat argument objects. Values are decoded to

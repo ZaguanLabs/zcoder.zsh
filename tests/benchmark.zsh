@@ -4,7 +4,7 @@ emulate -R zsh
 setopt extendedglob
 zmodload zsh/datetime zsh/system || exit 1
 benchmark_root="${0:A:h:h}"
-for benchmark_library in util json http transcript input ui agent agent_prompts agent_lfm agent_loop; do
+for benchmark_library in util json http stream compact transcript input ui agent agent_prompts agent_lfm agent_loop; do
   source "$benchmark_root/lib/$benchmark_library.zsh" || exit 1
 done
 typeset -gi benchmark_samples=${ZCODER_BENCHMARK_SAMPLES:-5}
@@ -65,6 +65,59 @@ for benchmark_kind in DEL SOH; do
   done
 done
 
+# Isolate accumulation costs; these fixtures exclude socket reads and HTTP
+# parsing. Keep both strategies so future changes can be compared directly.
+benchmark_response_scalar() {
+  emulate -L zsh
+  setopt nomultibyte
+  local assembled='' chunk=''
+  for chunk in "${benchmark_chunks[@]}"; do assembled+="$chunk"; done
+  (( ${#assembled} == benchmark_bytes ))
+}
+benchmark_response_array() {
+  emulate -L zsh
+  setopt nomultibyte
+  local assembled='' chunk=''
+  local -a chunks=()
+  for chunk in "${benchmark_chunks[@]}"; do chunks+=("$chunk"); done
+  assembled="${(j::)chunks}"
+  (( ${#assembled} == benchmark_bytes ))
+}
+benchmark_http_feed() {
+  emulate -L zsh
+  setopt nomultibyte
+  local chunk=''
+  local -i received=0
+  http_stream_reset
+  http_stream_feed $'HTTP/1.1 200 OK\r\nContent-Length: '"$benchmark_bytes"$'\r\n\r\n' || return 1
+  for chunk in "${benchmark_chunks[@]}"; do
+    http_stream_feed "$chunk" || return 1
+    (( received += ${#HTTP_STREAM_OUTPUT} ))
+  done
+  http_stream_finish && (( received == benchmark_bytes && ${#HTTP_STREAM_WIRE} == 0 ))
+}
+for benchmark_size in 32 128 512; do
+  benchmark_chunks=()
+  benchmark_text="${(pl:32768::x:)}"
+  for (( benchmark_index=0; benchmark_index<benchmark_size; benchmark_index++ )); do benchmark_chunks+=("$benchmark_text"); done
+  benchmark_bytes=$(( benchmark_size * 32768 ))
+  benchmark_measure "buffer scalar ${benchmark_size} x 32KiB" benchmark_response_scalar || exit 1
+  benchmark_measure "buffer array ${benchmark_size} x 32KiB" benchmark_response_array || exit 1
+  benchmark_measure "HTTP feed ${benchmark_size} x 32KiB" benchmark_http_feed || exit 1
+done
+
+benchmark_recover() { json_recover_model_object "$benchmark_text"; }
+for benchmark_size in 16384 65536 131072; do
+  benchmark_text=$'Model preface\n```json\n{"text":"'"${(pl:benchmark_size::x:)}"$'","nested":{"ok":true}}\n```'
+  benchmark_measure "JSON recovery ${benchmark_size} string" benchmark_recover || exit 1
+  benchmark_text="${(pl:benchmark_size::x:)}"' {"ok":true}'
+  benchmark_measure "JSON recovery ${benchmark_size} preface" benchmark_recover || exit 1
+done
+
+benchmark_truncate() { zcoder_truncate_head_tail "$benchmark_text" 32768; }
+benchmark_text="${(pl:1048576::x:)}"
+benchmark_measure 'truncate 1MiB to 32KiB' benchmark_truncate || exit 1
+
 input_reset; INPUT_BUF="${(pl:100000::x:)}"; INPUT_POS=${#INPUT_BUF}
 benchmark_layout() { INPUT_LAYOUT_WIDTH=-1; input_layout 74 4; return 0; }
 benchmark_cached_layout() { input_layout 74 4; return 0; }
@@ -81,6 +134,9 @@ benchmark_context_cold() {
 }
 benchmark_measure 'context 1000 x 1KiB cold cache' benchmark_context_cold || exit 1
 benchmark_measure 'context 1000 x 1KiB warm cache' agent_context_bill || exit 1
+benchmark_measure 'history JSON 1000 x 1KiB' agent_history_payload_json || exit 1
+benchmark_payload() { agent_build_payload false '[]'; }
+benchmark_measure 'chat payload 1000 x 1KiB' benchmark_payload || exit 1
 
 zcoder_curses() { return 0; }
 UI_ACTIVE=1; SCREEN_W=80; SCREEN_H=24; SIDE_W=0; INPUT_H=3; UI_FOCUS=input
@@ -89,3 +145,5 @@ for benchmark_index in {1..1000}; do ui_append_message assistant "Short assistan
 _ui_paint_chat 1
 benchmark_redraw() { _ui_paint_chat 1; return 0; }
 benchmark_measure 'cached redraw 1000 events' benchmark_redraw || exit 1
+benchmark_complete_layout() { ui_render_messages 78; return 0; }
+benchmark_measure 'complete layout 1000 events' benchmark_complete_layout || exit 1

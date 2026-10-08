@@ -342,19 +342,38 @@ zcoder_truncate() {
 # Preserve both the beginning and the diagnostic tail of bounded tool output.
 # Commands commonly put the actual failure and summary after voluminous logs.
 zcoder_truncate_head_tail() {
-  local value="$1" limit="${2:-${ZCODER_MAX_TOOL_OUTPUT:-32768}}" marker=""
-  local -i omitted head tail
-  if (( ${#value} <= limit )); then
-    REPLY="$value"
+  emulate -L zsh
+  zcoder_truncate_head_tail_parts "$1" "$1" "${#1}" "${2:-${ZCODER_MAX_TOOL_OUTPUT:-32768}}"
+}
+
+# Inputs: retained head, retained tail, original character count, output limit.
+# Both fragments must retain at least min(original count, limit) characters.
+# Output: REPLY, including the marker within the limit. No source reconstruction
+# is needed by bounded readers; only the original count and its ends are kept.
+zcoder_truncate_head_tail_parts() {
+  emulate -L zsh
+  local trunc_first="$1" trunc_last="$2" trunc_marker=""
+  local -i trunc_count=$3 trunc_limit=$4 trunc_omitted trunc_head trunc_tail
+  if (( trunc_limit <= 0 )); then
+    REPLY=''
     return 0
   fi
-  omitted=$(( ${#value} - limit ))
-  marker=$'\n'"[... ${omitted} characters omitted ...]"$'\n'
-  if (( limit <= ${#marker} + 16 )); then
-    REPLY="${value[1,$limit]}"
+  if (( trunc_count <= trunc_limit )); then
+    REPLY="$trunc_first"
     return 0
   fi
-  head=$(( (limit - ${#marker}) * 3 / 5 ))
-  tail=$(( limit - ${#marker} - head ))
-  REPLY="${value[1,$head]}${marker}${value[-$tail,-1]}"
+  trunc_omitted=$(( trunc_count - trunc_limit ))
+  # The marker consumes source space too. Its count may cross a digit boundary.
+  while true; do
+    trunc_marker=$'\n'"[... ${trunc_omitted} characters omitted ...]"$'\n'
+    (( trunc_omitted == trunc_count - trunc_limit + ${#trunc_marker} )) && break
+    trunc_omitted=$(( trunc_count - trunc_limit + ${#trunc_marker} ))
+  done
+  if (( trunc_limit <= ${#trunc_marker} + 16 )); then
+    REPLY="${trunc_first[1,trunc_limit]}"
+    return 0
+  fi
+  trunc_head=$(( (trunc_limit - ${#trunc_marker}) * 3 / 5 ))
+  trunc_tail=$(( trunc_limit - ${#trunc_marker} - trunc_head ))
+  REPLY="${trunc_first[1,trunc_head]}${trunc_marker}${trunc_last[-trunc_tail,-1]}"
 }

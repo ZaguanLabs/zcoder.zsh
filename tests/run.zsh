@@ -344,6 +344,19 @@ zcoder_truncate_head_tail "BEGIN-${(l:120::x:)}-END" 60
 assert_contains "$REPLY" "BEGIN-" "bounded tool output preserves its head"
 assert_contains "$REPLY" "-END" "bounded tool output preserves its diagnostic tail"
 assert_eq "60" "${#REPLY}" "head-tail bounding honors the character limit"
+assert_contains "$REPLY" '[... 104 characters omitted ...]' "omitted count includes marker space across a digit boundary"
+truncation_sample="$REPLY"
+zcoder_truncate_head_tail_parts "BEGIN-${(l:54::x:)}" "${(l:56::x:)}-END" 130 60
+assert_eq "$truncation_sample" "$REPLY" "bounded fragments produce the same truncation as the complete source"
+zcoder_truncate_head_tail 'small' 60
+assert_eq small "$REPLY" "short output needs no omission marker"
+zcoder_truncate_head_tail 'abcdef' 3
+assert_eq abc "$REPLY" "small limits retain a prefix without a marker"
+zcoder_truncate_head_tail 'abcdef' 0
+assert_eq '' "$REPLY" "zero output budget returns no characters"
+zcoder_truncate_head_tail "BEGIN-${(l:120::é:)}-END" 60
+assert_eq 60 "${#REPLY}" "head-tail output counts Unicode characters"
+assert_contains "$REPLY" '[... 104 characters omitted ...]' "Unicode omission counts source characters"
 
 typeset -g MOCK_SYSWRITE_OUTPUT=""
 typeset -gi MOCK_SYSWRITE_CALLS=0
@@ -922,6 +935,27 @@ json_recover_model_object 'first {"a":1} second {"b":2}'
 assert_failure "ambiguous multiple model objects are rejected" $?
 json_recover_model_object 'preface {"a":"truncated"'
 assert_failure "truncated model objects are never repaired" $?
+recovery_sample='{"message":"escaped \" } { braces","path":"C:\\tmp","nested":[{"ok":true}]}'
+json_recover_model_object "世界 preface $recovery_sample suffix 世界"
+assert_success "wrapped recovery handles escaped quotes, backslashes and nested arrays" $?
+assert_eq "$recovery_sample" "$REPLY" "wrapped recovery preserves the exact source object"
+recovery_sample='{"path":"ends in a backslash \\"}'
+json_recover_model_object "preface $recovery_sample"
+assert_success "an even backslash pair does not escape the closing quote" $?
+assert_eq "$recovery_sample" "$REPLY" "recovery preserves a final escaped backslash"
+json_recover_model_object 'preface {"nested":[1,2}} suffix'
+assert_failure "balanced brace recovery still rejects malformed array structure" $?
+json_recover_model_object 'preface {"text":"escaped \"} suffix'
+assert_failure "an escaped quote cannot make an incomplete string recoverable" $?
+json_recover_model_object 'no object here'
+assert_failure "recovery rejects text with no opening brace" $?
+recovery_sample=' {"ok":true}'
+recovery_padding=$(( 262144 - ${#recovery_sample} ))
+json_recover_model_object "${(pl:recovery_padding::x:)}$recovery_sample"
+assert_success "wrapped recovery accepts the configured byte limit" $?
+(( recovery_padding++ ))
+json_recover_model_object "${(pl:recovery_padding::x:)}$recovery_sample"
+assert_failure "wrapped recovery rejects output beyond its configured byte limit" $?
 
 json_parse_ollama_response '{"message":{"tool_calls":[{"function":{"name":"list_files","arguments":{}}},{"function":{"name":"search","arguments":{"query":"TODO"}}}]}}'
 assert_success "parallel tool-call JSON parses" $?
@@ -957,6 +991,9 @@ assert_success "Ollama model-list JSON parses" $?
 assert_eq "2" "${#JSON_MODEL_NAMES}" "all model names are retained"
 assert_eq "model-b:27b" "${JSON_MODEL_NAMES[2]}" "model order is preserved"
 
+test_section http_transport
+source "${TEST_DIR}/http_transport.zsh"
+test_section core
 http_request() {
   HTTP_BODY='{"models":[{"name":"mock-tools:latest"}]}'
   return 0
@@ -1275,6 +1312,10 @@ assert_eq 32768 "$AGENT_CONTEXT_WINDOW" "residency checks retain the loaded cont
 assert_eq 0 "$MOCK_REMOTE_WARMUP_STARTS" "resident models do not start warm-up"
 _remote_server_model_ensure 1
 MOCK_REMOTE_MODEL_RESPONSE='{"models":[]}'
+_remote_server_model_poll
+assert_eq 1 "$?" "an absent model starts asynchronous metadata discovery"
+assert_eq show_check "$REMOTE_MODEL_REQUEST_KIND" "missing residency checks for a cloud alias before warming"
+MOCK_REMOTE_MODEL_RESPONSE='{"model_info":{"general.architecture":"fixture","fixture.context_length":131072}}'
 _remote_server_model_poll
 assert_eq 1 "$?" "an evicted model starts warming asynchronously"
 assert_eq warmup "$REMOTE_MODEL_REQUEST_KIND" "missing residency advances to warm-up"
@@ -2147,6 +2188,8 @@ assert_eq "65536" "$ZCODER_CONTEXT_FALLBACK" "unknown unloaded models default to
 assert_eq "85" "$ZCODER_COMPACT_PERCENT" "automatic compaction defaults to 85 percent"
 assert_eq "2" "$ZCODER_COMPACT_RETRY_LIMIT" "invalid compaction checkpoints receive two corrective retries by default"
 saved_context_lookup="${functions[ollama_get_running_context]}"
+saved_model_context_lookup="${functions[ollama_get_model_context]}"
+ollama_get_model_context() { return 1; }
 saved_model="$ZCODER_MODEL"
 ollama_get_running_context() {
   if [[ "$1" == "loaded-model:latest" ]]; then
@@ -2169,6 +2212,7 @@ assert_eq "" "$REPLY" "automatic context does not override an unloaded model's d
 agent_build_payload
 assert_not_contains "$REPLY" '"num_ctx"' "first automatic request leaves Ollama context selection intact"
 functions[ollama_get_running_context]="$saved_context_lookup"
+functions[ollama_get_model_context]="$saved_model_context_lookup"
 ZCODER_MODEL="$saved_model"
 AGENT_CONTEXT_MODEL=""
 ZCODER_CONTEXT_WINDOW=auto
@@ -3638,6 +3682,14 @@ test_section hardening_input
 source "${TEST_DIR}/hardening_input.zsh"
 test_section memory_accounting
 source "${TEST_DIR}/memory_accounting.zsh"
+test_section agent_turn_helpers
+source "${TEST_DIR}/agent_turn_helpers.zsh"
+test_section command_dispatch
+source "${TEST_DIR}/command_dispatch.zsh"
+test_section option_contracts
+source "${TEST_DIR}/option_contracts.zsh"
+test_section cloud_context
+source "${TEST_DIR}/cloud_context.zsh"
 
 test_section finished
 print -r -- "1..${TESTS}"
