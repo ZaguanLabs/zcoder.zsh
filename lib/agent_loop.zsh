@@ -176,6 +176,7 @@ agent_relay_turn() {
 }
 
 _agent_run_turn() {
+  local -i AGENT_TURN_ACTIVE=1
   local AGENT_OPEN_DOCUMENTS="${AGENT_OPEN_DOCUMENTS:-}"
   if (( ${UI_ACTIVE:-0} )); then
     document_context_snapshot; AGENT_OPEN_DOCUMENTS="$REPLY"
@@ -547,13 +548,14 @@ _agent_run_turn_body() {
   fi
   if [[ "$turn_origin" == queue_resume ]]; then
     : # The queue owner already recorded this user's exact input.
-  elif [[ "$turn_origin" == relay || "$turn_origin" == goal_resume ]]; then
+  elif [[ "$turn_origin" == relay || "$turn_origin" == goal_resume || "$turn_origin" == background ]]; then
     agent_add_context_message "$user_content"
   else
     agent_add_message user "$user_content"
   fi
   zcoder_debug "${turn_origin}_turn_start" "content=${(qqq)user_content}"
   if (( $+functions[ui_append_message] && ${UI_ACTIVE:-0} )); then
+    [[ "$turn_origin" == background ]] && display_role=system
     [[ "$turn_origin" == goal ]] && display_role="user"
     [[ "$turn_origin" == goal_resume || "$turn_origin" == queue_resume ]] || ui_append_message "$display_role" "$display_content"
     [[ "$turn_origin" == user || "$turn_origin" == goal ]] && (( $+functions[state_note_user] )) && state_note_user "$user_content"

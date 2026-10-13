@@ -72,6 +72,14 @@ main_tui() {
   while (( RUNNING )); do
     (( UI_ACTIVE )) || return 1
     ui_poll_resize
+    if [[ "$REMOTE_MODE" == local ]] && (( $+functions[tasks_poll] )); then
+      tasks_poll
+      if tasks_deliver_one; then
+        zcoder_refresh_sessions
+        ui_refresh_all
+        continue
+      fi
+    fi
     if [[ "$REMOTE_MODE" == client ]]; then
       remote_client_model_poll || true
     else

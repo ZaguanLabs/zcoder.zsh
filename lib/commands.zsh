@@ -19,6 +19,8 @@ commands_init() {
   _commands_add "Inspect queued messages" /queue run all 'steer follow-up pending input'
   _commands_add "Resume queued messages" '/queue resume' run all 'steer follow-up pending input'
   _commands_add "Drop a queued message" '/queue drop ' draft all 'pending input discard'
+  _commands_add "Inspect background tasks" /tasks run local 'jobs running completed'
+  _commands_add "Cancel a background task" '/tasks cancel ' draft local 'jobs stop kill'
   _commands_add "Inspect terminal" /terminal run all 'diagnostics capabilities synchronized output paste'
   _commands_add "Switch Ollama model" /model run local 'picker local'
   _commands_add "Change Ollama host" '/host ' draft local 'server connection'
@@ -380,6 +382,7 @@ ui_show_help() {
     queue bullet '/queue: List pending input.'
     queue_resume bullet '/queue resume: Restart pending input.'
     queue_drop bullet '/queue drop ID: Discard a queued message.'
+    tasks bullet '/tasks: List background commands; /tasks cancel task-N stops one.'
 
     documents heading 'Read-only documents'
     document_open bullet '/open FILE.md: Open a workspace Markdown document in one of four tabs. Paths may contain spaces.'

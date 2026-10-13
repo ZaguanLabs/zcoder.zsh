@@ -37,7 +37,10 @@ tools_schema_json() {
     goal_verifier_tools_schema_json
     return
   fi
-  local output='[' comma="" mcp_schemas="" search_schema=""
+  local output='[' comma="" mcp_schemas="" search_schema="" background_schema=''
+  if (( $+functions[tasks_available] )) && tasks_available; then
+    background_schema=',"background":{"type":"boolean","description":"Use true for long-running commands. Returns a task ID immediately so you can continue other work or finish this turn. Completion automatically triggers follow-up after the active turn ends; do not poll. Task dies with this zcoder process. Background timeout defaults to 86400 seconds; maximum 86400."}'
+  fi
   _tool_search_schema_json; search_schema="$REPLY"
   if [[ "${AGENT_TOOL_PHASE:-full}" == routing ]]; then
     REPLY="[]"
@@ -70,7 +73,7 @@ tools_schema_json() {
 '"$search_schema"
   comma=,
   output+="${comma}"'
-{"type":"function","function":{"name":"run_command","description":"Run a shell command in the workspace after explicit user approval. Use for tests, builds, formatting, git status, and diagnostics.","parameters":{"type":"object","required":["command"],"properties":{"command":{"type":"string"},"cwd":{"type":"string","description":"Workspace-relative working directory; defaults to ."},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600}}}}}'
+{"type":"function","function":{"name":"run_command","description":"Run a shell command in the workspace after explicit user approval. Use for tests, builds, formatting, git status, and diagnostics.","parameters":{"type":"object","required":["command"],"properties":{"command":{"type":"string"},"cwd":{"type":"string","description":"Workspace-relative working directory; defaults to ."},"timeout_seconds":{"type":"integer","minimum":1,"maximum":86400,"description":"Foreground defaults to 120 seconds, maximum 3600; background defaults to 86400."}'"$background_schema"'}}}}'
   comma=,
   if _tool_schema_is_admitted list_agents && (( $+functions[relay_tool_list_agents] && ${RELAY_AVAILABLE:-0} )); then
     output+="${comma}"'
@@ -717,10 +720,20 @@ tool_approve_external_action() {
 
 tool_run_command() {
   local command_text="$1" requested="${2:-.}" timeout_seconds="${3:-120}" cwd=""
+  local background="${4:-false}"
   local out_file="" output="" exit_code=""
   TOOL_CANCELLED=0
   [[ -n "$command_text" ]] || { _tool_fail "command is required"; return 1; }
-  [[ "$timeout_seconds" == <1-3600> ]] || timeout_seconds=120
+  [[ $background == true || $background == false ]] || { _tool_fail 'background must be true or false'; return 1; }
+  if [[ $background == true ]]; then
+    if (( ! $+functions[tasks_available] )) || ! tasks_available; then
+      _tool_fail 'Background commands require the local TUI.'; return 1
+    fi
+    timeout_seconds="${3:-86400}"
+    [[ $timeout_seconds == <1-86400> ]] || { _tool_fail 'Background timeout_seconds must be 1–86400.'; return 1; }
+  else
+    [[ "$timeout_seconds" == <1-3600> ]] || timeout_seconds=120
+  fi
   _tool_resolve_existing "$requested" || return 1
   cwd="$REPLY"
   [[ -d "$cwd" ]] || { _tool_fail "cwd is not a directory: $requested"; return 1; }
@@ -733,6 +746,10 @@ tool_run_command() {
     return 1
   fi
   (( $+functions[agent_tool_event] )) && agent_tool_event running run_command
+  if [[ $background == true ]]; then
+    task_start "$cwd" "$command_text" "$timeout_seconds"
+    return $?
+  fi
   zcoder_temp_path command .out || { _tool_fail "could not create private temporary storage"; return 1; }
   out_file="$REPLY"
 
@@ -817,7 +834,7 @@ tool_dispatch() {
     replace_text) tool_replace_text "${JSON_OBJECT[path]:-}" "${JSON_OBJECT[old_text]:-}" "${JSON_OBJECT[new_text]:-}" ;;
     apply_patch) tool_apply_patch "${JSON_OBJECT[patch]:-}" ;;
     search) _tool_search_dispatch ;;
-    run_command) tool_run_command "${JSON_OBJECT[command]:-}" "${JSON_OBJECT[cwd]:-.}" "${JSON_OBJECT[timeout_seconds]:-120}" ;;
+    run_command) tool_run_command "${JSON_OBJECT[command]:-}" "${JSON_OBJECT[cwd]:-.}" "${JSON_OBJECT[timeout_seconds]:-}" "${JSON_OBJECT[background]:-false}" ;;
     list_agents)
       (( $+functions[relay_tool_list_agents] && ${RELAY_AVAILABLE:-0} )) && relay_tool_list_agents || _tool_fail "inter-agent relay is unavailable"
       ;;

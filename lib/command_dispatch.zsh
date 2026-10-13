@@ -85,6 +85,13 @@ _zcoder_command_session() {
       value="${value##[[:space:]]#}"
       input_queue_command "${${value%% *}:-list}" "${value#* }"
       ;;
+    /tasks|/tasks\ *)
+      if (( $+functions[tasks_available] )) && tasks_available; then
+        tasks_command "$text"
+      else
+        ui_append_message error 'Background tasks require the local TUI.'
+      fi
+      ;;
     *) return 1 ;;
   esac
   return 0
@@ -437,7 +444,7 @@ handle_slash_command() {
   # Exit owns the final save and must not repaint or contact the remote server.
   case "$text" in /quit|/exit|/q) RUNNING=0; return 0 ;; esac
   case "${text%% *}" in
-    /goal|/new|/clear|/sessions|/queue) _zcoder_command_session "$text" ;;
+    /goal|/new|/clear|/sessions|/queue|/tasks) _zcoder_command_session "$text" ;;
     /model|/host) _zcoder_command_model "$text" ;;
     /instructions|/skills|/mcp|/skill|/compact|/context) _zcoder_command_context "$text" ;;
     /list-agents|/agents) _zcoder_command_relay "$text" ;;

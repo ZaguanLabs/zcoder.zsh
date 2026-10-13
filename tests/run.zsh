@@ -3622,6 +3622,8 @@ test_section status
 source "${TEST_DIR}/status.zsh"
 if test_integration process; then
   source "${TEST_DIR}/process.zsh"
+  zsh -df "${TEST_DIR}/tasks.zsh"
+  assert_success "background tasks preserve approvals, scheduling, and process ownership" $?
 fi
 if test_integration tool_wait; then
   source "${TEST_DIR}/tool_wait.zsh"

@@ -1,4 +1,4 @@
-# Display-only Markdown subset for model replies. No evaluation or terminal
+# Display-only Markdown subset for chat messages. No evaluation or terminal
 # dependencies: emit the same rows and styled spans as the edit previews.
 # Unsupported constructs and incomplete streaming delimiters remain literal.
 

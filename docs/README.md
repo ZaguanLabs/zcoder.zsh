@@ -11,6 +11,7 @@ zcoder.zsh. If you are new to the project, begin with
 | [Getting started](getting-started.md) | Requirements, installation, first run, one-shot use, and essential options |
 | [Interface and sessions](interface.md) | TUI layout, keyboard controls, slash commands, saved jobs, consultants, and external workers |
 | [Steering and queued follow-ups](queued-input.md) | Active-turn input, recovery, HTTP endpoints, and ACP extension |
+| [Background commands](background-tasks.md) | Non-blocking local tasks, completion follow-up, cancellation, and process ownership |
 | [Remote-agent server](remote.md) | Running zcoder beside a remote model and workspace |
 | [Safety and permissions](safety.md) | Workspace boundaries, command approval, trust boundaries, and sysadmin safeguards |
 
@@ -29,6 +30,7 @@ zcoder.zsh. If you are new to the project, begin with
 | [Architecture](architecture.md) | Source layout, agent loop, HTTP behavior, batching, completion, and remote transport |
 | [Inter-agent communication](inter-agent-communication.md) | Same-host Unix-socket discovery, task delivery, queuing, safety, and implementation details |
 | [Remote access system API specification](remote-access-system-specification.md) | Protocol-1 wire API, state machines, reimplementation requirements, security, and conformance tests |
+| [Session browsing API specification](session-index-api-specification.md) | v0.20.4 session indexing, empty drafts, pagination, consistency, and zweb integration requirements |
 | [HTTPS and WSS libcurl bridge](libcurl-transport-bridge.md) | Proposed hosted-model transport boundary, helper process, loadable module, security, and test plan |
 | [External agent runtimes](external-agent-runtimes.md) | Codex, Claude, and Antigravity protocols, authentication, Zsh boundaries, and implementation direction |
 | [Development](development.md) | Test suite, repeatable benchmarks, model evaluation, compatibility expectations, and contribution checks |

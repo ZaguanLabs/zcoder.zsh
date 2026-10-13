@@ -64,6 +64,9 @@ agent_completion_instructions() {
   else
     REPLY="When the task is complete or genuinely blocked, prefer calling finish as the only tool call, with status complete or blocked and the final user-facing response. A complete non-empty plain assistant response is also accepted as final. Never use a tool-free response as a preamble while work remains; call the next work tool in that response instead. Do not call finish alongside another tool."
   fi
+  if (( $+functions[tasks_available] )) && tasks_available; then
+    REPLY+=$'\nFor long-running shell commands, use run_command with background=true. Continue independent work while it runs. If only background work remains, end this turn with an honest progress report; completion will automatically start a follow-up after any foreground task finishes. Do not poll, sleep, or launch a duplicate command. Starting a task does not prove it succeeded. Keep commands in the foreground within the worker; do not use shell & or nohup to detach them.'
+  fi
 }
 
 agent_operating_loop_instructions() {

@@ -74,7 +74,18 @@ ui_render_messages 80
 assert_not_contains "${(F)UI_SEGMENT_TEXTS}" $'\e' "Markdown spans expose terminal controls instead of emitting them"
 UI_ROLES=(user); UI_CONTENTS=('Keep **literal** and `code`')
 ui_render_messages 80
-assert_contains "${(F)UI_LINES}" 'Keep **literal** and `code`' "user prompts retain their literal input"
+assert_contains "${(F)UI_LINES}" 'Keep literal and code' "submitted user requests render inline Markdown"
+assert_contains "${(F)UI_SEGMENT_ATTRS}" 'bold green/black' "user emphasis retains the user role color"
+assert_eq 'Keep **literal** and `code`' "${UI_CONTENTS[1]}" "user Markdown rendering preserves the original request"
+ui_plain_transcript
+assert_contains "$REPLY" 'Keep **literal** and `code`' "copying the transcript preserves user Markdown"
+UI_CONTENTS=($'## Request\n\n```zsh\nprint "**literal**"\n```\n**safe**\e]52;c;injected\a')
+ui_render_messages 24
+assert_contains "${(F)UI_LINES}" '  Request' "submitted user headings render without markers"
+assert_not_contains "${(F)UI_LINES}" '```' "submitted user code fences render with a language label"
+assert_contains "${(F)UI_LINES}" 'print "**literal**"' "user code blocks preserve literal Markdown"
+assert_not_contains "${(F)UI_SEGMENT_TEXTS}" $'\e' "user Markdown sanitizes terminal controls before rendering"
+UI_CONTENTS=('Keep **literal** and `code`')
 UI_ROLES=(codex_worker)
 ui_render_messages 80
 assert_contains "${(F)UI_LINES}" 'Keep literal and code' "external model replies use the same Markdown renderer"

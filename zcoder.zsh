@@ -16,7 +16,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.21.1"
+typeset -gr ZCODER_VERSION="0.21.2"
 
 typeset -gr ZCODER_DIR="${0:A:h}"
 
@@ -182,7 +182,7 @@ if (( ACP_MODE )) && [[ "$REMOTE_MODE" == server ]]; then
 fi
 
 if [[ "$REMOTE_MODE" != server ]] && (( ! ACP_MODE )); then
-  zcoder_require curses input terminal process ui overlays commands command_dispatch stream tui
+  zcoder_require curses input terminal process tasks ui overlays commands command_dispatch stream tui
   zcoder_curses_load && zmodload zsh/terminfo || {
     print -u2 -- "Error: required Zsh curses modules are unavailable."
     exit 1
@@ -279,6 +279,7 @@ cleanup() {
   trap - INT TERM HUP
   zcoder_debug session_end "status=$exit_status running=$RUNNING async_pid=${HTTP_ASYNC_PID:-none} delegate_pid=${DELEGATE_PID:-none}"
   RUNNING=0
+  (( $+functions[tasks_cleanup] )) && tasks_cleanup
   (( $+functions[tool_process_cleanup] )) && tool_process_cleanup
   (( $+functions[acp_shutdown] )) && acp_shutdown
   if [[ "$REMOTE_MODE" != server ]] && (( $+functions[state_save_session] )); then

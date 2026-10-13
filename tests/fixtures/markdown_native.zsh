@@ -52,6 +52,19 @@ for budget in 14 32 80; do
   done
 done
 (( UI_MARKDOWN_FALLBACKS == 0 )) || fail 'draw fallback'
+# Submitted requests share native layout, reflow and copy preservation.
+UI_ROLES=(user); UI_CONTENTS=("$sample")
+for budget in 14 32 80; do
+  ui_render_messages "$budget"
+  [[ ${UI_LINE_NATIVE[(Ie)1]} != 0 ]] || fail 'user request skipped native layout'
+  [[ ${(F)UI_LINES} != *'**'* && ${(F)UI_LINES} != *'```'* && ${(F)UI_LINES} == *Heading* ]] || fail 'user Markdown layout'
+  [[ ${(F)UI_SEGMENT_ATTRS} == *'bold green/black'* ]] || fail 'user strong style lost role color'
+done
+[[ $UI_CONTENTS[1] == "$sample" ]] || fail 'user request changed by rendering'
+ui_plain_transcript
+[[ $REPLY == *"$sample"* ]] || fail 'original user Markdown lost'
+(( UI_MARKDOWN_FALLBACKS == 0 )) || fail 'user layout fallback'
+UI_ROLES=(assistant)
 UI_CONTENTS=('A **partial'); ui_render_messages 74
 UI_CONTENTS=('A **partial response**'); transcript_changed 1; ui_draw_chat
 [[ ${(F)UI_LINES} == *'partial response'* && ${(F)UI_LINES} != *'**'* ]] || fail streaming

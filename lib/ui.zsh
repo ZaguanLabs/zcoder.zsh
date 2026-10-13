@@ -69,7 +69,10 @@ _ui_window_key() {
       fi
       ;;
     input) fields+=("$UI_FOCUS" "$INPUT_BUF" "$INPUT_POS" "$INPUT_VIEW_TOP" "$(( UI_ACTIVITY_DEPTH > 0 ))" "$UI_SLASH_ROWS" "$UI_SLASH_SELECTED" "${UI_SLASH_CACHE_KEY:-}") ;;
-    footer) fields+=("$UI_FOCUS" "$(( UI_ACTIVITY_DEPTH > 0 ))" "${zdraw_text_selection[selected]:-0}") ;;
+    footer)
+      fields+=("$UI_FOCUS" "$(( UI_ACTIVITY_DEPTH > 0 ))" "${zdraw_text_selection[selected]:-0}")
+      if (( $+functions[tasks_summary] )); then tasks_summary; fields+=("$REPLY"); fi
+      ;;
   esac
   # Quoting each field preserves boundaries even in multiline drafts/titles.
   REPLY="${(j: :)${(@q)fields}}"
@@ -1105,8 +1108,7 @@ _ui_render_one_message() {
     _ui_add_tool_content "$content" "$width"
   elif [[ -n "$content" ]]; then
     case "$role" in
-      user) _ui_add_wrapped "$content" "$width" "│ " "$attr" ;;
-      assistant|claude|codex|agy|opencode|*_worker)
+      user|assistant|claude|codex|agy|opencode|*_worker)
         zcoder_terminal_safe "$content"
         _ui_add_markdown "$REPLY" "$width" "$attr"
         ;;
@@ -1316,6 +1318,10 @@ _ui_paint_footer() {
     text=' ↑/↓ Scroll  PgUp/PgDn Page  r Reload  x Close  Alt+3 Coding'
     (( UI_ACTIVITY_DEPTH > 0 )) && text+='  Esc Stop'
   fi
+  if (( $+functions[tasks_summary] )); then
+    tasks_summary
+    [[ -n $REPLY ]] && text=" $REPLY · /tasks |$text"
+  fi
   zcoder_clip "$text" "$SCREEN_W"; text="$REPLY"
   zcoder_curses clear foot_win; ui_attr foot_win reverse dim white/black
   zcoder_pad "$text" "$SCREEN_W"; zcoder_curses move foot_win 0 0; zcoder_curses string foot_win "$REPLY"
@@ -1429,6 +1435,7 @@ ui_activity_input() {
 
 ui_poll_activity() {
   local ch="" key="" mouse=""
+  (( $+functions[tasks_poll] )) && tasks_poll
   ui_poll_resize
   if (( TERMINAL_EVENT_POLL )); then
     local -i count result
