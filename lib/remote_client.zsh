@@ -195,6 +195,12 @@ remote_client_refresh_sessions() {
   SESSION_MODELS=("${models[@]}")
   REMOTE_LIST_CURRENT_ID="$listed_current"
   REMOTE_LIST_CURRENT_EMPTY=$current_empty
+  # Empty drafts are intentionally absent from the conversation list. Keep
+  # the selection acknowledged by new/select unless a listed peer replaces it.
+  if [[ -z "$listed_current" && -n "$CURRENT_SESSION_ID" ]] &&
+     (( REMOTE_SESSION_EMPTY && ! REMOTE_SESSION_SYNC_REQUIRED )); then
+    return 0
+  fi
   if (( ${UI_ACTIVE:-0} )) && [[ -n "$CURRENT_SESSION_ID" && "$listed_current" != "$CURRENT_SESSION_ID" ]]; then
     REMOTE_SESSION_SYNC_REQUIRED=1
     adopt_current=0
@@ -267,9 +273,14 @@ remote_client_select_session() {
   zjson_quote "$id"; id_json="$REPLY"
   remote_client_request POST /v1/session/select "{\"id\":${id_json}}" || return $?
   remote_client_refresh_sessions 0 || return $?
-  [[ "$REMOTE_LIST_CURRENT_ID" == "$id" ]] || { REMOTE_ERROR='server selected a different session; refresh before sending a prompt'; return 1; }
+  [[ -z "$REMOTE_LIST_CURRENT_ID" || "$REMOTE_LIST_CURRENT_ID" == "$id" ]] || { REMOTE_ERROR='server selected a different session; refresh before sending a prompt'; return 1; }
   remote_client_load_session "$id" || return $?
-  REMOTE_SESSION_EMPTY=$REMOTE_LIST_CURRENT_EMPTY
+  if [[ -z "$REMOTE_LIST_CURRENT_ID" ]]; then
+    SESSION_TITLE='New Job'
+    REMOTE_SESSION_EMPTY=$(( ${#UI_ROLES} == 0 ))
+  else
+    REMOTE_SESSION_EMPTY=$REMOTE_LIST_CURRENT_EMPTY
+  fi
   REMOTE_SESSION_SYNC_REQUIRED=0
 }
 
@@ -283,9 +294,10 @@ remote_client_new_session() {
   id="${JSON_OBJECT[id]:-}"
   _state_valid_id "$id" || { REMOTE_ERROR="invalid remote new-session identifier"; return 1; }
   remote_client_refresh_sessions 0 || return $?
-  [[ "$REMOTE_LIST_CURRENT_ID" == "$id" ]] || { REMOTE_ERROR='server selected a different session; refresh before sending a prompt'; return 1; }
+  [[ -z "$REMOTE_LIST_CURRENT_ID" || "$REMOTE_LIST_CURRENT_ID" == "$id" ]] || { REMOTE_ERROR='server selected a different session; refresh before sending a prompt'; return 1; }
   remote_client_load_session "$id" || return $?
-  REMOTE_SESSION_EMPTY=$REMOTE_LIST_CURRENT_EMPTY
+  SESSION_TITLE='New Job'
+  REMOTE_SESSION_EMPTY=$(( ${#UI_ROLES} == 0 ))
   REMOTE_SESSION_SYNC_REQUIRED=0
 }
 

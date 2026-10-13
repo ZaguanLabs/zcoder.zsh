@@ -81,6 +81,19 @@ for mode in default custom; do
   ZCODER_SESSIONS_DIR=$store
   REMOTE_RUNTIME_DIR="$server_home/remote/shared-fixture"
   legacy_root="$REMOTE_RUNTIME_DIR/sessions"
+  # Exercise the actual fresh-client handshake against an unseeded server.
+  start_server
+  REMOTE_ENDPOINT=$endpoint
+  REMOTE_TOKEN_FILE="$scratch/token"
+  CURRENT_SESSION_ID=''
+  REMOTE_SESSION_SYNC_REQUIRED=0
+  remote_client_handshake || fail "$mode: fresh handshake failed: $REMOTE_ERROR"
+  new_id=$CURRENT_SESSION_ID
+  [[ -n $new_id && ${mapfile[$REMOTE_RUNTIME_DIR/selected_session]} == $new_id ]] || fail 'fresh client lost acknowledged selection'
+  (( ${#SESSION_IDS} == 0 && REMOTE_SESSION_EMPTY && ! REMOTE_SESSION_SYNC_REQUIRED )) || fail 'fresh empty session was treated as a listed conversation or selection conflict'
+  remote_client_refresh_sessions || fail 'fresh draft refresh failed'
+  [[ $CURRENT_SESSION_ID == $new_id ]] || fail 'empty list cleared fresh selection'
+  stop_server
   for attempt in {1..7}; do seed_session "$store" "100000000${attempt}_1" "$ZCODER_WORKSPACE" coding; done
   seed_session "$store" 1000000010_1 "$scratch/other" coding
   seed_session "$store" 1000000011_1 "$ZCODER_WORKSPACE" sysadmin
@@ -131,8 +144,23 @@ for mode in default custom; do
     request GET "/v1/session?id=$id&after=0" && fail 'read a transcript outside server scope'
     [[ $HTTP_ERROR == *' 404 '* ]] || fail 'wrong scope transcript status'
   done
-  request POST /v1/session/new '{}' || fail 'new remote session failed'
-  json_parse_flat_object "$HTTP_BODY"; new_id=${JSON_OBJECT[id]}
+  REMOTE_ENDPOINT=$endpoint
+  SESSION_TITLE='Previous conversation'
+  remote_client_new_session || fail "new remote client session failed: $REMOTE_ERROR"
+  new_id=$CURRENT_SESSION_ID
+  [[ $SESSION_TITLE == 'New Job' ]] || fail 'new draft retained the previous title'
+  (( REMOTE_SESSION_EMPTY && ! REMOTE_SESSION_SYNC_REQUIRED && ${#UI_ROLES} == 0 )) || fail 'new draft retained transcript or requires reconciliation'
+  typeset -gi UI_ACTIVE=1
+  remote_client_refresh_sessions || fail 'interactive draft refresh failed'
+  [[ $CURRENT_SESSION_ID == $new_id ]] && (( ! REMOTE_SESSION_SYNC_REQUIRED )) || fail 'hidden draft refresh caused a false selection conflict'
+  # A positively listed selection by another client must still block sending.
+  request POST /v1/session/select '{"id":"1000000001_1"}' || fail 'peer selection failed'
+  remote_client_refresh_sessions || fail 'peer selection refresh failed'
+  (( REMOTE_SESSION_SYNC_REQUIRED )) || fail 'peer selection was ignored'
+  [[ $CURRENT_SESSION_ID == $new_id ]] || fail 'peer selection silently replaced the active transcript'
+  remote_client_select_session "$new_id" || fail "cannot resume hidden empty session: $REMOTE_ERROR"
+  (( REMOTE_SESSION_EMPTY && ! REMOTE_SESSION_SYNC_REQUIRED )) || fail 'empty resume requires reconciliation'
+  UI_ACTIVE=0
   state_refresh_sessions_list
   (( ! ${SESSION_IDS[(Ie)$new_id]} && ${#SESSION_IDS} == 8 )) || fail 'empty API-created session leaked into conversation list'
   [[ -d $store/$new_id.session && ! -h $store/$new_id.session ]] || fail 'new session is not stored directly in shared directory'

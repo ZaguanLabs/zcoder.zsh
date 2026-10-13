@@ -111,13 +111,13 @@ It can fetch `/v1/session?id=ID&after=0`; an untouched transcript returns
 failure, deletion, or permission denial, and must not retry creation merely
 because the list omitted the new ID. Creation has no idempotency guarantee.
 
-There is a known mismatch in the bundled client helpers:
-`remote_client_new_session()` refreshes the list and requires the new ID to
-appear with `current: 1`. Under the empty-session rule, that check can report
-`server selected a different session` after successful creation. zweb should
-use the successful creation response as the selection acknowledgement rather
-than copy that list-based check. This specification documents the mismatch;
-v0.20.4 did not repair those helpers.
+The bundled client helpers use the successful creation or selection response
+as the selection acknowledgement when the list omits the selected ID. They
+retain an acknowledged empty draft through subsequent list refreshes. A
+different positively listed current session still requires reconciliation.
+Earlier helpers required the created ID to appear with `current: 1`, causing
+`server selected a different session` after successful creation. Clients such
+as zweb should likewise keep selection separate from list membership.
 
 For a saved conversation, select it with:
 
