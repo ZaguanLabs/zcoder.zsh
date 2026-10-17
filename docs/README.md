@@ -37,6 +37,7 @@ zcoder.zsh. If you are new to the project, begin with
 
 ## Releases
 
+- [v0.22.0 — Background commands, visible tools](releases/v0.22.0.md)
 - [v0.21.0 — Keep your place](releases/v0.21.0.md)
 - [v0.19.0 — Stronger checkpoints, smaller core](releases/v0.19.0.md)
 - [v0.18.0 — Select the conversation](releases/v0.18.0.md)
