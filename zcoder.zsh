@@ -16,7 +16,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.21.4"
+typeset -gr ZCODER_VERSION="0.21.5"
 
 typeset -gr ZCODER_DIR="${0:A:h}"
 
@@ -67,7 +67,7 @@ usage() {
   print -r -- ""
   print -r -- "Options:"
   print -r -- "  -m, --model NAME       Ollama model (default: ${ZCODER_MODEL})"
-  print -r -- "  -h, --host HOST        Ollama host (default: ${OLLAMA_HOST})"
+  print -r -- "  -h, --host HOST        Ollama host (default: ${ZCODER_DEFAULT_OLLAMA_HOST})"
   print -r -- "  -w, --workspace PATH   Directory the agent may access (default: current)"
   print -r -- "      --server NAME      Run a headless remote-agent server"
   print -r -- "      --acp              Run as an ACP v1 agent over stdio"

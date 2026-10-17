@@ -3,7 +3,8 @@
 # error response and HTTP_ERROR explains failure. Framing/lengths use bytes.
 # The active descriptor is owned and closed by the request, never its caller.
 
-typeset -g OLLAMA_HOST="${OLLAMA_HOST:-localhost:11434}"
+typeset -g ZCODER_DEFAULT_OLLAMA_HOST="localhost:11434"
+typeset -g OLLAMA_HOST="${OLLAMA_HOST:-$ZCODER_DEFAULT_OLLAMA_HOST}"
 typeset -g HTTP_BODY=""
 typeset -g HTTP_ERROR=""
 typeset -g HTTP_NET_HOST=""
