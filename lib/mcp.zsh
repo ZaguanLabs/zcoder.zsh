@@ -11,6 +11,7 @@ typeset -gi MCP_STARTUP_TIMEOUT="${MCP_STARTUP_TIMEOUT:-20}"
 typeset -gi MCP_NEXT_ID=0
 typeset -gi MCP_CONNECT_CANCELLED=0
 typeset -g MCP_ERROR=""
+typeset -g MCP_LAST_REPORTED_FAILURES=""
 typeset -g MCP_RESPONSE=""
 typeset -g MCP_RESPONSE_ID=""
 typeset -g MCP_RESPONSE_METHOD=""
@@ -322,6 +323,7 @@ mcp_load() {
   local name=""
   mcp_shutdown_all
   MCP_ERROR=""
+  MCP_LAST_REPORTED_FAILURES=""
   MCP_USER_RAW=(); MCP_PROJECT_RAW=(); MCP_RAW=(); MCP_SCOPE=(); MCP_TYPE=(); MCP_COMMAND=()
   MCP_ARGS=(); MCP_ENV=(); MCP_CWD=(); MCP_URL=(); MCP_ENABLED=(); MCP_STATUS=()
   MCP_PROTOCOL=(); MCP_DETAIL=(); MCP_SERVER_TOOLS=(); MCP_NAMES=()
@@ -463,6 +465,13 @@ _mcp_broker_main() {
     export "$env_name=${command_env[$env_name]}"
   done
   [[ -d "$cwd" ]] || { mapfile[$runtime/start.error]="working directory does not exist: $cwd"; return 1; }
+  # Resolve after applying the server environment and cwd: either can affect
+  # command lookup, including relative executable paths and PATH overrides.
+  builtin cd "$cwd" || return 1
+  if ! whence -p -- "$command_name" >/dev/null 2>&1; then
+    mapfile[$runtime/start.error]="command not found or not executable: $command_name. Check the service PATH or configure an absolute executable path."
+    return 1
+  fi
   coproc {
     builtin cd "$cwd" || return 1
     command "$command_name" "${command_args[@]}"
@@ -871,10 +880,31 @@ mcp_connect_all() {
   [[ -z "$failures" ]] || { MCP_ERROR="$failures"; return 1; }
 }
 
+mcp_unavailable_text() {
+  local name='' output=''
+  for name in "${MCP_NAMES[@]}"; do
+    (( ${MCP_ENABLED[$name]:-0} )) || continue
+    case "${MCP_STATUS[$name]:-}" in
+      failed|'protocol mismatch'|unsupported|invalid)
+        output+="- ${name}: ${MCP_STATUS[$name]}: ${MCP_DETAIL[$name]:-unavailable}"$'\n'
+        ;;
+    esac
+  done
+  zcoder_truncate_head_tail "$output" 2048
+}
+
 mcp_tools_schema_json() {
   local name="" output="" comma=""
   mcp_connect_all >/dev/null 2>&1 || true
   (( MCP_CONNECT_CANCELLED )) && { REPLY=''; return 130; }
+  mcp_unavailable_text
+  if [[ -n "$REPLY" && "$REPLY" != "$MCP_LAST_REPORTED_FAILURES" ]]; then
+    MCP_LAST_REPORTED_FAILURES="$REPLY"
+    zcoder_debug mcp_unavailable "$REPLY"
+    (( $+functions[agent_emit] )) && agent_emit system "Warning: MCP tools unavailable:"$'\n'"$MCP_LAST_REPORTED_FAILURES"
+  elif [[ -z "$REPLY" ]]; then
+    MCP_LAST_REPORTED_FAILURES=''
+  fi
   for name in "${MCP_TOOL_NAMES[@]}"; do
     [[ "${MCP_STATUS[${MCP_TOOL_SERVER[$name]}]:-}" == connected ]] || continue
     (( $+functions[agent_tool_is_admitted] )) && ! agent_tool_is_admitted "$name" && continue
@@ -884,12 +914,16 @@ mcp_tools_schema_json() {
 }
 
 mcp_prompt_block() {
-  local exposed="" server="" original="" output="" line=""
+  local exposed="" server="" original="" output="" line="" unavailable=""
   local -i bytes=0 line_bytes=0 truncated=0
-  (( ${#MCP_TOOL_NAMES} > 0 )) || { REPLY=""; return 0; }
+  mcp_unavailable_text
+  if [[ -n "$REPLY" ]]; then
+    unavailable=$'\n\n<mcp_unavailable>\nThese configured MCP servers are unavailable; their tools cannot be called:\n'"$REPLY"$'Do not claim to have used these servers or search the web for an installed tool. Report any required capability that is unavailable.\n</mcp_unavailable>'
+  fi
+  (( ${#MCP_TOOL_NAMES} > 0 )) || { REPLY="$unavailable"; return 0; }
   [[ "$MCP_PROMPT_MAX_BYTES" == <256-> ]] || MCP_PROMPT_MAX_BYTES=8192
   output=$'\n\n<mcp_tool_routing>\nInstalled MCP servers provide model-callable capabilities. Read-only tools may inspect their declared systems. An external-write tool is not authority to publish, message, deploy, or mutate external state; every call still requires the user\x27s explicit confirmation. Project instructions that explicitly require an MCP server or short tool name for the current kind of task are mandatory tool-selection rules. For an applicable repository investigation that needs orientation or navigation, call the designated MCP tool before built-in search, read_file, list_files, or run_command. Do not interpret a mere mention of a repository, codebase, file, or tool as a request to investigate it. If the request can be answered completely from the user message and existing context, respond directly without calling an MCP tool. Do not substitute a generic built-in merely because it appears familiar. After an MCP navigation result identifies a relevant source range, follow project reading instructions and use that exact range instead of reading the whole file. MCP function names are namespaced, so use this exact map when instructions mention a short name:\n'
-  _mcp_byte_length "$output"
+  _mcp_byte_length "${output}${unavailable}"
   bytes=$REPLY
   for exposed in "${MCP_TOOL_NAMES[@]}"; do
     (( $+functions[agent_tool_is_admitted] )) && ! agent_tool_is_admitted "$exposed" && continue
@@ -902,7 +936,7 @@ mcp_prompt_block() {
   done
   (( truncated )) && output+="[tool map truncated]"$'\n'
   output+="</mcp_tool_routing>"
-  REPLY="$output"
+  REPLY="${output}${unavailable}"
 }
 
 mcp_call_tool() {

@@ -761,6 +761,37 @@ assert_success "connected MCP tools precede generic built-ins" $?
 assert_contains "$REPLY" "only when project instructions do not designate an MCP navigation tool" "search schema defers to project-designated MCP navigation"
 agent_build_payload
 assert_contains "$REPLY" 'modern/find-symbol [read_only] -> mcp__modern__find_symbol' "regular Ollama payloads include connected MCP routing"
+
+# A service PATH failure must reach the conversation and the model, even
+# when no MCP tools are available; healthy servers keep their tool schemas.
+saved_agent_emit="$functions[agent_emit]"
+typeset -a mcp_warning_events=() saved_mcp_tool_names=()
+agent_emit() { mcp_warning_events+=("$1:$2"); }
+MCP_ENABLED[shadowed]=1
+MCP_STATUS[shadowed]=configured
+mcp_tools_schema_json
+assert_contains "$MCP_DETAIL[shadowed]" 'command not found or not executable: missing-project-command' 'missing MCP commands have actionable startup diagnostics'
+assert_contains "$MCP_DETAIL[shadowed]" 'service PATH' 'missing MCP diagnostics explain service environment lookup'
+assert_contains "$REPLY" '"name":"mcp__modern__find_symbol"' 'one unavailable MCP server leaves healthy schemas usable'
+assert_eq 1 "${#mcp_warning_events}" 'MCP connection failures emit a conversation warning'
+assert_contains "$mcp_warning_events[1]" 'shadowed: failed:' 'MCP warning names the unavailable server'
+mcp_tools_schema_json
+assert_eq 1 "${#mcp_warning_events}" 'identical MCP failures do not repeat warnings for each model request'
+mcp_prompt_block
+assert_contains "$REPLY" '<mcp_unavailable>' 'model prompt discloses unavailable MCP servers'
+assert_contains "$REPLY" 'missing-project-command' 'model prompt explains the missing capability'
+assert_contains "$REPLY" 'modern/find-symbol' 'model prompt retains healthy tool routing alongside failures'
+saved_mcp_tool_names=("${MCP_TOOL_NAMES[@]}")
+MCP_TOOL_NAMES=()
+mcp_prompt_block
+assert_contains "$REPLY" '<mcp_unavailable>' 'MCP failure guidance survives an empty tool catalog'
+MCP_TOOL_NAMES=("${saved_mcp_tool_names[@]}")
+MCP_ENABLED[shadowed]=0
+MCP_STATUS[shadowed]=disabled
+mcp_tools_schema_json
+assert_eq '' "$MCP_LAST_REPORTED_FAILURES" 'recovered MCP availability clears the warning suppression state'
+functions[agent_emit]="$saved_agent_emit"
+
 TZ=UTC0 agent_datetime_prompt_block 0
 assert_eq $'\n\nCurrent date and time: 1970-01-01T00:00:00+0000 (UTC)' "$REPLY" "system prompt timestamps have a stable local ISO representation"
 saved_tool_phase="$AGENT_TOOL_PHASE"

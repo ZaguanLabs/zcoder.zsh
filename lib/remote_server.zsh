@@ -158,6 +158,13 @@ _remote_server_turn_worker() {
     return 1
   }
   STATE_ENABLED=1
+  # The listener may live for days. Each fork must use the current files,
+  # rather than inheriting the listener's startup instruction/config snapshot.
+  # Load the transcript first so any configuration warning is retained.
+  instructions_load "$ZCODER_WORKSPACE"
+  if ! mcp_load; then
+    agent_emit system "Warning: could not reload MCP configuration: $MCP_ERROR"
+  fi
   saved_policy="${mapfile[$REMOTE_RUNTIME_DIR/command_policy]:-$ZCODER_COMMAND_POLICY}"
   if [[ "$ZCODER_PROFILE" == coding && "$saved_policy" == allow ]]; then
     ZCODER_COMMAND_POLICY="allow"

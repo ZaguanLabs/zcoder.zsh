@@ -54,6 +54,17 @@ Both use the common `mcpServers` shape:
 }
 ```
 
+For headless services, use an absolute executable path or include its installation
+directory (often `$HOME/.local/bin`) in the service's `PATH`. A successful MCP
+test in a login shell does not verify the service environment. Missing executables
+produce a diagnostic naming the command and suggesting a `PATH` correction.
+
+API workers reload project instructions and MCP configuration before each turn.
+Connection failures produce a conversation warning and an unavailable-server
+section in the model's system prompt, including when no MCP tools connected.
+Other connected servers remain usable. Repeated identical failures are reported
+once during the turn; discovery retries can recover a server on a later request.
+
 ## CLI management
 
 Registry commands do not require Ollama:

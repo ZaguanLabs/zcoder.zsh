@@ -29,12 +29,18 @@ headless_probe() {
   session_id="$CURRENT_SESSION_ID"
   REMOTE_TURN_ID="${EPOCHSECONDS}_${RANDOM}"
   ZCODER_COMMAND_POLICY=ask
+  # Change disk state after CLI startup, leaving the listener snapshot stale.
+  local probe_rule='FRESH_API_RULE' probe_command='fresh-api-command'
+  mapfile[$ZCODER_HOME/AGENTS.md]="$probe_rule"
+  mapfile[$ZCODER_HOME/mcp.json]='{"mcpServers":{"probe":{"command":"'"$probe_command"'"}}}'
   typeset -gi PROBE_APPROVAL_CALLS=0
   remote_server_request_approval() {
     (( PROBE_APPROVAL_CALLS++ ))
     (( PROBE_APPROVAL_CALLS == 1 )) && REPLY=n || REPLY=y
   }
   agent_user_turn() {
+    [[ "$INSTRUCTIONS_TEXT" == *"$probe_rule"* ]] || return 32
+    [[ "${MCP_COMMAND[probe]:-}" == "$probe_command" ]] || return 33
     tool_approve_command 'print denied' && return 20
     tool_approve_command 'print approved' || return 21
     (( PROBE_APPROVAL_CALLS == 2 )) || return 22
@@ -53,6 +59,19 @@ headless_probe() {
   _remote_server_next_event 0 || return 29
   json_parse_flat_object "$REPLY" || return 30
   [[ "${JSON_OBJECT[content]}" == 'headless reply' ]] || return 31
+  probe_rule='UPDATED_API_RULE'
+  probe_command='updated-api-command'
+  mapfile[$ZCODER_HOME/AGENTS.md]="$probe_rule"
+  mapfile[$ZCODER_HOME/mcp.json]='{"mcpServers":{"probe":{"command":"'"$probe_command"'"}}}'
+  PROBE_APPROVAL_CALLS=0
+  (_remote_server_turn_worker "second prompt" "$session_id") || return 34
+  # Removing files must also clear the listener's inherited configuration.
+  zf_rm -f "$ZCODER_HOME/AGENTS.md" "$ZCODER_HOME/mcp.json"
+  agent_user_turn() {
+    [[ "$INSTRUCTIONS_TEXT" != *FRESH_API_RULE* && "$INSTRUCTIONS_TEXT" != *UPDATED_API_RULE* ]] || return 35
+    (( ! ${+MCP_COMMAND[probe]} )) || return 36
+  }
+  (_remote_server_turn_worker "third prompt" "$session_id") || return 37
   return 0
 }
 
