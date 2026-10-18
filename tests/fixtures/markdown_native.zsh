@@ -64,7 +64,37 @@ done
 ui_plain_transcript
 [[ $REPLY == *"$sample"* ]] || fail 'original user Markdown lost'
 (( UI_MARKDOWN_FALLBACKS == 0 )) || fail 'user layout fallback'
+# A submitted prompt keeps explicit line breaks through native layout/reflow.
+typeset prompt=$'**first** row\nsecond `row`'
+typeset first_row='  first row' second_row='  second row'
+input_reset
+INPUT_BUF=$prompt; INPUT_POS=${#prompt}
+input_submit
+transcript_reset
+ui_append_message user "$INPUT_SUBMITTED"
+UI_SELECTION_ENABLED=1
+for budget in 14 32 80; do
+  ui_render_messages "$budget"
+  [[ ${UI_LINE_NATIVE[(Ie)1]} != 0 ]] || fail 'multiline prompt skipped native layout'
+  [[ ${UI_LINES[(Ie)$first_row]} != 0 && ${UI_LINES[(Ie)$second_row]} != 0 ]] || fail "prompt newlines at width $budget"
+  [[ ${(F)UI_SEGMENT_ATTRS} == *'bold green/black'* ]] || fail 'multiline prompt styling'
+  for (( row=1; row<=${#UI_LINES}; row++ )); do
+    [[ $UI_LINES[row] != '  second row' || $UI_COPY_GAPS[row] == $'\n' ]] || fail 'prompt copy newline'
+  done
+done
+[[ $INPUT_SUBMITTED == "$prompt" && $UI_CONTENTS[1] == "$prompt" ]] || fail 'submitted prompt changed'
+ui_plain_transcript
+[[ $REPLY == *"$prompt"* ]] || fail 'multiline prompt export'
+(( UI_MARKDOWN_FALLBACKS == 0 )) || fail 'multiline prompt fallback'
+UI_MARKDOWN_SOFT_BREAKS=0
+ui_render_messages 80
+[[ ${UI_LINES[(Ie)$first_row]} != 0 && ${UI_LINES[(Ie)$second_row]} != 0 ]] || fail 'older module prompt fallback'
+(( UI_MARKDOWN_FALLBACKS == 0 )) || fail 'capability fallback counted as a layout rejection'
+UI_MARKDOWN_SOFT_BREAKS=1
 UI_ROLES=(assistant)
+UI_CONTENTS=($'first row\nsecond row'); ui_render_messages 80
+typeset joined_row='  first row second row'
+[[ ${UI_LINES[(Ie)$joined_row]} != 0 ]] || fail 'assistant soft breaks changed'
 UI_CONTENTS=('A **partial'); ui_render_messages 74
 UI_CONTENTS=('A **partial response**'); transcript_changed 1; ui_draw_chat
 [[ ${(F)UI_LINES} == *'partial response'* && ${(F)UI_LINES} != *'**'* ]] || fail streaming

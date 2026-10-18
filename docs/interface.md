@@ -37,6 +37,11 @@ Fenced code retains syntax highlighting. Copying a reply or transcript preserves
 the original Markdown. Streaming and terminal resizing lay it out again at the
 available width.
 
+Submitted prompts also render Markdown, while keeping the explicit line breaks
+entered in the prompt editor. Their stored content and copied transcript remain
+unchanged. Older native Markdown modules use the Zsh renderer for prompts until
+the native runtime is rebuilt with `make`.
+
 This optional renderer keeps grapheme units together using the system's summed
 character widths. Terminal emoji shaping can still differ from those logical
 columns. Text that exceeds native cell storage or fails layout checks falls back

@@ -85,6 +85,13 @@ assert_contains "${(F)UI_LINES}" '  Request' "submitted user headings render wit
 assert_not_contains "${(F)UI_LINES}" '```' "submitted user code fences render with a language label"
 assert_contains "${(F)UI_LINES}" 'print "**literal**"' "user code blocks preserve literal Markdown"
 assert_not_contains "${(F)UI_SEGMENT_TEXTS}" $'\e' "user Markdown sanitizes terminal controls before rendering"
+UI_CONTENTS=($'**first** row\nsecond `row`')
+for markdown_width in 14 32 80; do
+  ui_render_messages "$markdown_width"
+  assert_contains "${(F)UI_LINES}" $'  first row\n  second row' "submitted prompts preserve line breaks at width $markdown_width"
+  assert_contains "${(F)UI_SEGMENT_ATTRS}" 'bold green/black' 'multiline prompts retain Markdown styling'
+done
+assert_eq $'**first** row\nsecond `row`' "$UI_CONTENTS[1]" 'multiline prompt rendering leaves stored content unchanged'
 UI_CONTENTS=('Keep **literal** and `code`')
 UI_ROLES=(codex_worker)
 ui_render_messages 80

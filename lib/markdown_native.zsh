@@ -1,7 +1,7 @@
 # Optional structured Markdown. Layout and drawing share an explicit native
 # width policy; the original transcript remains the source for copying/reflow.
 typeset -g UI_MARKDOWN_BACKEND=zsh UI_MARKDOWN_REASON='not initialized'
-typeset -gi UI_MARKDOWN_FALLBACKS=0
+typeset -gi UI_MARKDOWN_FALLBACKS=0 UI_MARKDOWN_SOFT_BREAKS=0
 typeset -g UI_MARKDOWN_POLICY=unicode-17.0.0-egc-wcwidth-sum-attach-zero
 
 zcoder_markdown_load() {
@@ -22,6 +22,7 @@ zcoder_markdown_load() {
 ui_markdown_init() {
   emulate -L zsh
   UI_MARKDOWN_BACKEND=zsh
+  UI_MARKDOWN_SOFT_BREAKS=0
   UI_MARKDOWN_REASON='native modules unavailable'
   case ${ZCODER_MARKDOWN:-auto} in
     zsh) UI_MARKDOWN_REASON='disabled by ZCODER_MARKDOWN'; return 0 ;;
@@ -44,6 +45,10 @@ ui_markdown_init() {
      $probe[cluster_styles] == first-base ]] || return 0
   UI_MARKDOWN_BACKEND=zmdown
   UI_MARKDOWN_REASON='wcwidth-sum / first-base'
+  if zmdown --spans probe --width 20 --soft-breaks newline --text $'one\ntwo' 2>/dev/null &&
+      [[ $probe[soft_breaks] == newline ]]; then
+    UI_MARKDOWN_SOFT_BREAKS=1
+  fi
 }
 
 # Exceptional presentation fallback: preserve every scalar visibly instead of
@@ -71,11 +76,13 @@ _ui_markdown_native_layout() {
   local -a UI_COPY_TEXTS=() UI_COPY_COLUMNS=() UI_COPY_GAPS=()
   local -a UI_LINE_SEGMENT_STARTS=() UI_LINE_SEGMENT_COUNTS=()
   local -a UI_SEGMENT_TEXTS=() UI_SEGMENT_ATTRS=()
+  local -a markdown_options=()
   local -A document measured
   local -i width=$2 row span block flags available=$(( $2 - 2 ))
   local base=${3:-white/black} key style language text
   (( available > 0 )) || return 1
-  zmdown --spans document --width "$available" --width-policy wcwidth-sum --cluster-styles first-base --text "$1" 2>/dev/null || return 1
+  [[ ${4:-space} == newline ]] && markdown_options=(--soft-breaks newline)
+  zmdown --spans document --width "$available" --width-policy wcwidth-sum --cluster-styles first-base "${markdown_options[@]}" --text "$1" 2>/dev/null || return 1
   [[ $document[schema] == 1 && $document[width_policy_name] == wcwidth-sum &&
      $document[cluster_styles] == first-base ]] || return 1
   for (( row=1; row<=document[line_count]; row++ )); do
@@ -116,7 +123,7 @@ _ui_markdown_native_layout() {
     [[ $measured[text] == "$UI_LINES[row]" ]] || return 1
   done
   if (( UI_SELECTION_ENABLED )); then
-    _ui_markdown_copy_layout "$1" || return 1
+    _ui_markdown_copy_layout "$1" "${markdown_options[@]}" || return 1
   fi
   native_copy_texts=("${UI_COPY_TEXTS[@]}")
   native_copy_columns=("${UI_COPY_COLUMNS[@]}")
@@ -129,7 +136,7 @@ _ui_markdown_native_layout() {
 
 _ui_add_markdown() {
   emulate -L zsh
-  if [[ $UI_MARKDOWN_BACKEND != zmdown ]]; then
+  if [[ $UI_MARKDOWN_BACKEND != zmdown ]] || { [[ ${4:-space} == newline ]] && (( ! UI_MARKDOWN_SOFT_BREAKS )); }; then
     _ui_add_markdown_fallback "$@"
     return
   fi
@@ -182,11 +189,13 @@ ui_markdown_draw_row() {
 _ui_markdown_copy_layout() {
   emulate -L zsh
   setopt extendedglob
+  local source=$1
+  shift
   local -A wide logical cursor previous
   local -i r b drop pos j prefix_cells column padding
   local text candidate rest before kind line segment expanded
   local -A measured
-  zmdown --spans wide --width 4096 --width-policy wcwidth-sum --cluster-styles first-base --text "$1" 2>/dev/null || return 1
+  zmdown --spans wide --width 4096 --width-policy wcwidth-sum --cluster-styles first-base "$@" --text "$source" 2>/dev/null || return 1
   for (( r=1; r<=wide[line_count]; r++ )); do
     b=$wide[line,$r,block]
     [[ $wide[line,$r,role] == content ]] || continue
