@@ -24,20 +24,37 @@ zcoder_select_sidebar_session() {
 }
 
 main_tui() {
-  local ch="" key="" mouse="" text="" previous_model="" relay_context="" relay_display=""
+  local ch="" key="" mouse="" text="" previous_model="" relay_context="" relay_display="" relay_start_error=""
   local -i current_index=1 i=1 relay_claim_status=1
   input_reset
+  # Own and paint the terminal before disk scans, session locks or the relay
+  # listener's readiness wait. No command/model work runs until preparation
+  # below completes; input typed meanwhile remains in the terminal queue.
+  ui_set_status Starting
+  ui_init || { print -u2 -- "Error: could not initialize curses UI"; return 1; }
+  if [[ "$REMOTE_MODE" == local ]]; then
+    zcoder_require relay
+    relay_start --defer-ready || relay_start_error="${RELAY_ERROR:-startup failed}"
+  fi
+  if (( ${TUI_STARTUP_PENDING:-0} )); then
+    zcoder_load_workspace || return $?
+    TUI_STARTUP_PENDING=0
+  fi
   if [[ "$REMOTE_MODE" != client ]] && ! state_init "${RESUME_SESSION_ID:+resume}" "$RESUME_SESSION_ID"; then
     if [[ -n "$RESUME_SESSION_ID" ]]; then
+      ui_end
       print -u2 -r -- "Error: could not resume $RESUME_SESSION_ID: $STATE_ERROR"
       return 1
     fi
-    print -u2 -- "Warning: could not initialize session storage at $ZCODER_SESSIONS_DIR"
+    ui_append_message system "Warning: could not initialize session storage at $ZCODER_SESSIONS_DIR"
   fi
   if [[ "$REMOTE_MODE" == local ]]; then
-    zcoder_require relay
-    if ! relay_start && [[ "$ZCODER_RELAY" != off ]]; then
-      ui_append_message system "Inter-agent relay unavailable: ${RELAY_ERROR:-startup failed}."
+    if [[ -z "$relay_start_error" && ${RELAY_LISTENER_PID:-} == <1-> ]] &&
+        ! relay_start_finish; then
+      relay_start_error="${RELAY_ERROR:-startup failed}"
+    fi
+    if [[ -n "$relay_start_error" && "$ZCODER_RELAY" != off ]]; then
+      ui_append_message system "Inter-agent relay unavailable: $relay_start_error."
     fi
   fi
   if [[ "$REMOTE_MODE" == local && "$ZCODER_WARMUP" == true ]]; then
@@ -48,8 +65,10 @@ main_tui() {
       error) ui_set_status "Warm-up Failed" ;;
       *) ui_set_status "Ready" ;;
     esac
+  else
+    ui_set_status Ready
   fi
-  ui_init || { print -u2 -- "Error: could not initialize curses UI"; return 1; }
+  ui_invalidate; ui_refresh_all
   if (( REMOTE_HANDSHAKE_PENDING )); then
     ui_set_status Connecting
     remote_client_handshake

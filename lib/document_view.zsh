@@ -1,13 +1,16 @@
 # Bounded, read-only documents use the application's modal lifecycle. The
 # transcript and approval dialogs keep their existing independent renderers.
-typeset -gi UI_DOCUMENT_HELPERS=0
-() {
+# -1 means untried; optional helpers are unnecessary for the startup frame.
+typeset -gi UI_DOCUMENT_HELPERS=-1
+ui_document_helpers_load() {
   emulate -L zsh
-  local library="${1:A:h:h}/vendor/zdraw/lib/zdraw-document.zsh"
+  (( UI_DOCUMENT_HELPERS < 0 )) || return 0
+  UI_DOCUMENT_HELPERS=0
+  local library="${${(%):-%x}:A:h:h}/vendor/zdraw/lib/zdraw-document.zsh"
   [[ -r $library ]] || return 0
   source "$library" || return 0
   UI_DOCUMENT_HELPERS=1
-} "${(%):-%x}"
+}
 
 ui_document_view() {
   emulate -L zsh
@@ -16,6 +19,7 @@ ui_document_view() {
     [[ ${UI_MARKDOWN_BACKEND:-zsh} == zmdown ]] && document_markdown=1
     shift
   fi
+  (( document_markdown )) || ui_document_helpers_load
   local title=$1 id kind text
   shift
   (( $# % 3 == 0 )) || return 1

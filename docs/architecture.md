@@ -81,6 +81,16 @@ recompiling is never required for correctness. Compile with the destination
 host's installed Zsh. A successful build on a newer Zsh is not a substitute for
 running the suite under the minimum supported Zsh 5.8 runtime.
 
+The local TUI paints a `Starting` frame before loading MCP, discovering project
+instructions and skills, opening session storage, or waiting for the relay.
+The relay listener binds alongside workspace preparation; its model tools and
+discovery manifest become available only after session initialization. All
+workspace preparation finishes in the parent before warm-up or user-command
+dispatch. Input typed during preparation remains queued in the terminal.
+Pickers load the optional zdraw layout/list/help libraries on first use;
+document dialogs load their optional helper only when that renderer is needed.
+Headless and one-shot modes finish workspace loading before their entrypoints.
+
 ## Interactive overlays
 
 `overlays.zsh` owns one temporary curses window. Internal draw and input callbacks

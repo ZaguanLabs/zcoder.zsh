@@ -16,7 +16,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.22.1"
+typeset -gr ZCODER_VERSION="0.22.2"
 
 typeset -gr ZCODER_DIR="${0:A:h}"
 
@@ -46,7 +46,24 @@ if [[ "${1:-}" == mcp ]]; then
   exit "$mcp_status"
 fi
 
-zcoder_require util json mcp http instructions skills transcript command_safety tools compact goal agent agent_prompts agent_lfm state input_queue agent_loop || exit $?
+zcoder_require util json http instructions skills transcript command_safety tools compact goal agent agent_prompts agent_lfm state input_queue agent_loop || exit $?
+
+# Interactive startup paints before reading workspace configuration. Finish
+# this in the parent shell before session restoration, warm-up or dispatch:
+# those paths must all see the same instructions, skills and MCP catalog.
+zcoder_load_workspace() {
+  zcoder_require mcp || return $?
+  instructions_load "$ZCODER_WORKSPACE"
+  skills_load "$ZCODER_WORKSPACE"
+  if ! mcp_load; then
+    if (( ${UI_ACTIVE:-0} )); then
+      ui_status_notice warning "$MCP_ERROR"
+    else
+      print -u2 -- "Warning: $MCP_ERROR"
+    fi
+  fi
+  return 0
+}
 
 # The remote-mode default participates in option parsing before lib/remote.zsh
 # loads; that library preserves any value already set here.
@@ -55,6 +72,7 @@ typeset -g REMOTE_MODE="${REMOTE_MODE:-local}"
 typeset -g ONE_SHOT_PROMPT=""
 typeset -g RESUME_SESSION_ID=""
 typeset -gi TUI_SESSION_STARTED=0
+typeset -gi TUI_STARTUP_PENDING=0
 typeset -gi ACP_MODE=0
 typeset -gi RUNNING=1
 typeset -gi PRINT_INSTRUCTIONS=0
@@ -224,10 +242,10 @@ if [[ "$REMOTE_MODE" == client ]]; then
     exit 1
   fi
 else
-  instructions_load "$ZCODER_WORKSPACE"
-  skills_load "$ZCODER_WORKSPACE"
-  if ! mcp_load; then
-    print -u2 -- "Warning: $MCP_ERROR"
+  if [[ -z "$ONE_SHOT_PROMPT" && "$REMOTE_MODE" == local ]] && (( ! ACP_MODE && ! PRINT_INSTRUCTIONS && ! PRINT_SKILLS )); then
+    TUI_STARTUP_PENDING=1
+  else
+    zcoder_load_workspace || exit $?
   fi
 fi
 
@@ -291,7 +309,7 @@ cleanup() {
   http_async_cancel
   (( $+functions[relay_stop] )) && relay_stop
   (( $+functions[remote_server_stop] )) && remote_server_stop
-  mcp_shutdown_all
+  (( $+functions[mcp_shutdown_all] )) && mcp_shutdown_all
   (( $+functions[ui_end] )) && ui_end
   zcoder_debug_close
   zcoder_runtime_cleanup

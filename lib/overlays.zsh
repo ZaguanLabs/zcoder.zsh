@@ -1,12 +1,15 @@
 # Modal state is dynamically scoped by ui_modal_run and its callers. Draw and
 # input handlers are internal function names, never model/user-provided code.
 typeset -gi UI_MODAL_ACTIVE=0
-typeset -gi UI_PICKER_HELPERS=0
+# -1 means untried; 0 retains the explicit fallback used by callers/tests.
+typeset -gi UI_PICKER_HELPERS=-1
 # Passive, optional libraries: stock curses can use the pure state/geometry
 # helpers too. Missing vendor sources leave the original picker available.
-() {
+ui_picker_helpers_load() {
   emulate -L zsh
-  local root="${1:A:h:h}/vendor/zdraw/lib" component
+  (( UI_PICKER_HELPERS < 0 )) || return 0
+  UI_PICKER_HELPERS=0
+  local root="${${(%):-%x}:A:h:h}/vendor/zdraw/lib" component
   for component in layout list help; do
     [[ -r "$root/zdraw-$component.zsh" ]] || return 0
   done
@@ -14,7 +17,7 @@ typeset -gi UI_PICKER_HELPERS=0
     source "$root/zdraw-$component.zsh" || return 0
   done
   UI_PICKER_HELPERS=1
-} "${(%):-%x}"
+}
 source "${${(%):-%x}:A:h}/document_view.zsh"
 
 ui_modal_text() {
@@ -187,6 +190,7 @@ _ui_modal_list_input() {
 
 ui_modal_choose() {
   emulate -L zsh
+  ui_picker_helpers_load
   local title="$1" modal_current="$2"; shift 2
   local modal_hint='Enter Use  Esc Close  Up/Down Select  PgUp/PgDn Page'
   local -a modal_items=("$@") modal_item_attrs=()

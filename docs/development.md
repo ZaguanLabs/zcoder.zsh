@@ -306,6 +306,38 @@ are separate from the reusable benchmark target. Functional assertions remain
 the gate for correctness. Broaden performance checks when a change affects a
 new path or a measurement exposes a regression.
 
+Measure real TUI startup in a PTY with:
+
+```sh
+make benchmark-startup
+```
+
+This reports first-frame and first-input readiness for stock and automatic
+curses selection, with one discarded warmup and seven samples per backend.
+It uses an isolated workspace containing instructions, a skill and an MCP
+configuration, starts the local relay, and disables model warm-up. No Ollama
+or MCP server is contacted. The times begin inside the fixture shell; shell
+process creation and private-runtime selection are excluded. `make test`
+also checks that the screen precedes workspace/session preparation, input
+typed during preparation survives, approvals still apply, and deferred dialog
+helpers load exactly once. It has no elapsed-time threshold.
+
+The October 2026 startup investigation found that ACP was already mode-gated
+and MCP connections already happened after curses initialization. In a local
+profile, eager MCP library loading cost about 0.1 ms, skill discovery/catalog
+building about 16 ms, and synchronous relay startup about 23 ms. The relay's
+20 ms readiness polling interval dominated its normal bind time. Starting the
+listener alongside workspace preparation removes that wait when preparation
+outlasts the bind; the bounded wait remains available on slower starts.
+
+Across nine local PTY runs with compiled libraries, Zsh 5.9.2, 120×24 cells,
+16 installed skills, relay enabled, explicit context size and no warm-up,
+source-to-first-frame median improved from 59.9 ms to 12.3 ms. First-input
+readiness improved from 60.3 ms to 40.2 ms. These are local measurements, not
+latency guarantees; terminal links, filesystem caches, configuration size and
+session-lock contention can change them. Remaining workspace preparation is
+synchronous after the first frame so commands always see complete state.
+
 Session persistence tests distinguish interruption before publication from a
 committed save. They do not establish durability against power loss: generation
 publication uses atomic rename and checked writes without an `fsync` guarantee.

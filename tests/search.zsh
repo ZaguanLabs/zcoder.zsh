@@ -56,7 +56,8 @@ search_tests() {
   repeated=''
   for (( i=1; i<=120; i++ )); do repeated+="needle row $i"$'\n'; done
   mapfile[$ZCODER_WORKSPACE/src/noisy.zsh]="$repeated"
-  tool_search needle . 4 false content '' '' 0 4096
+  # Three matching files fit the four-result budget in any ripgrep order.
+  tool_search needle src 4 false content '' '' 0 4096
   assert_contains "$TOOL_RESULT" 'src/noisy.zsh' 'noisy file receives a share of results'
   assert_contains "$TOOL_RESULT" 'src/b.py' 'noisy file cannot crowd out another matching file'
   assert_contains "$TOOL_RESULT" 'next line' 'omitted matches include a continuation line'

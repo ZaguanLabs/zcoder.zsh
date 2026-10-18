@@ -297,8 +297,7 @@ relay_mark_ready() { (( RELAY_PAUSED )) || relay_set_state ready; }
 relay_start() {
   emulate -L zsh
   setopt localoptions extendedglob
-  local nonce="" old_umask="$(umask)" ready_pid=""
-  local -F deadline=0
+  local nonce="" old_umask="$(umask)"
   RELAY_ERROR=""; RELAY_AVAILABLE=0; RELAY_ACTIVE=0; RELAY_DISCARDED_COUNT=0
   case "$ZCODER_RELAY" in
     off) RELAY_ERROR="inter-agent relay is disabled"; return 1 ;;
@@ -330,7 +329,18 @@ relay_start() {
   _relay_atomic_write "$RELAY_STATE_FILE" "$([[ "$ZCODER_RELAY" == paused ]] && print paused || print ready)" || { RELAY_ERROR="could not initialize relay state"; return 1; }
   (_relay_listener_main "$RELAY_SOCKET_PATH" "$RELAY_INSTANCE_ID" "$RELAY_SPOOL_DIR" "$RELAY_READY_FILE" "$RELAY_STATE_FILE") &
   RELAY_LISTENER_PID=$!
-  deadline=$(( EPOCHREALTIME + 2.0 ))
+  # The TUI can prepare its workspace while the listener binds. Do not expose
+  # tools or publish a manifest until the parent has restored its session.
+  [[ ${1:-} == --defer-ready ]] && return 0
+  relay_start_finish
+}
+
+relay_start_finish() {
+  emulate -L zsh
+  local ready_pid=''
+  local -F deadline=$(( EPOCHREALTIME + 2.0 ))
+  (( RELAY_ACTIVE )) && return 0
+  [[ $RELAY_LISTENER_PID == <1-> ]] || return 1
   while [[ ! -f "$RELAY_READY_FILE" ]] && (( EPOCHREALTIME < deadline )); do
     kill -0 "$RELAY_LISTENER_PID" 2>/dev/null || break
     zselect -t 2 2>/dev/null

@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := all
-.PHONY: all setup native json check test test-fast test-visual benchmark model-eval compile clean curses markdown
+.PHONY: all setup native json check test test-fast test-visual benchmark benchmark-startup model-eval compile clean curses markdown
 
 all: native compile
 
@@ -38,6 +38,9 @@ test-visual: check
 
 benchmark: check
 	zsh -df tests/benchmark.zsh
+
+benchmark-startup: check
+	zsh -df tests/startup.zsh --benchmark
 
 model-eval: check
 	zsh tests/model_eval.zsh

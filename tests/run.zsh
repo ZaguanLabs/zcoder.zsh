@@ -400,6 +400,18 @@ ZCODER_MODEL="parent-model"
 ZCODER_PROFILE="coding"
 CURRENT_SESSION_ID="1_1"
 zf_mkdir -p "$ZCODER_WORKSPACE"
+relay_start --defer-ready
+assert_success 'relay can bind while startup prepares the workspace' $?
+assert_eq 0:0 "$RELAY_ACTIVE:$RELAY_AVAILABLE" 'pending relay exposes no model tools'
+[[ ! -e "$RELAY_MANIFEST_PATH" ]]
+assert_success 'pending relay publishes no discovery manifest' $?
+relay_pending_pid="$RELAY_LISTENER_PID"
+relay_pending_socket="$RELAY_SOCKET_PATH"
+relay_stop
+kill -0 "$relay_pending_pid" 2>/dev/null
+assert_failure 'startup cancellation stops a pending relay listener' $?
+[[ ! -e "$relay_pending_socket" ]]
+assert_success 'startup cancellation removes the pending relay socket' $?
 relay_start
 assert_success "local agent relay starts" $?
 assert_eq "1" "$RELAY_AVAILABLE" "started relay exposes its model tools"
@@ -3683,6 +3695,10 @@ if test_integration models_wait; then
 fi
 if test_integration context_wait; then
   source "${TEST_DIR}/context_wait.zsh"
+fi
+if test_integration startup; then
+  zsh -df "${TEST_DIR}/startup.zsh"
+  assert_success 'TUI startup paints before preparation and preserves first-use behavior' $?
 fi
 if test_integration tui_integration; then
   source "${TEST_DIR}/tui_integration.zsh"
