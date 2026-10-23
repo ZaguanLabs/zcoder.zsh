@@ -146,6 +146,44 @@ _zcoder_command_model() {
   return 0
 }
 
+# Approval covers the exact bytes shown in the dialog. A file changed while
+# the dialog was open stays untrusted after the reload below.
+_zcoder_mcp_trust_command() {
+  local action="$1" content="" summary=""
+  if ! mcp_load; then
+    ui_append_message error "$MCP_ERROR"
+    return 0
+  fi
+  if [[ "$action" == untrust ]]; then
+    if mcp_project_untrust && mcp_load; then
+      ui_append_message system "Project MCP servers in ${MCP_PROJECT_CONFIG} will no longer start."
+    else
+      ui_append_message error "$MCP_ERROR"
+    fi
+    return 0
+  fi
+  if [[ "$MCP_PROJECT_TRUST" == none ]]; then
+    ui_append_message system "This workspace has no project MCP servers to approve."
+    return 0
+  fi
+  if [[ "$MCP_PROJECT_TRUST" == trusted ]]; then
+    ui_append_message system "Project MCP configuration is already approved."
+    return 0
+  fi
+  content="$MCP_PROJECT_CONTENT"
+  summary="zcoder will start these commands whenever it opens this workspace, without asking again until the file changes."$'\n\n'"${MCP_PROJECT_CONFIG}"$'\n'"${content}"
+  if ! ui_confirm_project_trust "$summary" || [[ "$REPLY" != y ]]; then
+    ui_append_message system "Project MCP servers were not approved."
+    return 0
+  fi
+  if mcp_project_trust "$content" && mcp_load && [[ "$MCP_PROJECT_TRUST" == trusted ]]; then
+    ui_append_message system "Approved project MCP servers: ${(j:, :)${(@k)MCP_PROJECT_RAW}}."
+    agent_warmup_start || true
+  else
+    ui_append_message error "${MCP_ERROR:-The project MCP configuration changed during review; it was not approved.}"
+  fi
+}
+
 _zcoder_command_context() {
   emulate -L zsh
   setopt extendedglob nonomatch
@@ -195,6 +233,13 @@ _zcoder_command_context() {
       else
         ui_append_message error "$MCP_ERROR"
       fi
+      ;;
+    /mcp\ trust|/mcp\ untrust)
+      if [[ "$REMOTE_MODE" == client ]]; then
+        ui_append_message error "Approve project MCP servers on the server with '${ZCODER_NAME:-zcoder.zsh} mcp trust'."
+        return 2
+      fi
+      _zcoder_mcp_trust_command "${text#/mcp }"
       ;;
     /skill)
       if [[ "$REMOTE_MODE" == client ]]; then

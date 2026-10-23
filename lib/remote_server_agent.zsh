@@ -296,6 +296,11 @@ remote_server_request_approval() {
   if [[ -f "$response" ]]; then decision="${mapfile[$response]}"; fi
   zf_rm -f "$pending" "$response" 2>/dev/null
   [[ "$decision" == y || "$decision" == a ]] || decision="n"
+  # Record the grant immediately so it survives a cancelled turn, but only for
+  # this session; command approvals are never granted to the whole server.
+  if [[ "$decision" == a && "$approval_kind" == command && "$ZCODER_PROFILE" == coding && -n "$CURRENT_SESSION_ID" ]]; then
+    mapfile[$REMOTE_RUNTIME_DIR/command_allow_session]="$CURRENT_SESSION_ID" || true
+  fi
   REPLY="$decision"
   [[ "$decision" != n ]]
 }

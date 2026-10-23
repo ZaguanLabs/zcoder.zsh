@@ -178,7 +178,12 @@ skills_reset() {
 }
 
 _skills_add_file() {
-  local source_file="${1:A}" scope="$2" name="" parent_name="" previous=""
+  local source_file="${1:A}" scope="$2" confine="${3:-}" name="" parent_name="" previous=""
+  # Repository content must not link a skill to files elsewhere on the machine.
+  if [[ -n "$confine" && "$source_file" != "${confine%/}/"* ]]; then
+    SKILL_DIAGNOSTICS+=("Skipped $1: resolves outside the project")
+    return 1
+  fi
   if ! skills_parse_file "$source_file" metadata; then
     SKILL_DIAGNOSTICS+=("Skipped ${source_file}: ${SKILL_ERROR}")
     return 1
@@ -200,13 +205,13 @@ _skills_add_file() {
 }
 
 _skills_scan_root() {
-  local root="${1:A}" scope="$2" source_file=""
+  local root="${1:A}" scope="$2" confine="${3:-}" source_file=""
   local -a source_files=()
   [[ -d "$root" ]] || return 0
   source_files=("$root"/*/SKILL.md(N))
   source_files=("${(@on)source_files}")
   for source_file in "${source_files[@]}"; do
-    _skills_add_file "$source_file" "$scope"
+    _skills_add_file "$source_file" "$scope" "$confine"
   done
 }
 
@@ -220,7 +225,7 @@ skills_load() {
   # Scan from broadest to most specific so project skills deterministically win.
   _skills_scan_root "$user_config_root" "user config"
   [[ "${user_home_root:A}" == "${user_config_root:A}" ]] || _skills_scan_root "$user_home_root" "user"
-  _skills_scan_root "$project_root/.agents/skills" "project"
+  _skills_scan_root "$project_root/.agents/skills" "project" "${project_root:A}"
   skills_build_catalog
   zcoder_debug skills_loaded "count=${#SKILL_NAMES} diagnostics=${#SKILL_DIAGNOSTICS} project_root=${(qqq)project_root}"
 }

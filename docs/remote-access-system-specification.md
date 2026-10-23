@@ -147,7 +147,7 @@ forever for `Connection: close` while a descendant still owns the descriptor.
 | Model | Server startup or saved server session | No remote model-selection endpoint |
 | Profile | Server startup | No |
 | Initial command policy | Server startup | No |
-| Coding session-wide command approval | Server process after an `a` decision | Yes, only through the approval flow |
+| Coding session-wide command approval | The remote session that received an `a` decision, until the server restarts | Yes, only through the approval flow |
 | Sysadmin per-command approval | Server profile | No session-wide override |
 | Conversation and transcript | Server session store | No durable client copy |
 | Current session | Named server | Yes, through session endpoints while idle |

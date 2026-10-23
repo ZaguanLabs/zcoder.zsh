@@ -116,6 +116,21 @@ for approval_line in {1..32}; do long_approval+="action line ${approval_line}"$'
 ui_confirm_command "$long_approval"
 assert_contains "${(F)OVERLAY_CALLS}" "action line 20" "approval details can scroll beyond the first page"
 assert_eq "n" "$REPLY" "scrolling an approval does not approve it"
+overlay_keys
+OVERLAY_CHARS=(y y)
+ui_confirm_command "$long_approval"
+assert_contains "${(F)OVERLAY_CALLS}" "action line 32" "approving a long request first shows its end"
+assert_eq "y" "$REPLY" "a long request can be approved once its end has been shown"
+overlay_keys
+OVERLAY_CHARS=(y a n)
+UI_APPROVAL_KEY_DELAY=60
+ui_confirm_command 'print approved'
+assert_eq "n" "$REPLY" "approval keys typed before the dialog settles are ignored"
+UI_APPROVAL_KEY_DELAY=0
+zcoder_approval_safe $'rm -rf safe\u202e/hs.txt zero\u200bwidth'
+if [[ "${(#):-0x202E}" == $'\u202e' ]] && () { setopt localoptions nomultibyte; (( ${#1} == 3 )) } "${(#):-0x202E}"; then
+  assert_eq 'rm -rf safe<U+202E>/hs.txt zero<U+200B>width' "$REPLY" "approval text names bidirectional and zero-width characters"
+fi
 
 REMOTE_MODE=local
 commands_init

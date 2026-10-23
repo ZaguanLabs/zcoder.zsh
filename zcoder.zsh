@@ -16,7 +16,7 @@ zmodload zsh/datetime zsh/files zsh/mapfile zsh/net/tcp zsh/system zsh/zselect |
 }
 
 typeset -gr ZCODER_NAME="zcoder.zsh"
-typeset -gr ZCODER_VERSION="0.22.2"
+typeset -gr ZCODER_VERSION="0.23.0"
 
 typeset -gr ZCODER_DIR="${0:A:h}"
 
@@ -60,6 +60,14 @@ zcoder_load_workspace() {
       ui_status_notice warning "$MCP_ERROR"
     else
       print -u2 -- "Warning: $MCP_ERROR"
+    fi
+  fi
+  mcp_project_trust_notice
+  if [[ -n "$REPLY" ]]; then
+    if (( ${UI_ACTIVE:-0} )); then
+      ui_append_message system "$REPLY"
+    else
+      print -u2 -r -- "Notice: $REPLY"
     fi
   fi
   return 0

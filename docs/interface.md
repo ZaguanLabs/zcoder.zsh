@@ -520,6 +520,7 @@ Window resizing and changing the prompt's height rebuild the layout as needed.
 | `/host HOST` | Change the Ollama endpoint |
 | `/instructions` | List active project instruction sources |
 | `/mcp`, `/mcp reload` | Inspect or reload MCP servers |
+| `/mcp trust`, `/mcp untrust` | Approve or revoke the project `.mcp.json` servers |
 | `/skills`, `/skills reload` | Inspect or rediscover Skills |
 | `/skill NAME` | Activate a Skill |
 | `/compact` | Create a context checkpoint |

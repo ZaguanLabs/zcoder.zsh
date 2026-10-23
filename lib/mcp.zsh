@@ -4,6 +4,9 @@ typeset -gr MCP_VERSION_LEGACY="2025-11-25"
 typeset -gr MCP_VERSION_MODERN="2026-07-28"
 typeset -g MCP_USER_CONFIG="${ZCODER_HOME}/mcp.json"
 typeset -g MCP_PROJECT_CONFIG=""
+# Project servers load only after the user approves the exact file content.
+typeset -g MCP_PROJECT_CONTENT="" MCP_PROJECT_TRUST="none"
+typeset -ga MCP_PROJECT_PENDING=()
 typeset -g MCP_RUNTIME_ROOT=""
 typeset -gi MCP_RUNTIME_OWNED=0
 typeset -gi MCP_REQUEST_TIMEOUT="${MCP_REQUEST_TIMEOUT:-120}"
@@ -282,6 +285,8 @@ _mcp_config_read() {
   [[ -e "$path" ]] || return 0
   [[ -f "$path" ]] || { MCP_ERROR="MCP config is not a regular file: $path"; return 1; }
   content="${mapfile[$path]}"
+  # The trust decision compares exactly the bytes that are parsed here.
+  [[ "$scope" == project ]] && MCP_PROJECT_CONTENT="$content"
   [[ -n "$content" ]] || return 0
   if ! _mcp_config_parse_servers "$content" "$scope"; then
     MCP_ERROR="Could not parse $path: ${ZJSON_ERROR:-invalid JSON}"
@@ -319,6 +324,75 @@ _mcp_register_raw() {
   fi
 }
 
+# A project .mcp.json arrives with a repository and the model can write it,
+# yet it names commands to run. Each approval records the configuration path
+# and its exact content under ZCODER_HOME, outside every workspace; any later
+# change, by anyone, needs a new approval before those servers start.
+_mcp_trust_dir() { REPLY="${ZCODER_HOME}/trusted-mcp"; }
+
+_mcp_trust_record() {
+  local file="" record=""
+  _mcp_trust_dir
+  for file in "$REPLY"/*.trust(N); do
+    record="${mapfile[$file]}"
+    [[ "${record%%$'\n'*}" == "$MCP_PROJECT_CONFIG" ]] || continue
+    REPLY="$file"
+    return 0
+  done
+  REPLY=""
+  return 1
+}
+
+# REPLY is none, trusted, untrusted (never approved), or changed.
+mcp_project_trust_state() {
+  local content="${1-$MCP_PROJECT_CONTENT}" record=""
+  if [[ ! -f "$MCP_PROJECT_CONFIG" ]]; then REPLY=none; return 0; fi
+  if _mcp_trust_record; then
+    record="${mapfile[$REPLY]}"
+    [[ "$record" == *$'\n'* && "${record#*$'\n'}" == "$content" ]] && REPLY=trusted || REPLY=changed
+  else
+    REPLY=untrusted
+  fi
+}
+
+mcp_project_trust() {
+  local content="" file="" tmp="" old_umask="$(umask)"
+  [[ -f "$MCP_PROJECT_CONFIG" ]] || { MCP_ERROR="no project MCP configuration at $MCP_PROJECT_CONFIG"; return 1; }
+  [[ "$MCP_PROJECT_CONFIG" != *$'\n'* ]] || { MCP_ERROR="cannot trust a configuration path that contains a newline"; return 1; }
+  content="${1-${mapfile[$MCP_PROJECT_CONFIG]}}"
+  if _mcp_trust_record; then
+    file="$REPLY"
+  else
+    _mcp_trust_dir
+    file="$REPLY/${EPOCHSECONDS}_${sysparams[pid]:-$$}_${RANDOM}.trust"
+  fi
+  tmp="${file}.tmp"
+  umask 077
+  {
+    zf_mkdir -p "${file:h}" 2>/dev/null || { MCP_ERROR="could not create ${file:h}"; return 1; }
+    mapfile[$tmp]="${MCP_PROJECT_CONFIG}"$'\n'"${content}" || { MCP_ERROR="could not write $tmp"; return 1; }
+    zf_mv -f "$tmp" "$file" 2>/dev/null || { zf_rm -f "$tmp" 2>/dev/null; MCP_ERROR="could not record trust in $file"; return 1; }
+  } always {
+    umask "$old_umask"
+  }
+}
+
+mcp_project_untrust() {
+  _mcp_trust_record || return 0
+  zf_rm -f "$REPLY" 2>/dev/null || { MCP_ERROR="could not remove $REPLY"; return 1; }
+}
+
+# One line for startup and status output; empty when nothing awaits approval.
+mcp_project_trust_notice() {
+  REPLY=""
+  (( ${#MCP_PROJECT_PENDING} )) || return 0
+  if [[ "$MCP_PROJECT_TRUST" == changed ]]; then
+    REPLY="Project MCP configuration changed since it was approved; its servers (${(j:, :)MCP_PROJECT_PENDING}) are not started. Review ${MCP_PROJECT_CONFIG}, then run /mcp trust or '${ZCODER_NAME:-zcoder.zsh} mcp trust' in the workspace."
+  else
+    REPLY="Project MCP servers (${(j:, :)MCP_PROJECT_PENDING}) are not started until you approve ${MCP_PROJECT_CONFIG}. Review it, then run /mcp trust or '${ZCODER_NAME:-zcoder.zsh} mcp trust' in the workspace."
+  fi
+}
+
 mcp_load() {
   local name=""
   mcp_shutdown_all
@@ -330,10 +404,19 @@ mcp_load() {
   MCP_TOOL_NAMES=(); MCP_TOOL_SERVER=(); MCP_TOOL_ORIGINAL=(); MCP_TOOL_SCHEMA=(); MCP_TOOL_EFFECT=()
   MCP_USER_CONFIG="${ZCODER_HOME}/mcp.json"
   MCP_PROJECT_CONFIG="${ZCODER_WORKSPACE:A}/.mcp.json"
+  MCP_PROJECT_CONTENT=""; MCP_PROJECT_TRUST=none; MCP_PROJECT_PENDING=()
   _mcp_config_read "$MCP_USER_CONFIG" user || return 1
   _mcp_config_read "$MCP_PROJECT_CONFIG" project || return 1
   for name in ${(ok)MCP_USER_RAW}; do _mcp_register_raw "$name" user "${MCP_USER_RAW[$name]}"; done
-  for name in ${(ok)MCP_PROJECT_RAW}; do _mcp_register_raw "$name" project "${MCP_PROJECT_RAW[$name]}"; done
+  if (( ${#MCP_PROJECT_RAW} )); then
+    mcp_project_trust_state
+    MCP_PROJECT_TRUST="$REPLY"
+  fi
+  if [[ "$MCP_PROJECT_TRUST" == trusted ]]; then
+    for name in ${(ok)MCP_PROJECT_RAW}; do _mcp_register_raw "$name" project "${MCP_PROJECT_RAW[$name]}"; done
+  else
+    MCP_PROJECT_PENDING=( ${(ok)MCP_PROJECT_RAW} )
+  fi
   MCP_NAMES=( ${(ok)MCP_RAW} )
   return 0
 }
@@ -969,7 +1052,12 @@ mcp_status_text() {
   local name="" output="" line="" scope="" server_status="" transport="" protocol="" detail=""
   local -i name_width=0 status_width=0 transport_width=0 scope_width=0 protocol_width=0
   local -i have_protocol=0 have_detail=0
-  if (( ${#MCP_NAMES} == 0 )); then REPLY="No MCP servers configured."; return 0; fi
+  if (( ${#MCP_NAMES} == 0 )); then
+    REPLY="No MCP servers configured."
+    mcp_project_trust_notice
+    [[ -z "$REPLY" ]] || REPLY="No MCP servers started."$'\n'"$REPLY"
+    return 0
+  fi
   for name in "${MCP_NAMES[@]}"; do
     server_status="${MCP_STATUS[$name]}"; transport="${MCP_TYPE[$name]}"; scope="${MCP_SCOPE[$name]}"; protocol="${MCP_PROTOCOL[$name]:-}"
     (( ${#name} > name_width )) && name_width=${#name}
@@ -993,6 +1081,8 @@ mcp_status_text() {
     [[ -n "$output" ]] && output+=$'\n'
     output+="$line"
   done
+  mcp_project_trust_notice
+  [[ -z "$REPLY" ]] || output+=$'\n'"$REPLY"
   REPLY="$output"
 }
 
@@ -1020,6 +1110,14 @@ _mcp_cli_env_json() {
   REPLY="${output}}"
 }
 
+_mcp_cli_retrust() {
+  if (( $1 )); then
+    mcp_project_trust || { print -u2 -- "Error: $MCP_ERROR"; return 1; }
+  else
+    print -r -- "Project MCP servers stay disabled until you review and run '${ZCODER_NAME:-zcoder.zsh} mcp trust'."
+  fi
+}
+
 mcp_cli_usage() {
   print -r -- "Usage: ${ZCODER_NAME:-zcoder.zsh} mcp list [--json]"
   print -r -- "       ${ZCODER_NAME:-zcoder.zsh} mcp get NAME [--json]"
@@ -1027,16 +1125,49 @@ mcp_cli_usage() {
   print -r -- "       ${ZCODER_NAME:-zcoder.zsh} mcp remove|delete [--scope user|project] NAME"
   print -r -- "       ${ZCODER_NAME:-zcoder.zsh} mcp enable|disable [--scope user|project] NAME"
   print -r -- "       ${ZCODER_NAME:-zcoder.zsh} mcp test NAME"
+  print -r -- "       ${ZCODER_NAME:-zcoder.zsh} mcp trust|untrust"
 }
 
 mcp_cli() {
   local action="${1:-list}" name="" scope="user" json=0 pair="" raw="" target_scope=""
-  local -i scope_explicit=0
+  local -i scope_explicit=0 project_was_trusted=0
   local -a env_pairs=() command_parts=()
   shift 2>/dev/null || true
   ZCODER_WORKSPACE="${ZCODER_WORKSPACE:-$PWD:A}"
   mcp_load || { print -u2 -- "Error: $MCP_ERROR"; return 1; }
+  # Edits made here are the user's own; they keep an approval that existed,
+  # but never approve servers someone else placed in the file.
+  [[ "$MCP_PROJECT_TRUST" == trusted || ! -e "$MCP_PROJECT_CONFIG" ]] && project_was_trusted=1
   case "$action" in
+    trust)
+      [[ -f "$MCP_PROJECT_CONFIG" ]] || { print -u2 -- "Error: no project MCP configuration at $MCP_PROJECT_CONFIG"; return 1; }
+      local trusted_content="$MCP_PROJECT_CONTENT"
+      # The file is untrusted text; render controls visibly before approval.
+      zcoder_approval_safe "Project MCP configuration: $MCP_PROJECT_CONFIG"$'\n'"$trusted_content"
+      print -r -- "$REPLY"
+      for name in ${(ok)MCP_PROJECT_RAW}; do
+        _mcp_register_raw "$name" project "${MCP_PROJECT_RAW[$name]}"
+        zcoder_approval_safe "  ${name}: ${MCP_COMMAND[$name]:-?} ${MCP_ARGS[$name]}"
+        print -r -- "$REPLY"
+      done
+      if [[ "${1:-}" != --yes ]]; then
+        local answer=""
+        if ! { print -rn -- "Allow these commands to run whenever zcoder opens this workspace? [y/N]: " > /dev/tty } 2>/dev/null; then
+          print -u2 -- "Error: no terminal to confirm on; after reviewing the file, run '${ZCODER_NAME:-zcoder.zsh} mcp trust --yes'"
+          return 1
+        fi
+        read -r answer < /dev/tty
+        [[ "${(L)answer}" == y || "${(L)answer}" == yes ]] || { print -r -- "Not trusted."; return 1; }
+      fi
+      mcp_project_trust "$trusted_content" || { print -u2 -- "Error: $MCP_ERROR"; return 1; }
+      print -r -- "Trusted project MCP configuration. Any change to the file requires approval again."
+      return 0
+      ;;
+    untrust)
+      mcp_project_untrust || { print -u2 -- "Error: $MCP_ERROR"; return 1; }
+      print -r -- "Project MCP servers in $MCP_PROJECT_CONFIG will no longer start."
+      return 0
+      ;;
     list)
       [[ "${1:-}" == --json ]] && json=1
       if (( json )); then
@@ -1070,6 +1201,7 @@ mcp_cli() {
       _mcp_raw_stdio "$command_name" "$args_json" "$env_json"; raw="$REPLY"
       if [[ "$scope" == user ]]; then MCP_USER_RAW[$name]="$raw"; else MCP_PROJECT_RAW[$name]="$raw"; fi
       _mcp_config_write "$scope" || { print -u2 -- "Error: $MCP_ERROR"; return 1; }
+      [[ "$scope" == user ]] || _mcp_cli_retrust "$project_was_trusted" || return 1
       print -r -- "Added MCP server '$name' ($scope)."
       ;;
     remove|delete|enable|disable)
@@ -1081,6 +1213,8 @@ mcp_cli() {
       done
       [[ "$scope" == user || "$scope" == project ]] || { print -u2 -- "Error: --scope expects user or project"; return 2; }
       target_scope="${MCP_SCOPE[$name]:-}"
+      # A server waiting for project trust can still be edited or removed.
+      [[ -n "$target_scope" || -z "${MCP_PROJECT_RAW[$name]:-}" ]] || target_scope=project
       [[ -n "$target_scope" ]] || { print -u2 -- "Error: unknown MCP server: $name"; return 1; }
       # With no explicit project entry, operate on the visible definition.
       (( scope_explicit )) || scope="$target_scope"
@@ -1096,6 +1230,7 @@ mcp_cli() {
         [[ "$scope" == user ]] && MCP_USER_RAW[$name]="$raw" || MCP_PROJECT_RAW[$name]="$raw"
       fi
       _mcp_config_write "$scope" || { print -u2 -- "Error: $MCP_ERROR"; return 1; }
+      [[ "$scope" == user ]] || _mcp_cli_retrust "$project_was_trusted" || return 1
       case "$action" in
         disable) print -r -- "Disabled MCP server '$name' ($scope)." ;;
         enable) print -r -- "Enabled MCP server '$name' ($scope)." ;;

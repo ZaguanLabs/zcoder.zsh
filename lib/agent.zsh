@@ -232,6 +232,7 @@ agent_reset() {
   agent_accounting_reset
   AGENT_LAST_RESPONSE=""
   TOOL_PATCH_RETRY_REQUIRED=0
+  (( $+functions[tool_reset_session_grant] )) && tool_reset_session_grant
   (( $+functions[skills_reset_activations] )) && skills_reset_activations
   agent_loop_reset
   agent_compaction_reset

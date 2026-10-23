@@ -8,6 +8,8 @@ typeset -g TOOL_DIFF=""
 typeset -gi TOOL_RESULT_OK=0
 typeset -gi TOOL_CANCELLED=0
 typeset -gi TOOL_PATCH_RETRY_REQUIRED=0
+# The configured policy saved while an "allow for session" grant is active.
+typeset -g TOOL_SESSION_GRANT_POLICY=""
 typeset -g ZCODER_SEARCH_SCRIPT="${${(%):-%x}:A:h:h}/scripts/search.zsh"
 typeset -g TOOL_PATCH_DESCRIPTION_JSON="" TOOL_PATCH_ARGUMENT_DESCRIPTION_JSON=""
 typeset -g TOOL_PATCH_CONTRACT=$'UNIFIED DIFF CONTRACT (the patch argument must follow this literally):\nGOOD (valid focused edit):\n--- a/lib/example.zsh\n+++ b/lib/example.zsh\n@@ -10,3 +10,3 @@\n marker before\n-enabled=false\n+enabled=true\n marker after\nThe old count is 3: two context lines plus one removed line. The new count is 3: two context lines plus one added line.\nBAD (invalid in this harness):\n*** Begin Patch\n*** Update File: lib/example.zsh\n@@\n-enabled=false\n+enabled=true\n*** End Patch\nThe bad form uses an unsupported wrapper and a bare @@ without numeric ranges.\nRules:\n1. Begin each file section with literal --- a/relative/path and +++ b/relative/path lines.\n2. Every hunk needs numeric old and new ranges: @@ -OLD_START,OLD_COUNT +NEW_START,NEW_COUNT @@. Counts describe hunk body lines, not total file length: context counts on both sides, - only on the old side, and + only on the new side.\n3. Every hunk body line starts with exactly one prefix character: space for unchanged context, - for removal, or + for addition. The prefix is the single first character; do not add words such as old or new after it unless those words occur in the file. Copy context and removed text exactly from the latest read; never use ellipses or placeholders.\n4. Supply only unified diff text. Do not add Markdown fences, prose, JSON text inside the patch value, *** Begin Patch, *** Update File, or *** End Patch markers.'
@@ -130,6 +132,18 @@ _tool_resolve_existing() {
   REPLY="$resolved"
 }
 
+# Writes here plant code that runs later without command approval: Git hooks,
+# repository configuration, and zcoder's own MCP and instruction settings.
+_tool_is_protected_path() {
+  local resolved="$1" home="" relative=""
+  if [[ -n "${ZCODER_HOME:-}" ]]; then
+    home="${ZCODER_HOME:A}"
+    [[ "$resolved" == "$home" || "$resolved" == "${home%/}/"* ]] && return 0
+  fi
+  relative="${resolved#${ZCODER_WORKSPACE:A}}"
+  [[ "/${(L)relative}/" == */.git/* ]]
+}
+
 _tool_resolve_write_target() {
   local requested="$1" candidate="" parent="" resolved=""
   [[ -n "$requested" ]] || { _tool_fail "path is required"; return 1; }
@@ -149,6 +163,10 @@ _tool_resolve_write_target() {
     _tool_is_inside_workspace "$resolved" || { _tool_fail "path resolves outside the workspace: $requested"; return 1; }
     [[ -f "$resolved" ]] || { _tool_fail "write target is not a regular file: $requested"; return 1; }
   fi
+  ! _tool_is_protected_path "$resolved" || {
+    _tool_fail "refusing to write protected path: $requested (Git metadata and zcoder configuration can run commands outside approval)"
+    return 1
+  }
   REPLY="$resolved"
 }
 
@@ -371,6 +389,10 @@ tool_replace_text() {
   _tool_resolve_existing "$requested" || return 1
   resolved_path="$REPLY"
   [[ -f "$resolved_path" ]] || { _tool_fail "not a regular file: $requested"; return 1; }
+  ! _tool_is_protected_path "$resolved_path" || {
+    _tool_fail "refusing to modify protected path: $requested (Git metadata and zcoder configuration can run commands outside approval)"
+    return 1
+  }
   content="${mapfile[$resolved_path]}"
   escaped_old="${(b)old_text}"
   [[ "$content" == *${~escaped_old}* ]] || { _tool_fail "old_text was not found exactly in $requested"; return 1; }
@@ -413,6 +435,33 @@ _tool_patch_paths_are_safe() {
     esac
   done
   (( paths >= 2 ))
+}
+
+# A symlink created by a patch could later expose files outside the workspace
+# to readers that follow links, such as AGENTS.md discovery.
+_tool_patch_has_symlink() {
+  setopt localoptions extendedglob
+  local line=""
+  for line in "${(@f)1}"; do
+    case "$line" in
+      ('new file mode 120000'*|'new mode 120000'*) return 0 ;;
+      (index\ [0-9a-f]##..[0-9a-f]##\ 120000*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# git apply must not read the workspace repository: its .git/config can define
+# filter drivers and other commands that a model can write and Git would run.
+# A private empty repository keeps user and system Git configuration in effect.
+_tool_patch_git_dir() {
+  local directory=""
+  zcoder_runtime_init || return 1
+  directory="${ZCODER_RUNTIME_DIR}/git-apply.git"
+  if [[ ! -f "$directory/HEAD" ]]; then
+    command git init --quiet --bare --template= -- "$directory" >/dev/null 2>&1 || return 1
+  fi
+  REPLY="$directory"
 }
 
 _tool_patch_strip_level() {
@@ -461,7 +510,7 @@ _tool_patch_run() {
 }
 
 tool_apply_patch() {
-  local patch_text="$1" patch_file="" out_file=""
+  local patch_text="$1" patch_file="" out_file="" git_dir=""
   local git_error="" patch_error="" output="" engine="" guidance="" success_message=""
   local -i exit_code=1 strip=0 patch_process_aborted=0
   local patch_process_error=''
@@ -476,6 +525,10 @@ tool_apply_patch() {
     return 1
   fi
   [[ "$patch_text" == *$'\n' ]] || patch_text+=$'\n'
+  if _tool_patch_has_symlink "$patch_text"; then
+    _tool_fail "patch rejected: creating or retargeting symbolic links is not allowed. Write a regular file instead."
+    return 1
+  fi
   (( $+commands[git] || $+commands[patch] )) || { _tool_fail "apply_patch requires git or patch"; return 1; }
   zcoder_temp_path patch .diff || { _tool_fail "could not create private temporary storage"; return 1; }
   patch_file="$REPLY"
@@ -483,13 +536,16 @@ tool_apply_patch() {
   out_file="$REPLY"
   zcoder_write_text_file "$patch_file" "$patch_text" || { _tool_fail "could not stage patch safely"; return 1; }
   {
-    if (( $+commands[git] )); then
-      _tool_patch_run "$out_file" check git -C "$ZCODER_WORKSPACE" apply --check --recount --unidiff-zero --whitespace=nowarn "$patch_file"
+    if (( $+commands[git] )) && ! _tool_patch_git_dir; then
+      git_error="could not prepare an isolated Git repository"
+    elif (( $+commands[git] )); then
+      git_dir="$REPLY"
+      _tool_patch_run "$out_file" check git -C "$ZCODER_WORKSPACE" --git-dir="$git_dir" --work-tree="${ZCODER_WORKSPACE:A}" apply --check --recount --unidiff-zero --whitespace=nowarn "$patch_file"
       exit_code=$?
       (( patch_process_aborted )) && { _tool_fail "$patch_process_error"; return "$exit_code"; }
       git_error="${mapfile[$out_file]}"
       if (( exit_code == 0 )); then
-        _tool_patch_run "$out_file" apply git -C "$ZCODER_WORKSPACE" apply --recount --unidiff-zero --whitespace=nowarn "$patch_file"
+        _tool_patch_run "$out_file" apply git -C "$ZCODER_WORKSPACE" --git-dir="$git_dir" --work-tree="${ZCODER_WORKSPACE:A}" apply --recount --unidiff-zero --whitespace=nowarn "$patch_file"
         exit_code=$?
         (( patch_process_aborted )) && { _tool_fail "$patch_process_error"; return "$exit_code"; }
         output="${mapfile[$out_file]}"
@@ -636,10 +692,13 @@ tool_search() {
 
 tool_approve_command() {
   local command_text="$1" answer="" display_command=""
-  local -i per_command=0
+  local -i per_command=0 relay_review=0
   [[ "$ZCODER_PROFILE" == sysadmin ]] && per_command=1
+  # A session grant answers the user's own requests. A task relayed by another
+  # process is reviewed per command; a configured --yes policy still applies.
+  [[ "${AGENT_TURN_ORIGIN:-user}" == relay && -n "$TOOL_SESSION_GRANT_POLICY" ]] && relay_review=1
   case "$ZCODER_COMMAND_POLICY" in
-    allow) (( per_command )) || return 0 ;;
+    allow) (( per_command || relay_review )) || return 0 ;;
     deny) return 1 ;;
   esac
   if (( ${ACP_WORKER_ACTIVE:-0} && $+functions[acp_worker_request_permission] )); then
@@ -652,7 +711,7 @@ tool_approve_command() {
     ui_confirm_command "$command_text"
     answer="$REPLY"
   elif [[ -r /dev/tty && -w /dev/tty ]]; then
-    zcoder_terminal_safe "$command_text"; display_command="$REPLY"
+    zcoder_approval_safe "$command_text"; display_command="$REPLY"
     print -r -- $'\n'"Command approval requested:" > /dev/tty
     print -r -- "  $display_command" > /dev/tty
     if (( per_command )); then
@@ -668,11 +727,21 @@ tool_approve_command() {
     y|yes|once) return 0 ;;
     a|always|session)
       (( per_command )) && return 1
+      (( relay_review )) && return 0
+      # The grant belongs to the current conversation; agent_reset restores
+      # the configured policy for /new and session switches.
+      [[ -n "$TOOL_SESSION_GRANT_POLICY" ]] || TOOL_SESSION_GRANT_POLICY="$ZCODER_COMMAND_POLICY"
       ZCODER_COMMAND_POLICY="allow"
       return 0
       ;;
     *) return 1 ;;
   esac
+}
+
+tool_reset_session_grant() {
+  [[ -n "$TOOL_SESSION_GRANT_POLICY" ]] || return 0
+  ZCODER_COMMAND_POLICY="$TOOL_SESSION_GRANT_POLICY"
+  TOOL_SESSION_GRANT_POLICY=""
 }
 
 tool_external_action_summary() {
@@ -709,7 +778,7 @@ tool_approve_external_action() {
     ui_confirm_external_action "$action_text"
     answer="$REPLY"
   elif [[ -r /dev/tty && -w /dev/tty ]]; then
-    zcoder_terminal_safe "$action_text"; display_action="$REPLY"
+    zcoder_approval_safe "$action_text"; display_action="$REPLY"
     print -r -- $'\n'"External action confirmation required:" > /dev/tty
     print -r -- "  $display_action" > /dev/tty
     print -rn -- "Allow this exact external action once? [y/N]: " > /dev/tty

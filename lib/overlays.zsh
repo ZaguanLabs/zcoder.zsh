@@ -3,6 +3,9 @@
 typeset -gi UI_MODAL_ACTIVE=0
 # -1 means untried; 0 retains the explicit fallback used by callers/tests.
 typeset -gi UI_PICKER_HELPERS=-1
+# Approval keys that arrive this soon after a dialog opens were typed for
+# something else (type-ahead into the prompt) and must not answer it.
+typeset -gF UI_APPROVAL_KEY_DELAY="${UI_APPROVAL_KEY_DELAY:-0.5}"
 # Passive, optional libraries: stock curses can use the pure state/geometry
 # helpers too. Missing vendor sources leave the original picker available.
 ui_picker_helpers_load() {
@@ -351,21 +354,34 @@ ui_mcp_servers() {
   ui_set_status "$previous_status"; ui_draw_header
 }
 
+# modal_lines and approval_seen_end belong to _ui_confirm_action so that the
+# input handler can tell whether the whole request has been on screen.
 _ui_approval_draw() {
-  local -a modal_lines=() wrapped=()
   local line=""
-  zcoder_terminal_safe "$action_text"
+  modal_lines=()
+  zcoder_approval_safe "$action_text"
   for line in "${(@f)REPLY}"; do
     zcoder_wrap "$line" $(( modal_w-4 ))
     modal_lines+=("${ZCODER_WRAPPED[@]}")
   done
   _ui_modal_view_draw
+  (( modal_selected + modal_rows <= ${#modal_lines} )) || approval_seen_end=1
 }
 
 _ui_approval_input() {
   case "${(L)modal_ch}" in
-    y) modal_result=y; modal_accepted=1; modal_done=1 ;;
-    a) (( allow_session )) && { modal_result=a; modal_accepted=1; modal_done=1; } ;;
+    y|a)
+      [[ "${(L)modal_ch}" == y ]] || (( allow_session )) || return 0
+      (( EPOCHREALTIME >= ${approval_ready_at:-0} )) || return 0
+      # Text below the fold could hide part of a command. Show the end first.
+      if (( ! ${approval_seen_end:-1} )); then
+        modal_key=END
+        _ui_modal_navigate ${#modal_lines} || true
+        modal_hint="Review the end of the request, then answer · ${modal_hint#Review the end of the request, then answer · }"
+        return 0
+      fi
+      modal_result=${(L)modal_ch}; modal_accepted=1; modal_done=1
+      ;;
     n|q|$'\e'|$'\x03') modal_result=n; modal_accepted=1; modal_done=1 ;;
     *)
       # The draw handler rebuilds wrapped text after each resize.
@@ -377,14 +393,18 @@ _ui_approval_input() {
 
 _ui_confirm_action() {
   local kind="$1" action_text="$2" answer=n title="Shell command approval"
-  local -i allow_session=0
+  local -i allow_session=0 approval_seen_end=0
+  local -a modal_lines=()
+  local -F approval_ready_at=$(( EPOCHREALTIME + UI_APPROVAL_KEY_DELAY ))
   [[ "$kind" == command && "$ZCODER_PROFILE" != sysadmin ]] && allow_session=1
   [[ "$kind" == external ]] && title="External action confirmation"
+  [[ "$kind" == trust ]] && title="Trust project MCP servers"
   local modal_hint="y Allow once · n/Esc Deny · ↑/↓ Scroll"
   (( allow_session )) && modal_hint="y Allow once · a Allow session · n/Esc Deny · ↑/↓ Scroll"
+  [[ "$kind" == trust ]] && modal_hint="y Trust this file · n/Esc Cancel · ↑/↓ Scroll"
   if (( ! UI_ACTIVE )); then
     if [[ -r /dev/tty && -w /dev/tty ]]; then
-      zcoder_terminal_safe "$action_text"
+      zcoder_approval_safe "$action_text"
       print -r -- $'\n'"${title}:"$'\n'"$REPLY" > /dev/tty
       print -rn -- "${modal_hint} [n]: " > /dev/tty
       read -r answer < /dev/tty
@@ -402,3 +422,4 @@ _ui_confirm_action() {
 
 ui_confirm_command() { _ui_confirm_action command "$1"; }
 ui_confirm_external_action() { _ui_confirm_action external "$1"; }
+ui_confirm_project_trust() { _ui_confirm_action trust "$1"; }

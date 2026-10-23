@@ -10,6 +10,7 @@ typeset -gi INSTRUCTIONS_BYTES=0
 typeset -gi INSTRUCTIONS_TRUNCATED=0
 typeset -ga INSTRUCTION_SOURCES=()
 typeset -ga INSTRUCTION_CONTENTS=()
+typeset -ga INSTRUCTION_SKIPPED=()
 
 _instructions_byte_length() {
   setopt localoptions nomultibyte
@@ -37,24 +38,30 @@ _instructions_prefix_bytes() {
 }
 
 _instructions_nonempty_file() {
-  local candidate="$1" content=""
+  local candidate="$1" confine="${2:-}" content=""
   [[ -f "$candidate" ]] || return 1
+  # A project file that links elsewhere would place an arbitrary readable file,
+  # such as a key or token, into the prompt.
+  if [[ -n "$confine" && "${candidate:A}" != "${confine%/}/"* ]]; then
+    INSTRUCTION_SKIPPED+=("$candidate")
+    return 1
+  fi
   content="${mapfile[$candidate]}"
   [[ -n "${content//[[:space:]]/}" ]] || return 1
   REPLY="$candidate"
 }
 
 _instructions_select_file() {
-  local directory="$1" fallback=""
+  local directory="$1" fallback="" confine="$INSTRUCTIONS_PROJECT_ROOT"
   local -a fallbacks=()
-  _instructions_nonempty_file "$directory/AGENTS.override.md" && return 0
-  _instructions_nonempty_file "$directory/AGENTS.md" && return 0
+  _instructions_nonempty_file "$directory/AGENTS.override.md" "$confine" && return 0
+  _instructions_nonempty_file "$directory/AGENTS.md" "$confine" && return 0
 
   [[ -n "$ZCODER_PROJECT_DOC_FALLBACKS" ]] || return 1
   fallbacks=("${(@s.:.)ZCODER_PROJECT_DOC_FALLBACKS}")
   for fallback in "${fallbacks[@]}"; do
     [[ -n "$fallback" && "$fallback" != */* && "$fallback" != . && "$fallback" != .. ]] || continue
-    _instructions_nonempty_file "$directory/$fallback" && return 0
+    _instructions_nonempty_file "$directory/$fallback" "$confine" && return 0
   done
   return 1
 }
@@ -103,6 +110,7 @@ instructions_load() {
   local -a directories=()
   INSTRUCTION_SOURCES=()
   INSTRUCTION_CONTENTS=()
+  INSTRUCTION_SKIPPED=()
   INSTRUCTIONS_TEXT=""
   INSTRUCTIONS_BYTES=0
   INSTRUCTIONS_TRUNCATED=0
@@ -173,6 +181,9 @@ instructions_summary() {
   local -i i
   if (( ${#INSTRUCTION_SOURCES} == 0 )); then
     REPLY="No AGENTS.md instructions loaded."
+    for source in "${INSTRUCTION_SKIPPED[@]}"; do
+      REPLY+=$'\n'"  Ignored ${source}: resolves outside the project."
+    done
     return 0
   fi
   output="Loaded ${#INSTRUCTION_SOURCES} instruction file(s), ${INSTRUCTIONS_BYTES}/${ZCODER_PROJECT_DOC_MAX_BYTES} bytes:"
@@ -186,5 +197,8 @@ instructions_summary() {
     output+=$'\n'"  ${i}. ${display}"
   done
   (( INSTRUCTIONS_TRUNCATED )) && output+=$'\n'"  Warning: instruction chain was truncated."
+  for source in "${INSTRUCTION_SKIPPED[@]}"; do
+    output+=$'\n'"  Ignored ${source}: resolves outside the project."
+  done
   REPLY="$output"
 }

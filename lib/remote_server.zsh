@@ -138,7 +138,7 @@ _remote_server_reap_worker() {
 }
 
 _remote_server_turn_worker() {
-  local prompt="$1" session_id="$2" connection_fd="${3:-}" structured_events="${4:-0}" queued_continuation="${5:-0}" saved_policy="" exit_code=0
+  local prompt="$1" session_id="$2" connection_fd="${3:-}" structured_events="${4:-0}" queued_continuation="${5:-0}" exit_code=0
   local AGENT_OPEN_DOCUMENTS="${6:-}"
   trap 'mcp_shutdown_all >/dev/null 2>&1 || true' EXIT
   trap 'exit 130' INT TERM HUP
@@ -165,8 +165,14 @@ _remote_server_turn_worker() {
   if ! mcp_load; then
     agent_emit system "Warning: could not reload MCP configuration: $MCP_ERROR"
   fi
-  saved_policy="${mapfile[$REMOTE_RUNTIME_DIR/command_policy]:-$ZCODER_COMMAND_POLICY}"
-  if [[ "$ZCODER_PROFILE" == coding && "$saved_policy" == allow ]]; then
+  # Say once per distinct state why project servers are not starting.
+  mcp_project_trust_notice
+  if [[ "$REPLY" != "${mapfile[$REMOTE_RUNTIME_DIR/mcp_trust_notice]:-}" ]]; then
+    [[ -z "$REPLY" ]] || agent_emit system "$REPLY"
+    mapfile[$REMOTE_RUNTIME_DIR/mcp_trust_notice]="$REPLY" || true
+  fi
+  # An "allow for session" answer covers only the remote session it was given in.
+  if [[ "$ZCODER_PROFILE" == coding && "${mapfile[$REMOTE_RUNTIME_DIR/command_allow_session]:-}" == "$session_id" ]]; then
     ZCODER_COMMAND_POLICY="allow"
   fi
   if (( queued_continuation )); then
@@ -183,7 +189,6 @@ _remote_server_turn_worker() {
     agent_user_turn "$prompt" || exit_code=$?
   fi
   state_save_session || true
-  mapfile[$REMOTE_RUNTIME_DIR/command_policy]="$ZCODER_COMMAND_POLICY" || true
   _remote_server_publish_json "{\"event\":\"complete\",\"exit_code\":${exit_code}}"
   mapfile[$REMOTE_RUNTIME_DIR/worker.done]="$exit_code"
   return "$exit_code"
@@ -287,7 +292,11 @@ _remote_server_cancel_turn() {
 _remote_server_hello_json() {
   local name_json="" workspace_json="" model_json="" profile_json="" policy_json=""
   local model_status_json="" model_error_json="" harnesses_json="" harnesses=""
-  local effective_policy="${mapfile[$REMOTE_RUNTIME_DIR/command_policy]:-$ZCODER_COMMAND_POLICY}"
+  local effective_policy="$ZCODER_COMMAND_POLICY"
+  if [[ "$ZCODER_PROFILE" == coding && -n "$REMOTE_SESSION_ID" &&
+        "${mapfile[$REMOTE_RUNTIME_DIR/command_allow_session]:-}" == "$REMOTE_SESSION_ID" ]]; then
+    effective_policy=allow
+  fi
   if (( ! $+functions[delegate_available_csv] && $+functions[zcoder_require] )); then
     zcoder_require harnesses
   fi
@@ -620,9 +629,6 @@ _remote_server_dispatch_request() {
         _remote_http_error "$fd" 400 "decision must be y, a, or n"
         return
       }
-      if [[ "$decision" == a && "$ZCODER_PROFILE" == coding ]]; then
-        mapfile[$REMOTE_RUNTIME_DIR/command_policy]="allow"
-      fi
       mapfile[$REMOTE_RUNTIME_DIR/approvals/${id}.response.tmp]="$decision"
       zf_mv -f "$REMOTE_RUNTIME_DIR/approvals/${id}.response.tmp" "$REMOTE_RUNTIME_DIR/approvals/${id}.response" 2>/dev/null || {
         _remote_http_error "$fd" 500 "could not publish approval response"
@@ -745,10 +751,13 @@ remote_server_main() {
   }
   _remote_server_clear_turn_runtime
   zf_rm -f "$REMOTE_RUNTIME_DIR/active.pid" 2>/dev/null
-  mapfile[$REMOTE_RUNTIME_DIR/command_policy]="$ZCODER_COMMAND_POLICY" || {
+  # Session approval grants never outlive the server process.
+  zf_rm -f "$REMOTE_RUNTIME_DIR/command_allow_session" "$REMOTE_RUNTIME_DIR/command_policy" \
+    "$REMOTE_RUNTIME_DIR/mcp_trust_notice" 2>/dev/null
+  if [[ -e "$REMOTE_RUNTIME_DIR/command_allow_session" ]]; then
     print -u2 -- "Error: could not initialize remote command policy"
     return 1
-  }
+  fi
   # TUI and API sessions share storage; workspace/profile filtering remains
   # authoritative for listings, selection, transcript reads and worker loads.
   if ! state_init storage || ! _remote_server_share_legacy_sessions; then

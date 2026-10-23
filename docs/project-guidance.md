@@ -104,4 +104,10 @@ restrictions, or command approval. The experimental `allowed-tools` frontmatter
 field is not treated as permission. Running a bundled script still requires an
 ordinary approved `run_command`.
 
+Project Skills and project `AGENTS.md` files must resolve inside the project.
+A file reached through a symbolic link that leaves the project is ignored and
+reported, so a repository cannot place an arbitrary readable file, such as a
+key, into the prompt. User-level Skills and `$ZCODER_HOME` guidance may link
+anywhere.
+
 [Documentation index](README.md) · [Safety and permissions](safety.md) · [Project README](../README.md)

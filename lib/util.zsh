@@ -123,6 +123,24 @@ zcoder_terminal_safe() {
   REPLY="${(F)${(@V)lines}}"
 }
 
+# Approval text must look exactly like what will run. Bidirectional overrides
+# and zero-width characters can reorder or hide parts of a command, so name
+# each one visibly in addition to the control-character handling above.
+zcoder_approval_safe() {
+  emulate -L zsh
+  local text="" mark="" code=""
+  zcoder_terminal_safe "$1"
+  text="$REPLY"
+  # Outside a UTF-8 locale these characters are bytes that (V) already shows.
+  mark="${(#):-0x202E}"
+  () { setopt localoptions nomultibyte; (( ${#1} == 3 )) } "$mark" || return 0
+  for code in 200B 200C 200D 200E 200F 202A 202B 202C 202D 202E 2060 2066 2067 2068 2069 FEFF; do
+    mark="${(#):-0x$code}"
+    [[ "$text" == *"$mark"* ]] && text="${text//$mark/<U+$code>}"
+  done
+  REPLY="$text"
+}
+
 # Keep status semantics independent of curses and remote transport so every
 # presentation exposes the same stable display text.
 zcoder_status_kind() {

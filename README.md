@@ -27,6 +27,7 @@ External tools are used where they are the actual capability: `rg` for search,
 - **Run a command with `!`.** See its output in chat, then ask about it when you are ready. The agent waits for your next request.
 - **Bounded and reviewable.** File tools stay inside the workspace; shell commands ask first.
 - **Project-aware.** Hierarchical `AGENTS.md`, Agent Skills, and stdio MCP tools are built in.
+- **Context-frugal with Bit Lantern.** Find code through a local structural index instead of spending a small model's context window on grep output and whole-file reads.
 - **Warm on arrival.** The interactive TUI loads the model and stable project context while you type.
 - **Coordinates local work.** Running instances on the same machine can discover each other and hand off tasks through a private Unix socket relay.
 - **Available across your network.** Run the agent beside a remote workspace and control it from your local TUI.
@@ -68,6 +69,72 @@ Prefer a non-interactive run? Use `--prompt`:
 ./zcoder.zsh --model qwen3-coder --workspace . \
   --prompt "Inspect this project and explain how it is organized"
 ```
+
+## Go further on small context windows with Bit Lantern
+
+Local models usually run with far smaller context windows than hosted ones.
+Every search result and whole-file read the agent uses to *find* code is context
+it can no longer spend on *changing* code. When the window fills, zcoder has to
+compact the conversation, and smaller models lose the thread sooner.
+
+[Bit Lantern](https://bit-lantern.dev/) moves discovery out of the context
+window. It is a local, read-only MCP server that keeps a persistent structural
+index of your project and answers with the right file and the exact source
+range in one tool call. Indexing and queries stay on your machine, just like
+your Ollama models.
+
+zcoder speaks MCP natively, so adding it takes one command:
+
+```sh
+./zcoder.zsh mcp add bitlantern -- "$HOME/.local/bin/bitlantern" mcp
+```
+
+What that buys a local model:
+
+- **Less reading to find code.** `symbol_outline` lists what a file contains
+  without loading it, `symbol_search` lands on a definition's exact lines, and
+  `symbol_references` replaces broad grep sweeps for callers and usages.
+- **Longer runs between compactions.** A leaner history leaves room for the
+  actual task, so multi-step work gets further before zcoder has to summarize,
+  and less detail is lost when it does.
+- **Quicker turns on modest hardware.** Fewer prompt tokens means less prompt
+  evaluation for Ollama on every request.
+- **Routing small models can follow.** Project-designated MCP routing in
+  `AGENTS.md` takes precedence over zcoder's built-in search workflow, and the
+  system prompt maps short tool names to their namespaced MCP functions.
+
+Bit Lantern publishes reproducible benchmarks against shell-only navigation.
+With Bit Lantern, Claude Code used 66.8% less total input and 55.8% less output,
+and Antigravity used 49.8% less total input. Those runs used hosted models with
+large windows; on a local model with a fraction of that space, savings of that
+size can decide whether a task finishes cleanly or spends its time compacting.
+See the [benchmarks](https://bit-lantern.dev/benchmarks) for methods, raw runs,
+and the cases where shell-only won.
+
+The Free tier includes `symbol_search`, `symbol_outline`, and
+`symbol_references` with no account. See [MCP servers](docs/mcp.md) for
+headless `PATH` setup and per-project configuration.
+
+## Built for networks you control
+
+zcoder is made for machines you already trust: your workstation, your home
+lab, the build server on your LAN, and your own Ollama host. Designing for that
+setting keeps it small, fast, and easy to deploy:
+
+- **Your models, your hardware.** Prompts, source code, and tool output go to
+  the Ollama host you choose. Nothing leaves your network unless you add a
+  service that needs it, such as a web-search MCP server.
+- **Remote workspaces with one token file.** The remote API uses lightweight,
+  token-authenticated HTTP, so there are no certificates to issue or renew.
+- **Unattended when you want it.** Start a coding server with `--yes` and it
+  works through long tasks without waiting for you.
+
+The guardrails that matter on any network are always on. File tools stay
+inside the workspace, and shell commands ask first unless you chose otherwise.
+A project's `.mcp.json` starts nothing until you approve it, and the sysadmin
+profile approves every command individually. To reach a workspace from outside
+your network, use an SSH tunnel or a VPN. See
+[Safety and permissions](docs/safety.md#deployment-model).
 
 ## Remote workspaces
 

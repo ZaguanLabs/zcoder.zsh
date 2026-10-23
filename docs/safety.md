@@ -4,6 +4,22 @@ zcoder separates workspace file operations from shell execution. This keeps
 ordinary code navigation and edits predictable while ensuring arbitrary
 commands remain visible to the user.
 
+## Deployment model
+
+zcoder is built for machines and networks you already control: a workstation,
+a home lab, or a build server on a private LAN, talking to your own Ollama
+host. That focus keeps it small and quick to deploy. Remote workspaces need a
+token file rather than a certificate authority, and a server you trust can run
+unattended with `--yes`.
+
+The guardrails that protect you on any network stay on in every deployment.
+File tools stay inside the workspace. Shell commands ask first unless you chose
+otherwise. Project MCP servers start only after you approve them, and the
+sysadmin profile approves each command individually. When a workspace must be
+reached from a network you do not control, carry the connection through an SSH
+tunnel or VPN instead of exposing its port. See
+[Network security](remote.md#network-security).
+
 ## Workspace boundary
 
 The selected workspace is the boundary for built-in file tools. zcoder
@@ -22,6 +38,20 @@ atomically with group and other access disabled, then removed during normal
 shutdown. Workspace writes reject dangling symlinks and open the validated
 final path without following a last-moment symlink replacement.
 
+Some workspace paths can run code later without passing through command
+approval, so the model cannot write them at all: Git metadata (any `.git`
+path component, in any letter case) and zcoder's own configuration directory,
+`$ZCODER_HOME`, when it lies inside the workspace. `write_file`,
+`replace_text`, and the `patch` fallback refuse them, and `git apply` refuses
+`.git` paths itself.
+
+`apply_patch` runs `git apply` against a private, empty repository in the
+runtime directory, with the workspace as its work tree. Filter drivers,
+`fsmonitor`, and other commands defined in the workspace's `.git/config`
+therefore never run; your user and system Git configuration still applies.
+Patches that create a symbolic link, or change an existing link's target, are
+rejected so that a link cannot later expose files outside the workspace.
+
 `read_skill_resource` has a separate read-only boundary. It accepts only
 relative paths inside a discovered and activated Skill directory, rejects
 escaping symlinks, and cannot write.
@@ -32,12 +62,26 @@ escaping symlinks, and cannot write.
 profile:
 
 - `y`: allow this exact command once
-- `a`: allow commands for the remainder of the local or remote server process
+- `a`: allow commands for the rest of this conversation
 - `n` or Escape: deny
+
+An `a` grant belongs to the conversation it was given in. `/new`, switching to
+another session, or a different remote session asks again, and restarting the
+server clears every grant. Tasks relayed by another local agent still ask for
+each command under an `a` grant (see [Local agent relay](#local-agent-relay)).
 
 Commands run with `zsh -c` from the workspace or a workspace-contained `cwd`.
 Passing `--yes` selects the allow policy for that coding process. Passing
 `--deny-commands` rejects shell commands without prompting.
+
+The approval dialog is designed so that what you approve is what you saw:
+
+- Keys pressed in the first half second after it opens are ignored, so typing
+  meant for the prompt cannot answer it.
+- When a request is longer than the dialog, the first `y` or `a` scrolls to
+  its end; approve after you have seen the whole request.
+- Bidirectional-override and zero-width characters, which can reorder or hide
+  text, appear as named markers such as `<U+202E>`.
 
 Approval is not a substitute for reading the command. Pay particular attention
 to variables, interpreters, downloaded scripts, pipes, and commands that invoke
@@ -106,9 +150,18 @@ scoped to the exact sender instance so the agents can continue a direct
 exchange; schema generation and dispatch both block third-agent forwarding.
 Each model-requested delivery also requires confirmation for its exact recipient
 and message; there is no session-wide inter-agent delivery allowance.
-Another process already running as the same user can forge same-user metadata,
-so sender names, PIDs, workspaces, and instance IDs are context rather than
-cryptographic identity.
+The listener accepts work only from a sender whose instance ID, PID, and
+discovery manifest match a live zcoder process, which keeps the displayed
+sender truthful and rejects casual forgeries. Processes running as the same
+user are not isolated from each other, so this is not authentication: sender
+names, PIDs, workspaces, and instance IDs remain context rather than
+cryptographic identity. The receiving model is told so, and is not told that
+the local user requested the task.
+
+An `a` (allow for this conversation) grant covers your own requests only.
+While a relayed task runs, each shell command asks again; answering `a` there
+approves just that command. A policy you configured at startup with `--yes`
+still applies to relayed tasks.
 
 ## Sysadmin profile
 
@@ -131,7 +184,8 @@ redaction, and extra care around storage, networking, SSH, boot,
 authentication, and critical services.
 
 A pre-execution guard also rejects unmistakably catastrophic literal commands,
-including broad root, home, or workspace deletion; filesystem formatting; raw
+including broad root, system program directory, home (any user's, by path or
+`~user`), or workspace deletion; filesystem formatting; raw
 block-device writes; device shredding; and storage-pool or logical-volume
 destruction. It inspects commands nested in common `sh -c` forms. This is a
 conservative guard, not a complete shell security parser.
@@ -144,16 +198,19 @@ them as code:
 - `AGENTS.md` may make policy stricter but cannot relax workspace or approval boundaries.
 - Skill instructions cannot grant permission through `allowed-tools` metadata.
 - Executing a Skill script still requires an approved `run_command`.
+- Project `AGENTS.md` files and project Skills that resolve outside the project, for example through a symbolic link, are ignored and listed by `/instructions` or `/skills`.
 - Enabling an MCP server exposes its tools without a second per-call approval prompt.
 - MCP configuration may contain commands, arguments, environment values, and project overrides.
+- A project `.mcp.json` starts nothing until you approve its exact content with `/mcp trust` or `zcoder.zsh mcp trust`. Any later change, including one made by the model, requires approval again.
 
 See [Project guidance and Agent Skills](project-guidance.md) and
 [MCP servers](mcp.md) for their complete trust models.
 
 ## Remote transport
 
-Remote mode preserves server-side workspace and command policy, but its native
-HTTP transport is not encrypted. Use it only on a trusted network or through a
-secure tunnel. See the [remote-agent guide](remote.md).
+Remote mode preserves server-side workspace and command policy over
+lightweight, token-authenticated HTTP. It is designed for trusted networks.
+Reach it through an SSH tunnel or VPN from anywhere else. See the
+[remote-agent guide](remote.md#network-security).
 
 [Documentation index](README.md) · [Project README](../README.md)

@@ -36,6 +36,8 @@ commands_init() {
   _commands_add "Clear goal" '/goal clear' run goals 'objective'
   _commands_add "Inspect MCP servers" /mcp run local 'connections tools restart'
   _commands_add "Reload MCP configuration" '/mcp reload' run local 'servers tools'
+  _commands_add "Approve project MCP servers" '/mcp trust' run local 'servers trust approve project'
+  _commands_add "Revoke project MCP approval" '/mcp untrust' run local 'servers trust revoke project'
   _commands_add "List skills" /skills run local 'instructions'
   _commands_add "Activate a skill" '/skill ' draft local 'instructions'
   _commands_add "Reload skills" '/skills reload' run local 'instructions'
@@ -367,6 +369,7 @@ ui_show_help() {
     skill_activate bullet '/skill NAME: Activate a skill. You can also prefix a request with $skill-name.'
     mcp bullet '/mcp: Show configured servers and live status.'
     mcp_reload bullet '/mcp reload: Reload MCP configuration.'
+    mcp_trust bullet '/mcp trust | /mcp untrust: Approve or revoke the servers in the project .mcp.json.'
 
     models subheading 'Models and environment'
     model bullet '/model or Ctrl+O: Open the Ollama model picker.'

@@ -129,8 +129,9 @@ sends the exact command to the client. The local approval dialog answers with a
 one-use identifier. A missing, expired, or mismatched response cannot resume
 the command.
 
-Choosing “allow session” in the coding profile is remembered for the remainder
-of the running server process. The sysadmin profile continues to require
+Choosing “allow session” in the coding profile is remembered for that remote
+session only. A new or different session asks again, and restarting the server
+clears every grant. The sysadmin profile continues to require
 approval for every exact command. If the client does not answer within five
 minutes, the command is denied.
 
@@ -250,12 +251,25 @@ not unavailable.
 
 ## Network security
 
-The native Zsh listener accepts connections on all interfaces. Remote mode uses
-authenticated plain HTTP: the bearer token prevents unauthenticated use, but it
-does not encrypt the token, prompts, source text, or tool results.
+Remote mode is built for trusted networks, which keeps setup to a single
+token file. Plain HTTP with a bearer token means there are no certificates to
+issue, renew, or distribute, and any machine on your LAN can drive a workspace
+with nothing more than the token. The token stops unauthenticated use; it does
+not encrypt the token, prompts, source text, or tool results. Inside a network
+you control, that is the intended trade.
 
-Use it only on a trusted LAN protected by host firewall rules, or carry the
-connection through an SSH or VPN tunnel. Do not expose the port directly to the
-internet.
+The native Zsh listener (`ztcp -l`) always binds every IPv4 interface. Zsh's
+TCP module offers no way to choose an address, so restrict reachability around
+the server instead:
+
+- Allow the port only from trusted hosts in the host firewall.
+- To reach a server from elsewhere, forward the port over SSH
+  (`ssh -L 7337:localhost:7337 server`) or a VPN rather than opening it.
+- Never expose the port directly to the internet.
+
+A token grants everything that server's profile allows, including approving
+its own commands. A separate token per server limits what one leaked token can
+reach. On servers started with `--yes`, keep the port especially well
+fenced.
 
 [Documentation index](README.md) · [Safety and permissions](safety.md) · [Project README](../README.md)

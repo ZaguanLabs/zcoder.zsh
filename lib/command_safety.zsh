@@ -3,14 +3,25 @@
 typeset -g TOOL_SAFETY_REASON=""
 
 _tool_sysadmin_broad_target() {
-  local target="$1" root="${ZCODER_WORKSPACE:A}"
+  setopt localoptions extendedglob
+  local target="$1" root="${ZCODER_WORKSPACE:A}" home="${HOME:+${HOME:A}}"
   target="${(Q)target}"
   while [[ "$target" != / && "$target" == */ ]]; do target="${target%/}"; done
   if [[ "$target" == "$root" || "$target" == "${root}/*" || "$target" == "${root}/**" ]]; then
     return 0
   fi
+  if [[ -n "$home" && ( "$target" == "$home" || "$target" == "${home}/*" ) ]]; then
+    return 0
+  fi
   case "$target" in
     /|/\*|/\*\*|/\.\*|/etc|/etc/\*|/usr|/usr/\*|/var|/var/\*|/boot|/boot/\*|/home|/home/\*|/root|/root/\*|/dev|/dev/\*|/opt|/opt/\*|/srv|/srv/\*|'$HOME'|'$HOME/*'|'${HOME}'|'${HOME}/*'|\~|\~/\*)
+      return 0
+      ;;
+    /bin|/bin/\*|/sbin|/sbin/\*|/lib|/lib/\*|/lib64|/lib64/\*|/sys|/sys/\*|/proc|/proc/\*|/mnt|/mnt/\*|/media|/media/\*|/Users|/Users/\*|/usr/home|/usr/home/\*)
+      return 0
+      ;;
+    # Any user's home directory, as an absolute path or ~user.
+    /home/[^/]##|/home/[^/]##/\*|/Users/[^/]##|/Users/[^/]##/\*|/usr/home/[^/]##|/usr/home/[^/]##/\*|\~[^/]##|\~[^/]##/\*)
       return 0
       ;;
   esac

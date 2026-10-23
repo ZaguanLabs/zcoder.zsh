@@ -36,7 +36,8 @@ search workflow.
 ## Configuration
 
 User servers live in `${ZCODER_HOME}/mcp.json`. Project servers live in
-`<workspace>/.mcp.json` and override same-named user definitions.
+`<workspace>/.mcp.json` and, once approved, override same-named user
+definitions.
 
 Both use the common `mcpServers` shape:
 
@@ -65,6 +66,29 @@ section in the model's system prompt, including when no MCP tools connected.
 Other connected servers remain usable. Repeated identical failures are reported
 once during the turn; discovery retries can recover a server on a later request.
 
+## Project trust
+
+A project `.mcp.json` names commands to run, and it can arrive with a cloned
+repository or be written by the model. zcoder therefore starts project servers
+only after you approve the exact file content:
+
+- In the TUI, `/mcp trust` shows the file and asks for confirmation;
+  `/mcp untrust` revokes it.
+- From a shell in the workspace, `zcoder.zsh mcp trust` prints the file and asks
+  for confirmation. Pass `--yes` when no terminal is available, for example
+  when preparing a headless server. `zcoder.zsh mcp untrust` revokes it.
+
+Approvals are stored under `${ZCODER_HOME}/trusted-mcp`, outside every
+workspace. Any change to an approved file, by anyone, makes it untrusted again;
+its servers stop being offered until you approve the new content. Until then,
+startup, `/mcp`, `mcp list`, and headless servers explain how to approve it.
+Same-named user servers stay in effect while a project file is untrusted.
+
+`mcp add`, `enable`, `disable`, and `remove` with `--scope project` keep an
+existing approval, because the edit is yours. They never approve servers that
+someone else added to an untrusted file. User-scope servers in
+`${ZCODER_HOME}/mcp.json` need no approval.
+
 ## CLI management
 
 Registry commands do not require Ollama:
@@ -80,6 +104,8 @@ Registry commands do not require Ollama:
 ./zcoder.zsh mcp enable project-index
 ./zcoder.zsh mcp test project-index
 ./zcoder.zsh mcp remove project-index
+./zcoder.zsh mcp trust
+./zcoder.zsh mcp untrust
 ```
 
 `delete` is an alias for `remove`. New servers default to user scope; pass
@@ -93,7 +119,8 @@ protocol and discovers tools.
 
 `/mcp` opens a live status modal and connects enabled servers. Press `r` to
 restart the selected server. `/mcp reload` rereads user and project
-configuration. Normal startup remains fast because MCP processes start lazily
+configuration. `/mcp trust` and `/mcp untrust` approve or revoke the project
+file. Normal startup remains fast because MCP processes start lazily
 when their tools are first needed.
 
 ## Trust boundary
@@ -112,8 +139,8 @@ exposure, those tools are absent from the workspace phase and appear only after
 the router identifies an explicitly requested external action. This does not
 change `run_command`: shell commands retain their separate approval policy.
 
-Review server commands, arguments, environment values, and project `.mcp.json`
-before enabling them.
+Review server commands, arguments, and environment values before enabling them
+or approving a project `.mcp.json`.
 
 The current implementation is stdio-first. Streamable HTTP, OAuth, prompts,
 resources, sampling, and elicitation are not exposed. Configured non-stdio
