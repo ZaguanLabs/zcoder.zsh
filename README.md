@@ -112,8 +112,11 @@ See the [benchmarks](https://bit-lantern.dev/benchmarks) for methods, raw runs,
 and the cases where shell-only won.
 
 The Free tier includes `symbol_search`, `symbol_outline`, and
-`symbol_references` with no account. See [MCP servers](docs/mcp.md) for
-headless `PATH` setup and per-project configuration.
+`symbol_references` with no account. [Pro](https://bit-lantern.dev/pricing)
+adds eight tools for planning complex refactors, including `fast_context`,
+`edit_impact`, `symbol_trace`, and call graphs through `symbol_graph`.
+See [MCP servers](docs/mcp.md) for headless `PATH` setup and per-project
+configuration.
 
 ## Built for networks you control
 
